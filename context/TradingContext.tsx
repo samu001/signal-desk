@@ -1,11 +1,15 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-import { buildCandidates, Candidate } from '@/lib/candidates';
-import { fetchQuotes } from '@/lib/finnhub';
+import { actionableCandidates, buildCandidates, Candidate } from '@/lib/candidates';
+import { computeSetupExpectancy, SetupExpectancy } from '@/lib/expectancy';
+import { fetchMarketBundle } from '@/lib/finnhub';
+import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { createId, loadAppState, saveAppState } from '@/lib/storage';
 import {
   AppSettings,
   AppState,
+  Candle,
+  NewsItem,
   Quote,
   Setup,
   Trade,
@@ -19,8 +23,14 @@ type TradingContextValue = {
   watchlist: WatchlistItem[];
   trades: Trade[];
   quotes: Record<string, Quote>;
+  candles: Record<string, Candle[]>;
+  news: Record<string, NewsItem[]>;
+  dataSource: 'finnhub' | 'demo' | 'mixed';
   quotesLoading: boolean;
   candidates: Candidate[];
+  actionable: Candidate[];
+  session: SessionInfo;
+  setupExpectancy: SetupExpectancy[];
   refreshQuotes: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => void;
   upsertWatchlistItem: (item: Omit<WatchlistItem, 'id' | 'createdAt'> & { id?: string }) => string;
@@ -37,7 +47,11 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [state, setState] = useState<AppState | null>(null);
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [candles, setCandles] = useState<Record<string, Candle[]>>({});
+  const [news, setNews] = useState<Record<string, NewsItem[]>>({});
+  const [dataSource, setDataSource] = useState<'finnhub' | 'demo' | 'mixed'>('demo');
   const [quotesLoading, setQuotesLoading] = useState(false);
+  const [session, setSession] = useState<SessionInfo>(() => getUsEquitySession());
 
   useEffect(() => {
     let mounted = true;
@@ -58,17 +72,25 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     void saveAppState(state);
   }, [state]);
 
+  useEffect(() => {
+    const id = setInterval(() => setSession(getUsEquitySession()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const refreshQuotes = useCallback(async () => {
     if (!state) return;
     setQuotesLoading(true);
+    setSession(getUsEquitySession());
     try {
       const symbols = [
         ...state.watchlist.map((w) => w.symbol),
         ...state.trades.filter((t) => t.status !== 'closed').map((t) => t.symbol),
-        'SPY',
       ];
-      const next = await fetchQuotes(symbols, state.settings.finnhubApiKey || undefined);
-      setQuotes(next);
+      const bundle = await fetchMarketBundle(symbols, state.settings.finnhubApiKey || undefined);
+      setQuotes(bundle.quotes);
+      setCandles(bundle.candles);
+      setNews(bundle.news);
+      setDataSource(bundle.sourceSummary);
     } finally {
       setQuotesLoading(false);
     }
@@ -166,8 +188,20 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
 
   const candidates = useMemo(() => {
     if (!state) return [];
-    return buildCandidates(state.watchlist, state.setups, quotes);
-  }, [state, quotes]);
+    return buildCandidates(state.watchlist, state.setups, quotes, {
+      candles,
+      news,
+      trades: state.trades,
+      session,
+    });
+  }, [state, quotes, candles, news, session]);
+
+  const actionable = useMemo(() => actionableCandidates(candidates), [candidates]);
+
+  const setupExpectancy = useMemo(
+    () => (state ? computeSetupExpectancy(state.setups, state.trades) : []),
+    [state]
+  );
 
   const value = useMemo<TradingContextValue>(() => {
     const emptySettings = {
@@ -185,8 +219,14 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       watchlist: state?.watchlist ?? [],
       trades: state?.trades ?? [],
       quotes,
+      candles,
+      news,
+      dataSource,
       quotesLoading,
       candidates,
+      actionable,
+      session,
+      setupExpectancy,
       refreshQuotes,
       updateSettings,
       upsertWatchlistItem,
@@ -200,8 +240,14 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     ready,
     state,
     quotes,
+    candles,
+    news,
+    dataSource,
     quotesLoading,
     candidates,
+    actionable,
+    session,
+    setupExpectancy,
     refreshQuotes,
     updateSettings,
     upsertWatchlistItem,

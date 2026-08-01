@@ -1,6 +1,6 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Field, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
@@ -64,7 +64,7 @@ export default function SetupDetailScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Edit setup"
-          subtitle="One line per rule. These drive your pre-trade checklist."
+          subtitle="Human rules stay editable. Auto-checks power Today’s pass/fail scoring."
         />
         <Field label="Name" value={name} onChangeText={setName} />
         <Field label="Summary" multiline value={summary} onChangeText={setSummary} />
@@ -74,6 +74,14 @@ export default function SetupDetailScreen() {
           value={entryRules}
           onChangeText={setEntryRules}
         />
+        <View style={styles.checksBox}>
+          <Text style={styles.checksTitle}>Auto-checks on Today</Text>
+          {setup.entryChecks.map((check) => (
+            <Text key={check} style={styles.checkItem}>
+              • {check.replace(/_/g, ' ')}
+            </Text>
+          ))}
+        </View>
         <Field
           label="When to get out (exit rules)"
           multiline
@@ -101,5 +109,21 @@ const styles = StyleSheet.create({
   content: {
     padding: spacing.lg,
     paddingBottom: 40,
+  },
+  checksBox: {
+    backgroundColor: palette.mist,
+    borderRadius: 14,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: 4,
+  },
+  checksTitle: {
+    fontWeight: '700',
+    color: palette.ink,
+    marginBottom: 4,
+  },
+  checkItem: {
+    color: palette.muted,
+    textTransform: 'capitalize',
   },
 });

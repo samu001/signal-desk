@@ -1,8 +1,26 @@
+export type RuleCheckId =
+  | 'above_sma_50'
+  | 'in_buy_zone'
+  | 'near_or_in_buy_zone'
+  | 'higher_low'
+  | 'volume_expanding'
+  | 'volume_drying'
+  | 'holding_breakout_level'
+  | 'not_chasing_extension'
+  | 'extended_below_sma_20'
+  | 'at_support_zone'
+  | 'rejection_wick'
+  | 'no_negative_catalyst'
+  | 'rs_vs_spy'
+  | 'session_tradable';
+
 export type Setup = {
   id: string;
   name: string;
   summary: string;
   entryRules: string[];
+  /** Machine-evaluated checks that drive Today accuracy scoring. */
+  entryChecks: RuleCheckId[];
   exitRules: string[];
   checklist: string[];
 };
@@ -59,6 +77,23 @@ export type Quote = {
   open: number;
   previousClose: number;
   source: 'finnhub' | 'demo';
+};
+
+export type Candle = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type NewsItem = {
+  id: string;
+  headline: string;
+  datetime: number;
+  source: string;
+  url?: string;
 };
 
 export type AppState = {

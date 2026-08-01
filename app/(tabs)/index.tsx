@@ -1,6 +1,5 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Link } from 'expo-router';
-import { useMemo } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -12,19 +11,27 @@ import {
 } from 'react-native';
 
 import { CandidateRow } from '@/components/CandidateRow';
-import { BrandMark, EmptyState, formatMoney, formatPct, Screen, SectionTitle } from '@/components/ui';
+import { BrandMark, EmptyState, formatMoney, formatPct, Pill, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 
 export default function TodayScreen() {
-  const { ready, settings, candidates, quotes, quotesLoading, refreshQuotes, trades } = useTrading();
+  const {
+    ready,
+    settings,
+    candidates,
+    actionable,
+    quotes,
+    quotesLoading,
+    refreshQuotes,
+    trades,
+    session,
+    dataSource,
+  } = useTrading();
 
-  const actionable = useMemo(
-    () => candidates.filter((c) => c.status === 'in_zone' || c.status === 'near_zone'),
-    [candidates]
-  );
   const openTrades = trades.filter((t) => t.status === 'open' || t.status === 'planned');
   const spy = quotes.SPY;
+  const readyCount = candidates.filter((c) => c.status === 'ready').length;
 
   if (!ready) {
     return (
@@ -52,6 +59,17 @@ export default function TodayScreen() {
           </View>
           <Text style={styles.greeting}>What to buy · when · when to get out</Text>
           <Text style={styles.bias}>{settings.marketBias}</Text>
+
+          <View style={styles.sessionRow}>
+            <Pill
+              label={session.label}
+              tone={session.tradable ? 'good' : session.phase === 'rth' ? 'warn' : 'neutral'}
+            />
+            <Text style={styles.sessionDetail} numberOfLines={2}>
+              {session.detail}
+            </Text>
+          </View>
+
           <View style={styles.spyRow}>
             <Text style={styles.spyLabel}>SPY</Text>
             <Text style={styles.spyPrice}>{spy ? formatMoney(spy.price) : '—'}</Text>
@@ -61,26 +79,33 @@ export default function TodayScreen() {
               </Text>
             ) : null}
             <Text style={styles.quoteSource}>
-              {spy?.source === 'finnhub' ? 'Live Finnhub' : 'Demo quotes'}
+              {dataSource === 'finnhub' ? 'Live Finnhub' : dataSource === 'mixed' ? 'Mixed data' : 'Demo data'}
             </Text>
           </View>
         </View>
 
         <SectionTitle
           title="Act now"
-          subtitle="Names currently in or near your personal buy zones."
+          subtitle={
+            readyCount
+              ? `${readyCount} name${readyCount === 1 ? '' : 's'} with buy zone + rules mostly passing.`
+              : 'In/near your zones, ranked by rule pass-rate and setup edge.'
+          }
         />
         {actionable.length === 0 ? (
           <EmptyState
-            title="No buy zones active"
-            body="Add watchlist levels or wait for price to enter your zones. Pull to refresh quotes."
+            title="No actionable setups"
+            body="Pull to refresh candles/quotes, or wait for price to enter your zones with rules passing."
           />
         ) : (
           actionable.map((c) => <CandidateRow key={c.item.id} candidate={c} />)
         )}
 
         <View style={styles.spacer} />
-        <SectionTitle title="Full desk" subtitle="Every name you’re tracking, ranked by urgency." />
+        <SectionTitle
+          title="Full desk"
+          subtitle="Every name ranked by readiness (zone + auto rules + journal edge)."
+        />
         {candidates.map((c) => (
           <CandidateRow key={`all-${c.item.id}`} candidate={c} />
         ))}
@@ -149,6 +174,15 @@ const styles = StyleSheet.create({
     color: palette.muted,
     lineHeight: 21,
     marginBottom: spacing.md,
+  },
+  sessionRow: {
+    gap: 8,
+    marginBottom: spacing.md,
+  },
+  sessionDetail: {
+    color: palette.muted,
+    fontSize: 13,
+    lineHeight: 18,
   },
   spyRow: {
     flexDirection: 'row',

@@ -16,7 +16,7 @@ function startOfWeek(d = new Date()) {
 }
 
 export default function JournalScreen() {
-  const { trades, getSetup } = useTrading();
+  const { trades, getSetup, setupExpectancy, setups } = useTrading();
 
   const stats = useMemo(() => {
     const weekStart = startOfWeek();
@@ -39,6 +39,14 @@ export default function JournalScreen() {
       realized,
     };
   }, [trades]);
+
+  const rankedSetups = useMemo(() => {
+    const names = Object.fromEntries(setups.map((s) => [s.id, s.name]));
+    return [...setupExpectancy].sort((a, b) => b.score - a.score).map((e) => ({
+      ...e,
+      name: names[e.setupId] ?? e.setupId,
+    }));
+  }, [setupExpectancy, setups]);
 
   return (
     <Screen>
@@ -74,6 +82,23 @@ export default function JournalScreen() {
         <Text style={styles.planLine}>
           Plan followed {stats.planFollowed} · broken {stats.planBroken}
         </Text>
+
+        <SectionTitle
+          title="Setup edge"
+          subtitle="Expectancy from closed trades feeds Today’s ranking."
+        />
+        {rankedSetups.map((edge) => (
+          <View key={edge.setupId} style={styles.edgeRow}>
+            <Text style={styles.edgeName}>{edge.name}</Text>
+            <Text style={styles.edgeMeta}>
+              {edge.sampleSize === 0
+                ? 'No closed sample yet'
+                : `${edge.avgR?.toFixed(2) ?? '—'}R · win ${
+                    edge.winRate == null ? '—' : `${Math.round(edge.winRate * 100)}%`
+                  } · n=${edge.sampleSize}`}
+            </Text>
+          </View>
+        ))}
 
         {trades.length === 0 ? (
           <EmptyState
@@ -161,6 +186,24 @@ const styles = StyleSheet.create({
   planLine: {
     color: palette.muted,
     marginBottom: spacing.md,
+  },
+  edgeRow: {
+    backgroundColor: palette.white,
+    borderWidth: 1,
+    borderColor: palette.line,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  edgeName: {
+    fontWeight: '700',
+    color: palette.ink,
+    marginBottom: 4,
+  },
+  edgeMeta: {
+    color: palette.muted,
+    fontFamily: 'SpaceMono',
+    fontSize: 12,
   },
   card: {
     backgroundColor: palette.white,

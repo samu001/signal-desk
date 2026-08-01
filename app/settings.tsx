@@ -47,7 +47,7 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Personalize"
-          subtitle="Risk defaults and market bias live on this device. Quotes use Finnhub when a key is set."
+          subtitle="Risk defaults and bias live on this device. A Finnhub key unlocks live quotes, daily candles, and catalyst headlines for Today’s auto-checks."
         />
 
         <Field label="Display name" value={displayName} onChangeText={setDisplayName} />
@@ -82,8 +82,8 @@ export default function SettingsScreen() {
         <View style={styles.help}>
           <Text style={styles.helpTitle}>Free data</Text>
           <Text style={styles.helpBody}>
-            Get a free personal key at finnhub.io. Without it, Signal Desk uses demo prices so you can
-            still build playbooks, zones, and trade plans offline.
+            Get a free personal key at finnhub.io. Without it, Signal Desk uses demo quotes + demo daily
+            candles so rule scoring still works offline. News catalysts need a live key.
           </Text>
         </View>
 

@@ -6,14 +6,22 @@ import { palette, spacing } from '@/constants/theme';
 import { Candidate } from '@/lib/candidates';
 
 function toneFor(status: Candidate['status']) {
+  if (status === 'ready') return 'good' as const;
   if (status === 'in_zone') return 'good' as const;
   if (status === 'near_zone') return 'warn' as const;
-  if (status === 'invalidated') return 'bad' as const;
+  if (status === 'stop_threatened' || status === 'invalidated') return 'bad' as const;
   return 'neutral' as const;
 }
 
+function verdictMark(verdict: 'pass' | 'fail' | 'unknown') {
+  if (verdict === 'pass') return '✓';
+  if (verdict === 'fail') return '✕';
+  return '·';
+}
+
 export function CandidateRow({ candidate }: { candidate: Candidate }) {
-  const { item, quote, setup, label } = candidate;
+  const { item, quote, setup, label, rules, passRate, expectancy } = candidate;
+  const topRules = rules.slice(0, 4);
 
   return (
     <Link
@@ -58,7 +66,37 @@ export function CandidateRow({ candidate }: { candidate: Candidate }) {
           </View>
         </View>
 
-        {setup ? <Text style={styles.setup}>Setup · {setup.name}</Text> : null}
+        <View style={styles.scoreRow}>
+          <Text style={styles.setup}>
+            {setup ? setup.name : 'Custom'} · rules {Math.round(passRate * 100)}%
+          </Text>
+          {expectancy && expectancy.sampleSize > 0 ? (
+            <Text style={styles.expectancy}>
+              Edge {expectancy.avgR == null ? '—' : `${expectancy.avgR.toFixed(2)}R`} · n=
+              {expectancy.sampleSize}
+            </Text>
+          ) : (
+            <Text style={styles.expectancy}>Edge learning…</Text>
+          )}
+        </View>
+
+        <View style={styles.rules}>
+          {topRules.map((rule) => (
+            <Text
+              key={rule.id}
+              style={[
+                styles.rule,
+                rule.verdict === 'pass' && styles.rulePass,
+                rule.verdict === 'fail' && styles.ruleFail,
+              ]}
+              numberOfLines={1}>
+              {verdictMark(rule.verdict)} {rule.label}
+            </Text>
+          ))}
+          {rules.length > 4 ? (
+            <Text style={styles.ruleMore}>+{rules.length - 4} more checks</Text>
+          ) : null}
+        </View>
       </Pressable>
     </Link>
   );
@@ -115,9 +153,40 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
+  scoreRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
   setup: {
     color: palette.moss,
     fontWeight: '600',
     fontSize: 13,
+  },
+  expectancy: {
+    color: palette.muted,
+    fontSize: 12,
+  },
+  rules: {
+    gap: 4,
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: palette.mist,
+  },
+  rule: {
+    fontSize: 12,
+    color: palette.muted,
+  },
+  rulePass: {
+    color: palette.moss,
+  },
+  ruleFail: {
+    color: palette.danger,
+  },
+  ruleMore: {
+    fontSize: 12,
+    color: palette.muted,
+    fontStyle: 'italic',
   },
 });

@@ -6,32 +6,43 @@ import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 
 export default function PlaybookScreen() {
-  const { setups } = useTrading();
+  const { setups, setupExpectancy } = useTrading();
+  const expectancyById = Object.fromEntries(setupExpectancy.map((e) => [e.setupId, e]));
 
   return (
     <Screen>
       <ScrollView contentContainerStyle={styles.content}>
         <SectionTitle
           title="Playbook"
-          subtitle="Your personalized rules for what to buy, when to enter, and when to get out."
+          subtitle="Your rules for what to buy, when to enter, and when to get out — with auto-checks on Today."
         />
 
         {setups.length === 0 ? (
           <EmptyState title="No setups yet" body="Seed data should load on first launch." />
         ) : (
-          setups.map((setup) => (
-            <Link key={setup.id} href={{ pathname: '/setup-detail', params: { id: setup.id } }} asChild>
-              <Pressable style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}>
-                <Text style={styles.name}>{setup.name}</Text>
-                <Text style={styles.summary}>{setup.summary}</Text>
-                <View style={styles.counts}>
-                  <Text style={styles.count}>{setup.entryRules.length} entry rules</Text>
-                  <Text style={styles.count}>{setup.exitRules.length} exit rules</Text>
-                  <Text style={styles.count}>{setup.checklist.length} checklist</Text>
-                </View>
-              </Pressable>
-            </Link>
-          ))
+          setups.map((setup) => {
+            const edge = expectancyById[setup.id];
+            return (
+              <Link key={setup.id} href={{ pathname: '/setup-detail', params: { id: setup.id } }} asChild>
+                <Pressable style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}>
+                  <Text style={styles.name}>{setup.name}</Text>
+                  <Text style={styles.summary}>{setup.summary}</Text>
+                  <View style={styles.counts}>
+                    <Text style={styles.count}>{setup.entryRules.length} entry rules</Text>
+                    <Text style={styles.count}>{setup.entryChecks.length} auto-checks</Text>
+                    <Text style={styles.count}>{setup.exitRules.length} exit rules</Text>
+                  </View>
+                  <Text style={styles.edge}>
+                    {edge && edge.sampleSize > 0
+                      ? `Journal edge ${edge.avgR?.toFixed(2) ?? '—'}R · win ${
+                          edge.winRate == null ? '—' : `${Math.round(edge.winRate * 100)}%`
+                        } · n=${edge.sampleSize}`
+                      : 'Journal edge: not enough closed trades yet'}
+                  </Text>
+                </Pressable>
+              </Link>
+            );
+          })
         )}
       </ScrollView>
     </Screen>
@@ -70,6 +81,10 @@ const styles = StyleSheet.create({
   count: {
     color: palette.moss,
     fontWeight: '600',
+    fontSize: 13,
+  },
+  edge: {
+    color: palette.ink,
     fontSize: 13,
   },
 });
