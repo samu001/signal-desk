@@ -1,22 +1,52 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { Theme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
-import { SplashScreen, Stack } from 'expo-router';
+import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { useColorScheme } from 'react-native';
+import 'react-native-reanimated';
 
-export {
-  // Catch any errors thrown by the Layout component.
-  ErrorBoundary,
-} from 'expo-router';
+import { TradingProvider } from '@/context/TradingContext';
+import { palette } from '@/constants/theme';
+
+export { ErrorBoundary } from 'expo-router';
 
 export const unstable_settings = {
-  // Ensure that reloading on `/modal` keeps a back button present.
-  initialRouteName: '(tabs)',
+  anchor: '(tabs)',
 };
 
-// Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
+
+const AppTheme: Theme = {
+  dark: false,
+  colors: {
+    primary: palette.moss,
+    background: palette.paper,
+    card: palette.paper,
+    text: palette.ink,
+    border: palette.line,
+    notification: palette.leaf,
+  },
+  fonts: {
+    regular: {
+      fontFamily: 'System',
+      fontWeight: '400',
+    },
+    medium: {
+      fontFamily: 'System',
+      fontWeight: '500',
+    },
+    bold: {
+      fontFamily: 'System',
+      fontWeight: '700',
+    },
+    heavy: {
+      fontFamily: 'System',
+      fontWeight: '800',
+    },
+  },
+};
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
@@ -24,7 +54,6 @@ export default function RootLayout() {
     ...FontAwesome.font,
   });
 
-  // Expo Router uses Error Boundaries to catch errors in the navigation tree.
   useEffect(() => {
     if (error) throw error;
   }, [error]);
@@ -39,18 +68,29 @@ export default function RootLayout() {
     return null;
   }
 
-  return <RootLayoutNav />;
-}
-
-function RootLayoutNav() {
-  const colorScheme = useColorScheme();
-
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
-      </Stack>
-    </ThemeProvider>
+    <TradingProvider>
+      <ThemeProvider value={AppTheme}>
+        <StatusBar style="dark" />
+        <Stack
+          screenOptions={{
+            headerStyle: { backgroundColor: palette.paper },
+            headerTintColor: palette.ink,
+            headerTitleStyle: { fontWeight: '700' },
+            contentStyle: { backgroundColor: palette.paper },
+          }}>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+          <Stack.Screen name="trade-plan" options={{ title: 'Trade plan', presentation: 'modal' }} />
+          <Stack.Screen name="trade-detail" options={{ title: 'Trade' }} />
+          <Stack.Screen name="setup-detail" options={{ title: 'Setup' }} />
+          <Stack.Screen name="backtest" options={{ title: 'Backtest' }} />
+          <Stack.Screen
+            name="watchlist-form"
+            options={{ title: 'Watchlist', presentation: 'modal' }}
+          />
+        </Stack>
+      </ThemeProvider>
+    </TradingProvider>
   );
 }
