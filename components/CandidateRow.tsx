@@ -3,7 +3,9 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatMoney, formatPct, Pill } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
+import { useTrading } from '@/context/TradingContext';
 import { Candidate } from '@/lib/candidates';
+import { fundamentalFlags } from '@/lib/fmp';
 
 function toneFor(status: Candidate['status']) {
   if (status === 'ready') return 'good' as const;
@@ -20,8 +22,10 @@ function verdictMark(verdict: 'pass' | 'fail' | 'unknown') {
 }
 
 export function CandidateRow({ candidate }: { candidate: Candidate }) {
+  const { fundamentals } = useTrading();
   const { item, quote, setup, label, rules, passRate, expectancy } = candidate;
   const topRules = rules.slice(0, 4);
+  const flags = fundamentalFlags(fundamentals[item.symbol.toUpperCase()]);
 
   return (
     <Link
@@ -79,6 +83,14 @@ export function CandidateRow({ candidate }: { candidate: Candidate }) {
             <Text style={styles.expectancy}>Edge learning…</Text>
           )}
         </View>
+
+        {flags.length ? (
+          <View style={styles.fundRow}>
+            {flags.map((f) => (
+              <Pill key={f.label} label={f.label} tone={f.tone} />
+            ))}
+          </View>
+        ) : null}
 
         <View style={styles.rules}>
           {topRules.map((rule) => (
@@ -167,6 +179,11 @@ const styles = StyleSheet.create({
   expectancy: {
     color: palette.muted,
     fontSize: 12,
+  },
+  fundRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
   },
   rules: {
     gap: 4,

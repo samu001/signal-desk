@@ -5,10 +5,12 @@ import { computeSetupExpectancy, SetupExpectancy } from '@/lib/expectancy';
 import { fetchMarketBundle } from '@/lib/finnhub';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { createId, loadAppState, saveAppState } from '@/lib/storage';
+import { CandleSource } from '@/lib/candles';
 import {
   AppSettings,
   AppState,
   Candle,
+  FundamentalSnapshot,
   NewsItem,
   Quote,
   Setup,
@@ -25,7 +27,8 @@ type TradingContextValue = {
   quotes: Record<string, Quote>;
   candles: Record<string, Candle[]>;
   news: Record<string, NewsItem[]>;
-  dataSource: 'finnhub' | 'alphavantage' | 'demo' | 'mixed';
+  fundamentals: Record<string, FundamentalSnapshot>;
+  dataSource: CandleSource | 'mixed';
   dataWarnings: string[];
   quotesLoading: boolean;
   candidates: Candidate[];
@@ -50,7 +53,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [candles, setCandles] = useState<Record<string, Candle[]>>({});
   const [news, setNews] = useState<Record<string, NewsItem[]>>({});
-  const [dataSource, setDataSource] = useState<'finnhub' | 'alphavantage' | 'demo' | 'mixed'>('demo');
+  const [fundamentals, setFundamentals] = useState<Record<string, FundamentalSnapshot>>({});
+  const [dataSource, setDataSource] = useState<CandleSource | 'mixed'>('demo');
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [quotesLoading, setQuotesLoading] = useState(false);
   const [session, setSession] = useState<SessionInfo>(() => getUsEquitySession());
@@ -90,11 +94,14 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       ];
       const bundle = await fetchMarketBundle(symbols, {
         finnhubApiKey: state.settings.finnhubApiKey || undefined,
+        tiingoApiKey: state.settings.tiingoApiKey || undefined,
+        fmpApiKey: state.settings.fmpApiKey || undefined,
         alphaVantageApiKey: state.settings.alphaVantageApiKey || undefined,
       });
       setQuotes(bundle.quotes);
       setCandles(bundle.candles);
       setNews(bundle.news);
+      setFundamentals(bundle.fundamentals);
       setDataSource(bundle.sourceSummary);
       setDataWarnings(bundle.warnings);
     } finally {
@@ -105,7 +112,14 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready || !state) return;
     void refreshQuotes();
-  }, [ready, state?.watchlist, state?.settings.finnhubApiKey, state?.settings.alphaVantageApiKey]);
+  }, [
+    ready,
+    state?.watchlist,
+    state?.settings.finnhubApiKey,
+    state?.settings.tiingoApiKey,
+    state?.settings.fmpApiKey,
+    state?.settings.alphaVantageApiKey,
+  ]);
 
   const updateSettings = useCallback((patch: Partial<AppSettings>) => {
     setState((prev) => (prev ? { ...prev, settings: { ...prev.settings, ...patch } } : prev));
@@ -210,10 +224,12 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo<TradingContextValue>(() => {
-    const emptySettings = {
+    const emptySettings: AppSettings = {
       accountSize: 0,
       riskPercent: 0,
       finnhubApiKey: '',
+      tiingoApiKey: '',
+      fmpApiKey: '',
       alphaVantageApiKey: '',
       marketBias: '',
       displayName: 'Trader',
@@ -228,6 +244,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       quotes,
       candles,
       news,
+      fundamentals,
       dataSource,
       dataWarnings,
       quotesLoading,
@@ -250,6 +267,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     quotes,
     candles,
     news,
+    fundamentals,
     dataSource,
     dataWarnings,
     quotesLoading,

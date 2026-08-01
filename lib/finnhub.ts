@@ -1,6 +1,7 @@
 import { demoCandles, demoQuotes } from '@/constants/seed';
-import { fetchCandleBundle } from '@/lib/candles';
-import { Candle, NewsItem, Quote } from '@/types/trading';
+import { CandleApiOptions, CandleSource, fetchCandleBundle } from '@/lib/candles';
+import { fetchFmpFundamentalsBundle } from '@/lib/fmp';
+import { Candle, FundamentalSnapshot, NewsItem, Quote } from '@/types/trading';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -162,22 +163,22 @@ export type MarketBundle = {
   quotes: Record<string, Quote>;
   candles: Record<string, Candle[]>;
   news: Record<string, NewsItem[]>;
-  sourceSummary: 'finnhub' | 'alphavantage' | 'demo' | 'mixed';
+  fundamentals: Record<string, FundamentalSnapshot>;
+  sourceSummary: CandleSource | 'mixed';
   warnings: string[];
 };
 
 export async function fetchMarketBundle(
   symbols: string[],
-  options?: { finnhubApiKey?: string; alphaVantageApiKey?: string }
+  options?: CandleApiOptions
 ): Promise<MarketBundle> {
   const apiKey = options?.finnhubApiKey;
   const unique = [...new Set([...symbols.map((s) => s.toUpperCase().trim()), 'SPY'].filter(Boolean))];
   const quotes = await fetchQuotes(unique, apiKey);
 
   const bundle = await fetchCandleBundle(unique, {
-    finnhubApiKey: options?.finnhubApiKey,
-    alphaVantageApiKey: options?.alphaVantageApiKey,
-    days: 180,
+    ...options,
+    days: options?.days ?? 800,
   });
 
   const newsEntries = await Promise.all(
@@ -186,6 +187,19 @@ export async function fetchMarketBundle(
       .map(async (symbol) => [symbol, await fetchCompanyNews(symbol, apiKey)] as const)
   );
   const news = Object.fromEntries(newsEntries);
+
+  let fundamentals: Record<string, FundamentalSnapshot> = {};
+  const warnings = [...bundle.warnings];
+  if (options?.fmpApiKey) {
+    const fmp = await fetchFmpFundamentalsBundle(
+      unique.filter((s) => s !== 'SPY'),
+      options.fmpApiKey
+    );
+    fundamentals = fmp.fundamentals;
+    for (const w of fmp.warnings) {
+      if (!warnings.includes(w)) warnings.push(w);
+    }
+  }
 
   const sourceValues = Object.values(bundle.sources);
   const uniqueSources = [...new Set(sourceValues)];
@@ -196,7 +210,8 @@ export async function fetchMarketBundle(
     quotes,
     candles: bundle.candles,
     news,
+    fundamentals,
     sourceSummary,
-    warnings: bundle.warnings,
+    warnings,
   };
 }

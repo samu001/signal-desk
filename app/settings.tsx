@@ -12,7 +12,9 @@ export default function SettingsScreen() {
   const [accountSize, setAccountSize] = useState(String(settings.accountSize));
   const [riskPercent, setRiskPercent] = useState(String(settings.riskPercent));
   const [marketBias, setMarketBias] = useState(settings.marketBias);
-  const [apiKey, setApiKey] = useState(settings.finnhubApiKey);
+  const [finnhubKey, setFinnhubKey] = useState(settings.finnhubApiKey);
+  const [tiingoKey, setTiingoKey] = useState(settings.tiingoApiKey);
+  const [fmpKey, setFmpKey] = useState(settings.fmpApiKey);
   const [alphaKey, setAlphaKey] = useState(settings.alphaVantageApiKey);
 
   useEffect(() => {
@@ -20,7 +22,9 @@ export default function SettingsScreen() {
     setAccountSize(String(settings.accountSize));
     setRiskPercent(String(settings.riskPercent));
     setMarketBias(settings.marketBias);
-    setApiKey(settings.finnhubApiKey);
+    setFinnhubKey(settings.finnhubApiKey);
+    setTiingoKey(settings.tiingoApiKey);
+    setFmpKey(settings.fmpApiKey);
     setAlphaKey(settings.alphaVantageApiKey);
   }, [settings]);
 
@@ -37,17 +41,15 @@ export default function SettingsScreen() {
       accountSize: size,
       riskPercent: risk,
       marketBias: marketBias.trim(),
-      finnhubApiKey: apiKey.trim(),
+      finnhubApiKey: finnhubKey.trim(),
+      tiingoApiKey: tiingoKey.trim(),
+      fmpApiKey: fmpKey.trim(),
       alphaVantageApiKey: alphaKey.trim(),
     });
     await refreshQuotes();
     Alert.alert(
       'Saved',
-      alphaKey.trim()
-        ? 'Keys stored on device. Alpha Vantage powers OHLC/backtests if Finnhub candles are blocked.'
-        : apiKey.trim()
-          ? 'Finnhub key stored. If candle history fails on free tier, add Alpha Vantage for backtests.'
-          : 'Using demo quotes/candles until you add API keys.'
+      'Keys stored on device. Candle order: Tiingo → FMP → Finnhub → Alpha Vantage → demo.'
     );
   };
 
@@ -55,10 +57,7 @@ export default function SettingsScreen() {
     <Screen>
       <Stack.Screen options={{ title: 'Settings' }} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <SectionTitle
-          title="Personalize"
-          subtitle="Risk defaults and API keys live on this device."
-        />
+        <SectionTitle title="Personalize" subtitle="Risk defaults and API keys live on this device." />
 
         <Field label="Display name" value={displayName} onChangeText={setDisplayName} />
         <Field
@@ -80,12 +79,30 @@ export default function SettingsScreen() {
           onChangeText={setMarketBias}
           placeholder="Bullish / Neutral / Defensive — and why"
         />
+
+        <Text style={styles.section}>Market data keys</Text>
+        <Field
+          label="Tiingo token"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={tiingoKey}
+          onChangeText={setTiingoKey}
+          placeholder="Best free long EOD history for backtests"
+        />
+        <Field
+          label="FMP API key"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={fmpKey}
+          onChangeText={setFmpKey}
+          placeholder="EOD fallback + fundamentals context"
+        />
         <Field
           label="Finnhub API key"
           autoCapitalize="none"
           autoCorrect={false}
-          value={apiKey}
-          onChangeText={setApiKey}
+          value={finnhubKey}
+          onChangeText={setFinnhubKey}
           placeholder="Quotes + news (free OHLC often blocked)"
         />
         <Field
@@ -94,16 +111,15 @@ export default function SettingsScreen() {
           autoCorrect={false}
           value={alphaKey}
           onChangeText={setAlphaKey}
-          placeholder="Recommended for backtests (~100 daily bars)"
+          placeholder="Short ~100-bar fallback"
         />
 
         <View style={styles.help}>
-          <Text style={styles.helpTitle}>API limits that affect backtests</Text>
+          <Text style={styles.helpTitle}>Where each key helps</Text>
           <Text style={styles.helpBody}>
-            Finnhub free typically cannot call /stock/candle (OHLC). Quotes/news may still work. Alpha
-            Vantage free allows compact daily history (~100 bars) but only ~25 requests/day and 5/min —
-            backtests fetch sequentially. Without either key, Signal Desk uses demo history so the
-            engine still runs offline.
+            Tiingo: long adjusted daily history for realistic backtests. FMP: daily bars fallback plus PE /
+            margins / ROE on Today. Finnhub: live quotes + catalyst headlines. Alpha Vantage: last-resort
+            short history. Without keys, demo candles still power the engine offline.
           </Text>
         </View>
 
@@ -117,6 +133,13 @@ const styles = StyleSheet.create({
   content: {
     padding: spacing.lg,
     paddingBottom: 40,
+  },
+  section: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: palette.ink,
+    marginBottom: spacing.sm,
+    marginTop: spacing.sm,
   },
   help: {
     backgroundColor: palette.mist,

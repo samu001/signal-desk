@@ -63,7 +63,11 @@ export type AppSettings = {
   accountSize: number;
   riskPercent: number;
   finnhubApiKey: string;
-  /** Optional — used for OHLC/backtests when Finnhub candles are unavailable on free tier. */
+  /** Best free long-history EOD for backtests. */
+  tiingoApiKey: string;
+  /** EOD fallback + fundamentals (“what to buy” context). */
+  fmpApiKey: string;
+  /** Short compact history fallback (~100 bars). */
   alphaVantageApiKey: string;
   marketBias: string;
   displayName: string;
@@ -78,7 +82,22 @@ export type Quote = {
   low: number;
   open: number;
   previousClose: number;
-  source: 'finnhub' | 'alphavantage' | 'demo';
+  source: 'finnhub' | 'tiingo' | 'fmp' | 'alphavantage' | 'demo';
+};
+
+export type FundamentalSnapshot = {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  industry: string | null;
+  marketCap: number | null;
+  pe: number | null;
+  pb: number | null;
+  profitMargin: number | null;
+  revenueGrowth: number | null;
+  roe: number | null;
+  debtToEquity: number | null;
+  source: 'fmp';
 };
 
 export type Candle = {

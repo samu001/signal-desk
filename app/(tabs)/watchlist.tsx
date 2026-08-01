@@ -2,12 +2,13 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Link } from 'expo-router';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { EmptyState, formatMoney, Screen, SectionTitle } from '@/components/ui';
+import { EmptyState, formatMoney, Pill, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
+import { fundamentalFlags } from '@/lib/fmp';
 
 export default function WatchlistScreen() {
-  const { watchlist, getSetup, removeWatchlistItem, quotes } = useTrading();
+  const { watchlist, getSetup, removeWatchlistItem, quotes, fundamentals } = useTrading();
 
   return (
     <Screen>
@@ -32,6 +33,8 @@ export default function WatchlistScreen() {
           watchlist.map((item) => {
             const setup = getSetup(item.setupId);
             const quote = quotes[item.symbol];
+            const fund = fundamentals[item.symbol.toUpperCase()];
+            const flags = fundamentalFlags(fund);
             return (
               <View key={item.id} style={styles.card}>
                 <View style={styles.top}>
@@ -67,6 +70,19 @@ export default function WatchlistScreen() {
                   <Text style={styles.quote}>Last {formatMoney(quote.price)}</Text>
                 ) : null}
                 {setup ? <Text style={styles.setup}>Setup · {setup.name}</Text> : null}
+                {fund?.sector ? (
+                  <Text style={styles.fundMeta}>
+                    {fund.sector}
+                    {fund.industry ? ` · ${fund.industry}` : ''}
+                  </Text>
+                ) : null}
+                {flags.length ? (
+                  <View style={styles.flagRow}>
+                    {flags.map((f) => (
+                      <Pill key={f.label} label={f.label} tone={f.tone} />
+                    ))}
+                  </View>
+                ) : null}
                 {item.notes ? <Text style={styles.notes}>{item.notes}</Text> : null}
                 <Link href={{ pathname: '/trade-plan', params: { watchlistId: item.id } }} asChild>
                   <Pressable style={styles.planLink}>
@@ -119,6 +135,8 @@ const styles = StyleSheet.create({
     color: palette.ink,
   },
   setup: { color: palette.moss, fontWeight: '600' },
+  fundMeta: { color: palette.muted, fontSize: 13 },
+  flagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   notes: { color: palette.muted, fontStyle: 'italic' },
   planLink: { marginTop: 4 },
   planLinkText: { color: palette.moss, fontWeight: '700' },

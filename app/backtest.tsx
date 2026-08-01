@@ -43,17 +43,16 @@ export default function BacktestScreen() {
     setLoading(true);
     try {
       const upper = symbol.toUpperCase().trim() || 'AAPL';
+      const keys = {
+        tiingoApiKey: settings.tiingoApiKey || undefined,
+        fmpApiKey: settings.fmpApiKey || undefined,
+        finnhubApiKey: settings.finnhubApiKey || undefined,
+        alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
+        days: 800,
+      };
       const [symbolBars, spyBars] = await Promise.all([
-        fetchDailyCandlesResolved(upper, {
-          finnhubApiKey: settings.finnhubApiKey || undefined,
-          alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
-          days: 180,
-        }),
-        fetchDailyCandlesResolved('SPY', {
-          finnhubApiKey: settings.finnhubApiKey || undefined,
-          alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
-          days: 180,
-        }),
+        fetchDailyCandlesResolved(upper, keys),
+        fetchDailyCandlesResolved('SPY', keys),
       ]);
 
       // Prefer freshly fetched bars; fall back to in-memory cache.
@@ -80,7 +79,7 @@ export default function BacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Setup backtest"
-          subtitle="Replay daily bars through your auto-checks. Free Finnhub usually cannot supply OHLC — use Alpha Vantage or demo history."
+          subtitle="Replay daily bars through your auto-checks. Prefer Tiingo (long EOD) or FMP; Finnhub free OHLC is often blocked."
         />
 
         <Text style={styles.fieldLabel}>Setup</Text>
