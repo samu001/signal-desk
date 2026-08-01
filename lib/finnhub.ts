@@ -1,4 +1,5 @@
 import { demoCandles, demoQuotes } from '@/constants/seed';
+import { fetchCandleBundle } from '@/lib/candles';
 import { Candle, NewsItem, Quote } from '@/types/trading';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
@@ -161,27 +162,23 @@ export type MarketBundle = {
   quotes: Record<string, Quote>;
   candles: Record<string, Candle[]>;
   news: Record<string, NewsItem[]>;
-  sourceSummary: 'finnhub' | 'demo' | 'mixed';
+  sourceSummary: 'finnhub' | 'alphavantage' | 'demo' | 'mixed';
+  warnings: string[];
 };
 
-export async function fetchMarketBundle(symbols: string[], apiKey?: string): Promise<MarketBundle> {
+export async function fetchMarketBundle(
+  symbols: string[],
+  options?: { finnhubApiKey?: string; alphaVantageApiKey?: string }
+): Promise<MarketBundle> {
+  const apiKey = options?.finnhubApiKey;
   const unique = [...new Set([...symbols.map((s) => s.toUpperCase().trim()), 'SPY'].filter(Boolean))];
   const quotes = await fetchQuotes(unique, apiKey);
 
-  const candleEntries = await Promise.all(
-    unique.map(async (symbol) => {
-      const result = await fetchDailyCandles(symbol, apiKey);
-      return [symbol, result] as const;
-    })
-  );
-  const candles: Record<string, Candle[]> = {};
-  let finnhubBars = 0;
-  let demoBars = 0;
-  for (const [symbol, result] of candleEntries) {
-    candles[symbol] = result.candles;
-    if (result.source === 'finnhub') finnhubBars += 1;
-    else demoBars += 1;
-  }
+  const bundle = await fetchCandleBundle(unique, {
+    finnhubApiKey: options?.finnhubApiKey,
+    alphaVantageApiKey: options?.alphaVantageApiKey,
+    days: 180,
+  });
 
   const newsEntries = await Promise.all(
     unique
@@ -190,8 +187,16 @@ export async function fetchMarketBundle(symbols: string[], apiKey?: string): Pro
   );
   const news = Object.fromEntries(newsEntries);
 
+  const sourceValues = Object.values(bundle.sources);
+  const uniqueSources = [...new Set(sourceValues)];
   const sourceSummary =
-    !apiKey || finnhubBars === 0 ? 'demo' : demoBars === 0 ? 'finnhub' : 'mixed';
+    uniqueSources.length === 1 ? uniqueSources[0] : sourceValues.length ? 'mixed' : 'demo';
 
-  return { quotes, candles, news, sourceSummary };
+  return {
+    quotes,
+    candles: bundle.candles,
+    news,
+    sourceSummary,
+    warnings: bundle.warnings,
+  };
 }

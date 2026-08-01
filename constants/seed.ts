@@ -4,6 +4,7 @@ export const defaultSettings: AppSettings = {
   accountSize: 25000,
   riskPercent: 1,
   finnhubApiKey: '',
+  alphaVantageApiKey: '',
   marketBias: 'Neutral — wait for clean setups only.',
   displayName: 'Trader',
 };

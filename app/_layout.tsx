@@ -84,6 +84,7 @@ export default function RootLayout() {
           <Stack.Screen name="trade-plan" options={{ title: 'Trade plan', presentation: 'modal' }} />
           <Stack.Screen name="trade-detail" options={{ title: 'Trade' }} />
           <Stack.Screen name="setup-detail" options={{ title: 'Setup' }} />
+          <Stack.Screen name="backtest" options={{ title: 'Backtest' }} />
           <Stack.Screen
             name="watchlist-form"
             options={{ title: 'Watchlist', presentation: 'modal' }}

@@ -63,6 +63,8 @@ export type AppSettings = {
   accountSize: number;
   riskPercent: number;
   finnhubApiKey: string;
+  /** Optional — used for OHLC/backtests when Finnhub candles are unavailable on free tier. */
+  alphaVantageApiKey: string;
   marketBias: string;
   displayName: string;
 };
@@ -76,7 +78,7 @@ export type Quote = {
   low: number;
   open: number;
   previousClose: number;
-  source: 'finnhub' | 'demo';
+  source: 'finnhub' | 'alphavantage' | 'demo';
 };
 
 export type Candle = {

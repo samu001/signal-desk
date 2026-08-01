@@ -1,6 +1,6 @@
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Link, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Field, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
@@ -95,6 +95,12 @@ export default function SetupDetailScreen() {
           onChangeText={setChecklist}
         />
         <Button label="Save setup" onPress={save} />
+        <View style={{ height: spacing.sm }} />
+        <Link href={{ pathname: '/backtest', params: { setupId: setup.id } }} asChild>
+          <Pressable style={styles.backtestBtn}>
+            <Text style={styles.backtestBtnText}>Backtest this setup</Text>
+          </Pressable>
+        </Link>
       </ScrollView>
     </Screen>
   );
@@ -125,5 +131,17 @@ const styles = StyleSheet.create({
   checkItem: {
     color: palette.muted,
     textTransform: 'capitalize',
+  },
+  backtestBtn: {
+    borderWidth: 1,
+    borderColor: palette.moss,
+    backgroundColor: palette.mossSoft,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  backtestBtnText: {
+    color: palette.moss,
+    fontWeight: '700',
   },
 });

@@ -79,7 +79,13 @@ export default function TodayScreen() {
               </Text>
             ) : null}
             <Text style={styles.quoteSource}>
-              {dataSource === 'finnhub' ? 'Live Finnhub' : dataSource === 'mixed' ? 'Mixed data' : 'Demo data'}
+              {dataSource === 'finnhub'
+                ? 'Live Finnhub'
+                : dataSource === 'alphavantage'
+                  ? 'Alpha Vantage bars'
+                  : dataSource === 'mixed'
+                    ? 'Mixed data'
+                    : 'Demo data'}
             </Text>
           </View>
         </View>
