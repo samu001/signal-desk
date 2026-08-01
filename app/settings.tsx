@@ -117,9 +117,9 @@ export default function SettingsScreen() {
         <View style={styles.help}>
           <Text style={styles.helpTitle}>Where each key helps</Text>
           <Text style={styles.helpBody}>
-            Tiingo: long adjusted daily history for realistic backtests. FMP: daily bars fallback plus PE /
-            margins / ROE on Today. Finnhub: live quotes + catalyst headlines. Alpha Vantage: last-resort
-            short history. Without keys, demo candles still power the engine offline.
+            Tiingo: long adjusted daily history for Desk signals and backtests. FMP: daily bars fallback plus
+            PE / margins / ROE on Desk and Today. Finnhub: live quotes + catalyst headlines. Alpha Vantage:
+            last-resort short history. Without keys, demo history / company / news still power Desk offline.
           </Text>
         </View>
 

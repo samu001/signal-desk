@@ -14,6 +14,7 @@ export { ErrorBoundary } from 'expo-router';
 
 export const unstable_settings = {
   anchor: '(tabs)',
+  initialRouteName: '(tabs)',
 };
 
 SplashScreen.preventAutoHideAsync();

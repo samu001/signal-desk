@@ -97,7 +97,7 @@ export type FundamentalSnapshot = {
   revenueGrowth: number | null;
   roe: number | null;
   debtToEquity: number | null;
-  source: 'fmp';
+  source: 'fmp' | 'demo';
 };
 
 export type Candle = {

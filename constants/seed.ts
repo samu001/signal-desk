@@ -1,4 +1,4 @@
-import { AppSettings, Candle, Setup, WatchlistItem } from '@/types/trading';
+import { AppSettings, Candle, FundamentalSnapshot, NewsItem, Setup, WatchlistItem } from '@/types/trading';
 
 export const defaultSettings: AppSettings = {
   accountSize: 25000,
@@ -239,3 +239,159 @@ export const demoCandles: Record<string, Candle[]> = {
     }))
   ),
 };
+
+function hashSymbol(symbol: string): number {
+  let h = 0;
+  for (let i = 0; i < symbol.length; i++) h = (h * 31 + symbol.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+/** Deterministic synthetic history for unknown tickers when no API keys are set. */
+export function buildSyntheticDemoCandles(symbol: string, endPrice?: number): Candle[] {
+  const upper = symbol.toUpperCase().trim() || 'DEMO';
+  const h = hashSymbol(upper);
+  const price = endPrice && endPrice > 0 ? endPrice : 40 + (h % 260);
+  const bars = 70;
+  const start = price * (0.78 + (h % 17) / 100);
+  const pattern = Array.from({ length: bars }, (_, i) => {
+    const t = i / (bars - 1);
+    const wave = Math.sin(i / 5 + (h % 7)) * price * 0.012;
+    const drift = (price - start) * t;
+    const close = Math.max(1, start + drift + wave);
+    const volume = 8_000_000 + ((h + i * 997) % 20) * 400_000;
+    const wick = i === bars - 1 && h % 3 === 0 ? ('reject' as const) : undefined;
+    return { close, volume, wick };
+  });
+  // Pin the last close near the quoted demo price when available.
+  pattern[pattern.length - 1] = {
+    ...pattern[pattern.length - 1],
+    close: price,
+  };
+  return buildSeries(start, pattern);
+}
+
+export function getDemoCandles(symbol: string): Candle[] {
+  const upper = symbol.toUpperCase().trim();
+  if (demoCandles[upper]) return demoCandles[upper];
+  const quote = demoQuotes[upper];
+  return buildSyntheticDemoCandles(upper, quote?.price);
+}
+
+/** Demo company snapshots used when no FMP key is set. */
+export const demoFundamentals: Record<string, FundamentalSnapshot> = {
+  AAPL: {
+    symbol: 'AAPL',
+    name: 'Apple Inc.',
+    sector: 'Technology',
+    industry: 'Consumer Electronics',
+    marketCap: 3_200_000_000_000,
+    pe: 32.4,
+    pb: 48.1,
+    profitMargin: 0.24,
+    revenueGrowth: 0.06,
+    roe: 1.47,
+    debtToEquity: 1.5,
+    source: 'demo',
+  },
+  NVDA: {
+    symbol: 'NVDA',
+    name: 'NVIDIA Corporation',
+    sector: 'Technology',
+    industry: 'Semiconductors',
+    marketCap: 2_900_000_000_000,
+    pe: 55.2,
+    pb: 48.0,
+    profitMargin: 0.55,
+    revenueGrowth: 0.72,
+    roe: 1.15,
+    debtToEquity: 0.25,
+    source: 'demo',
+  },
+  MSFT: {
+    symbol: 'MSFT',
+    name: 'Microsoft Corporation',
+    sector: 'Technology',
+    industry: 'Software',
+    marketCap: 3_100_000_000_000,
+    pe: 35.8,
+    pb: 12.4,
+    profitMargin: 0.36,
+    revenueGrowth: 0.14,
+    roe: 0.38,
+    debtToEquity: 0.45,
+    source: 'demo',
+  },
+};
+
+export function getDemoFundamentals(symbol: string): FundamentalSnapshot {
+  const upper = symbol.toUpperCase().trim();
+  if (demoFundamentals[upper]) return { ...demoFundamentals[upper] };
+  const h = hashSymbol(upper);
+  return {
+    symbol: upper,
+    name: `${upper} (demo)`,
+    sector: ['Technology', 'Healthcare', 'Industrials', 'Consumer'][h % 4],
+    industry: 'Demo industry',
+    marketCap: (10 + (h % 90)) * 1_000_000_000,
+    pe: 12 + (h % 28),
+    pb: 2 + (h % 10),
+    profitMargin: 0.04 + (h % 20) / 100,
+    revenueGrowth: -0.02 + (h % 18) / 100,
+    roe: 0.06 + (h % 25) / 100,
+    debtToEquity: 0.2 + (h % 15) / 10,
+    source: 'demo',
+  };
+}
+
+/** Demo headlines used when no Finnhub key is set. */
+export const demoNews: Record<string, NewsItem[]> = {
+  AAPL: [
+    {
+      id: 'demo-aapl-1',
+      headline: 'Apple suppliers see steady demand into next product cycle',
+      datetime: Math.floor(Date.now() / 1000) - 3600 * 8,
+      source: 'Demo Wire',
+    },
+    {
+      id: 'demo-aapl-2',
+      headline: 'Services growth remains the quiet stabilizer for Apple margins',
+      datetime: Math.floor(Date.now() / 1000) - 3600 * 26,
+      source: 'Demo Wire',
+    },
+  ],
+  NVDA: [
+    {
+      id: 'demo-nvda-1',
+      headline: 'Chip demand stays firm as AI infrastructure spending continues',
+      datetime: Math.floor(Date.now() / 1000) - 3600 * 5,
+      source: 'Demo Wire',
+    },
+    {
+      id: 'demo-nvda-2',
+      headline: 'Traders watch consolidation after recent breakout attempt',
+      datetime: Math.floor(Date.now() / 1000) - 3600 * 20,
+      source: 'Demo Wire',
+    },
+  ],
+  MSFT: [
+    {
+      id: 'demo-msft-1',
+      headline: 'Cloud backlog supports Microsoft quality-growth narrative',
+      datetime: Math.floor(Date.now() / 1000) - 3600 * 10,
+      source: 'Demo Wire',
+    },
+  ],
+};
+
+export function getDemoNews(symbol: string): NewsItem[] {
+  const upper = symbol.toUpperCase().trim();
+  if (demoNews[upper]) return demoNews[upper];
+  return [
+    {
+      id: `demo-${upper}-1`,
+      headline: `${upper} trading in a quiet stretch with no major catalyst headlines`,
+      datetime: Math.floor(Date.now() / 1000) - 3600 * 12,
+      source: 'Demo Wire',
+    },
+  ];
+}
