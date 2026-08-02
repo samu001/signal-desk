@@ -1,8 +1,11 @@
 import {
   avgVolume,
   closes,
+  ema,
+  emaSeries,
   hasHigherLow,
   hasRejectionWick,
+  isBreakOfHigh,
   isSmaRising,
   lastCompletedCandle,
   latestCandle,
@@ -70,6 +73,12 @@ const LABELS: Record<RuleCheckId, string> = {
   weekly_trend_ok: 'Weekly trend OK',
   sector_rs_ok: 'Sector relative strength OK',
   volatility_ok: 'Volatility band OK',
+  prior_day_high_break: 'Broke prior-day high',
+  ema_stack_bull: 'EMA 8>21>50 stack',
+  near_ema_21: 'Near 21 EMA',
+  twenty_day_high: '20-day high break',
+  volume_thrust_after_dryup: 'Thrust after volume dry-up',
+  mean_reclaim: 'Reclaim of 20-day mean',
 };
 
 export function evaluateCheck(
@@ -405,6 +414,118 @@ export function evaluateCheck(
         label: LABELS[id],
         verdict: gate.ok ? 'pass' : 'fail',
         detail: gate.detail,
+      };
+    }
+    case 'prior_day_high_break': {
+      if (candles.length < 2 || !last) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need prior daily bar' };
+      }
+      const prev = candles[candles.length - 2];
+      const ok = last.close > prev.high;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Close ${last.close.toFixed(2)} > prior high ${prev.high.toFixed(2)}`
+          : `Close still ≤ prior high ${prev.high.toFixed(2)}`,
+      };
+    }
+    case 'ema_stack_bull': {
+      const e8 = ema(closeSeries, 8);
+      const e21 = ema(closeSeries, 21);
+      const e50 = ema(closeSeries, 50);
+      if (e8 == null || e21 == null || e50 == null) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need ~50 bars for EMA stack' };
+      }
+      const series21 = emaSeries(closeSeries, 21);
+      const prev21 = series21[series21.length - 4];
+      const rising = prev21 != null && e21 > prev21;
+      const ok = e8 > e21 && e21 > e50 && rising;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: `EMA8 ${e8.toFixed(2)} / EMA21 ${e21.toFixed(2)} / EMA50 ${e50.toFixed(2)}${
+          rising ? '' : ' (21 not rising)'
+        }`,
+      };
+    }
+    case 'near_ema_21': {
+      const e21 = ema(closeSeries, 21);
+      if (price == null || e21 == null) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need EMA21' };
+      }
+      const dist = Math.abs(percentFrom(price, e21));
+      const ok = dist <= 1.5;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: `${dist.toFixed(1)}% from EMA21`,
+      };
+    }
+    case 'twenty_day_high': {
+      if (candles.length < 21) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need 21 daily bars' };
+      }
+      const ok = isBreakOfHigh(candles, 20);
+      const priorHigh = Math.max(...candles.slice(-21, -1).map((c) => c.high));
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Broke 20-day high ${priorHigh.toFixed(2)}`
+          : `Below 20-day high ${priorHigh.toFixed(2)}`,
+      };
+    }
+    case 'volume_thrust_after_dryup': {
+      if (candles.length < 8 || lastVol == null || avgVol20 == null || !last) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need volume history' };
+      }
+      const pullback = candles.slice(-6, -1);
+      const dryBars = pullback.filter((c) => c.volume <= avgVol20 * 0.9).length;
+      const upDay = last.close > last.open && last.close > candles[candles.length - 2].close;
+      const thrust = lastVol >= avgVol20 * 1.25;
+      const ok = dryBars >= 2 && upDay && thrust;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Dry-up (${dryBars}/5) then thrust vol`
+          : `Dry bars ${dryBars}/5 · up ${upDay} · thrust ${thrust}`,
+      };
+    }
+    case 'mean_reclaim': {
+      if (candles.length < 25 || price == null) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need 20-day mean history' };
+      }
+      const maNow = sma(closeSeries, 20);
+      if (maNow == null) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'SMA20 unavailable' };
+      }
+      const aboveNow = price > maNow;
+      let wasBelow = false;
+      for (let i = candles.length - 6; i < candles.length - 1; i++) {
+        if (i < 20) continue;
+        const maThen = sma(closeSeries.slice(0, i + 1), 20);
+        if (maThen != null && candles[i].close < maThen) {
+          wasBelow = true;
+          break;
+        }
+      }
+      const ok = aboveNow && wasBelow;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? 'Reclaimed SMA20 after recent dip below'
+          : aboveNow
+            ? 'Above SMA20 but no recent dip below'
+            : 'Still below SMA20',
       };
     }
     default:

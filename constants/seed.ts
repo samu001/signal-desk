@@ -202,6 +202,110 @@ export const defaultSetups: Setup[] = [
       'Stop distance and size are still calculated',
     ],
   },
+  {
+    id: 'setup-prior-day-high',
+    name: 'Prior-Day High Break',
+    summary: 'Buy when price closes above yesterday’s high with expanding volume.',
+    entryRules: [
+      'Close breaks above the prior session high',
+      'Volume expands vs the 20-day average',
+      'Avoid chasing already-extended spikes',
+    ],
+    entryChecks: [
+      'prior_day_high_break',
+      'volume_expanding',
+      'not_chasing_extension',
+      'session_tradable',
+    ],
+    exitRules: [
+      'Stop under the signal-day low or prior-day low',
+      'Take first profits near 2R',
+      'Exit if price closes back below the broken high',
+    ],
+    checklist: [
+      'Prior-day high is marked before entry',
+      'I am not chasing a vertical open',
+    ],
+  },
+  {
+    id: 'setup-ema-stack',
+    name: 'EMA Stack Pullback',
+    summary: 'Buy a touch of the 21 EMA only when 8 > 21 > 50 and the 21 is rising.',
+    entryRules: [
+      'Bullish EMA stack: 8 above 21 above 50',
+      '21 EMA is rising',
+      'Price is within ~1.5% of the 21 EMA (pullback entry)',
+    ],
+    entryChecks: ['ema_stack_bull', 'near_ema_21', 'session_tradable'],
+    exitRules: [
+      'Stop under the 50 EMA or recent swing low',
+      'Target about 2R or trail under the 21 EMA',
+    ],
+    checklist: [
+      'Stack is intact — not fighting a rolling-over 21',
+      'Entry is a pullback, not a chase above the 8',
+    ],
+  },
+  {
+    id: 'setup-rs-breakout',
+    name: 'RS Breakout',
+    summary: 'Buy a 20-day high only when the stock is also beating SPY.',
+    entryRules: [
+      'Close breaks the 20-day high',
+      '20-day relative strength vs SPY is non-negative',
+      'Prefer expanding volume on the break',
+    ],
+    entryChecks: ['twenty_day_high', 'rs_vs_spy', 'volume_expanding', 'session_tradable'],
+    exitRules: [
+      'Stop under the breakout bar low or prior swing',
+      'Scale out near 2R',
+      'Full exit if the breakout level fails on a closing basis',
+    ],
+    checklist: [
+      'RS confirms leadership — not a weak market breakout',
+      'Stop and size are defined before the break',
+    ],
+  },
+  {
+    id: 'setup-dryup-thrust',
+    name: 'Dry-Up Thrust',
+    summary: 'Buy a volume thrust after a quiet multi-day dry-up in an upswing.',
+    entryRules: [
+      'Recent sessions show drying volume',
+      'Signal day is an up day with volume expansion',
+      'Prefer this after a short pause, not a free-fall',
+    ],
+    entryChecks: ['volume_thrust_after_dryup', 'above_sma_20', 'session_tradable'],
+    exitRules: [
+      'Stop under the thrust-day low',
+      'Take profits near 2R',
+      'Exit if the thrust fails and closes back into the dry-up range',
+    ],
+    checklist: [
+      'Dry-up was a pause, not distribution',
+      'Thrust volume is clearly above average',
+    ],
+  },
+  {
+    id: 'setup-mean-reclaim',
+    name: 'Mean Reclaim',
+    summary: 'Buy the reclaim of the 20-day average after a brief dip below it.',
+    entryRules: [
+      'Price recently closed below the 20-day average',
+      'Latest close is back above the 20-day average',
+      'Use the reclaim as confirmation, not anticipation',
+    ],
+    entryChecks: ['mean_reclaim', 'above_sma_20', 'session_tradable'],
+    exitRules: [
+      'Stop under the dip low beneath the average',
+      'Target about 2R or the prior swing high',
+      'Time stop if it fails back below the average quickly',
+    ],
+    checklist: [
+      'This is a reclaim, not a catch-a-falling-knife far below the mean',
+      'Invalidation under the dip is defined',
+    ],
+  },
 ];
 
 export const defaultWatchlist: WatchlistItem[] = [

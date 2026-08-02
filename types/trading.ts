@@ -23,6 +23,12 @@ export type RuleCheckId =
   | 'weekly_trend_ok'
   | 'sector_rs_ok'
   | 'volatility_ok'
+  | 'prior_day_high_break'
+  | 'ema_stack_bull'
+  | 'near_ema_21'
+  | 'twenty_day_high'
+  | 'volume_thrust_after_dryup'
+  | 'mean_reclaim'
 
 export type Setup = {
   id: string;

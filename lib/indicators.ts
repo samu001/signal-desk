@@ -6,6 +6,39 @@ export function sma(values: number[], period: number): number | null {
   return slice.reduce((a, b) => a + b, 0) / period;
 }
 
+/** Exponential moving average (seeded with SMA). */
+export function ema(values: number[], period: number): number | null {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let value = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i++) {
+    value = values[i] * k + value * (1 - k);
+  }
+  return value;
+}
+
+/** EMA series aligned to input length (nulls until warm). */
+export function emaSeries(values: number[], period: number): Array<number | null> {
+  const out: Array<number | null> = values.map(() => null);
+  if (values.length < period) return out;
+  const k = 2 / (period + 1);
+  let value = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out[period - 1] = value;
+  for (let i = period; i < values.length; i++) {
+    value = values[i] * k + value * (1 - k);
+    out[i] = value;
+  }
+  return out;
+}
+
+/** True when latest close is at/above the highest high of the prior `lookback` bars. */
+export function isBreakOfHigh(candles: Candle[], lookback = 20): boolean {
+  if (candles.length < lookback + 1) return false;
+  const last = candles[candles.length - 1];
+  const priorHigh = Math.max(...candles.slice(-(lookback + 1), -1).map((c) => c.high));
+  return last.close >= priorHigh;
+}
+
 /** Average True Range over `period` completed bars. */
 export function atr(candles: Candle[], period = 14): number | null {
   if (candles.length < period + 1) return null;

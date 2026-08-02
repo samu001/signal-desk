@@ -1,4 +1,4 @@
-import { closes, sma } from '@/lib/indicators';
+import { closes, ema, sma } from '@/lib/indicators';
 import { Candle, Setup, WatchlistItem } from '@/types/trading';
 
 /** Structure-based entry/stop/target for a playbook setup. */
@@ -11,11 +11,20 @@ export function levelsForSetup(
   const swingLow = Math.min(...window.map((c) => c.low));
   const swingHigh = Math.max(...window.map((c) => c.high));
   const sma20 = sma(closes(history), 20) ?? price;
+  const ema21 = ema(closes(history), 21) ?? sma20;
 
-  if (setup.id.includes('breakout') || setup.id.includes('momentum-gap')) {
+  if (
+    setup.id.includes('breakout') ||
+    setup.id.includes('momentum-gap') ||
+    setup.id.includes('prior-day-high') ||
+    setup.id.includes('rs-breakout') ||
+    setup.id.includes('dryup-thrust')
+  ) {
     const level = setup.id.includes('momentum-gap')
       ? Math.max(price * 0.995, swingHigh * 0.98)
-      : swingHigh;
+      : setup.id.includes('prior-day-high') && history.length >= 2
+        ? history[history.length - 2].high
+        : swingHigh;
     const stop = Math.min(swingLow, level * 0.97);
     const entry = Math.max(price, level * 0.99);
     const risk = Math.max(entry - stop, entry * 0.01);
@@ -27,7 +36,11 @@ export function levelsForSetup(
     };
   }
 
-  if (setup.id.includes('mean-reversion') || setup.id.includes('rsi-oversold')) {
+  if (
+    setup.id.includes('mean-reversion') ||
+    setup.id.includes('rsi-oversold') ||
+    setup.id.includes('mean-reclaim')
+  ) {
     const stop = swingLow * 0.99;
     const risk = Math.max(price - stop, price * 0.01);
     return {
@@ -35,6 +48,17 @@ export function levelsForSetup(
       entryHigh: Math.max(sma20 * 1.01, price * 1.005),
       stop,
       target: Math.max(sma20, price + risk),
+    };
+  }
+
+  if (setup.id.includes('ema-stack')) {
+    const stop = Math.min(swingLow, ema21 * 0.97);
+    const risk = Math.max(price - stop, price * 0.012);
+    return {
+      entryLow: ema21 * 0.985,
+      entryHigh: ema21 * 1.015,
+      stop,
+      target: price + 2 * risk,
     };
   }
 
