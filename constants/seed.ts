@@ -337,6 +337,14 @@ export const demoCandles: Record<string, Candle[]> = {
       volume: 70_000_000,
     }))
   ),
+  // Tech-heavy benchmark for regime confirmation (mirrors SPY uptrend offline).
+  QQQ: buildSeries(
+    430,
+    Array.from({ length: 60 }, (_, i) => ({
+      close: 430 + i * 0.55,
+      volume: 45_000_000,
+    }))
+  ),
 };
 
 function hashSymbol(symbol: string): number {

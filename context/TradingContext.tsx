@@ -54,6 +54,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const [candles, setCandles] = useState<Record<string, Candle[]>>({});
   const [news, setNews] = useState<Record<string, NewsItem[]>>({});
   const [fundamentals, setFundamentals] = useState<Record<string, FundamentalSnapshot>>({});
+  const [earningsDates, setEarningsDates] = useState<Record<string, string[]>>({});
   const [dataSource, setDataSource] = useState<CandleSource | 'mixed'>('demo');
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [quotesLoading, setQuotesLoading] = useState(false);
@@ -102,6 +103,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       setCandles(bundle.candles);
       setNews(bundle.news);
       setFundamentals(bundle.fundamentals);
+      setEarningsDates(bundle.earningsDates);
       setDataSource(bundle.sourceSummary);
       setDataWarnings(bundle.warnings);
     } finally {
@@ -211,10 +213,11 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     return buildCandidates(state.watchlist, state.setups, quotes, {
       candles,
       news,
+      earningsDates,
       trades: state.trades,
       session,
     });
-  }, [state, quotes, candles, news, session]);
+  }, [state, quotes, candles, news, earningsDates, session]);
 
   const actionable = useMemo(() => actionableCandidates(candidates), [candidates]);
 

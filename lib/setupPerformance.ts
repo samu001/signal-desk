@@ -34,7 +34,8 @@ function setupPasses(
   setup: Setup,
   symbol: string,
   history: Candle[],
-  spyHistory: Candle[]
+  spyHistory: Candle[],
+  options?: { qqqCandles?: Candle[]; earningsDates?: string[] }
 ): boolean {
   if (history.length < 40) return false;
   const levels = levelsForSetup(setup, history);
@@ -49,11 +50,16 @@ function setupPasses(
   };
   const candle = history[history.length - 1];
   const prev = history[history.length - 2];
+  const qqqFull = options?.qqqCandles ?? [];
+  const qqqHistory = qqqFull.length >= history.length ? qqqFull.slice(0, history.length) : qqqFull;
   const results = evaluateSetupRules(setup, {
     item,
     quote: quoteFrom(symbol, candle, prev),
     candles: history,
     spyCandles: spyHistory,
+    qqqCandles: qqqHistory,
+    earningsDates: options?.earningsDates,
+    asOfTime: candle.time,
     news: [],
     session: {
       phase: 'rth',
@@ -77,6 +83,8 @@ export function scoreRecentSetupPerformance(input: {
   setups: Setup[];
   candles: Candle[];
   spyCandles: Candle[];
+  qqqCandles?: Candle[];
+  earningsDates?: string[];
 }): RecentSetupPerf[] {
   const { symbol, setups, candles, spyCandles } = input;
   const end = candles.length - FORWARD - 1;
@@ -91,7 +99,13 @@ export function scoreRecentSetupPerformance(input: {
       const history = candles.slice(0, i + 1);
       const spyHistory =
         spyCandles.length >= history.length ? spyCandles.slice(0, i + 1) : spyCandles;
-      if (!setupPasses(setup, symbol, history, spyHistory)) continue;
+      if (
+        !setupPasses(setup, symbol, history, spyHistory, {
+          qqqCandles: input.qqqCandles,
+          earningsDates: input.earningsDates,
+        })
+      )
+        continue;
       signals += 1;
       const levels = levelsForSetup(setup, history);
       const entry = candles[i + 1]?.open ?? history[history.length - 1].close;

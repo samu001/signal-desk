@@ -135,7 +135,7 @@ export async function fetchFmpFundamentalsBundle(
 
   // Keep sequential-ish batches small to respect free daily caps.
   for (const symbol of unique) {
-    if (symbol === 'SPY') continue;
+    if (symbol === 'SPY' || symbol === 'QQQ') continue;
     const snap = await fetchFmpFundamentals(symbol, apiKey);
     if (snap) fundamentals[symbol] = snap;
   }

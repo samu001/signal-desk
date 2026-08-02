@@ -14,10 +14,14 @@ import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { BacktestResult, runBacktest } from '@/lib/backtest';
 import { fetchDailyCandlesResolved } from '@/lib/candles';
+import { fetchEarningsDates } from '@/lib/finnhub';
+import { CombinedPlaybookResult, runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
 
 function formatDate(ts: number) {
   return new Date(ts * 1000).toLocaleDateString();
 }
+
+type Mode = 'setup' | 'combined';
 
 export default function BacktestScreen() {
   const { setupId, symbol: symbolParam } = useLocalSearchParams<{
@@ -30,8 +34,10 @@ export default function BacktestScreen() {
   const defaultSymbol = symbolParam || watchlist[0]?.symbol || 'AAPL';
   const [symbol, setSymbol] = useState(defaultSymbol);
   const [selectedSetupId, setSelectedSetupId] = useState(setup?.id ?? '');
+  const [mode, setMode] = useState<Mode>('combined');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
+  const [combined, setCombined] = useState<CombinedPlaybookResult | null>(null);
 
   const activeSetup = useMemo(
     () => setups.find((s) => s.id === selectedSetupId) ?? setup,
@@ -39,12 +45,13 @@ export default function BacktestScreen() {
   );
 
   const run = async () => {
-    if (!activeSetup) return;
+    if (mode === 'setup' && !activeSetup) return;
     setLoading(true);
+    setResult(null);
+    setCombined(null);
     try {
       const upper = symbol.toUpperCase().trim() || 'AAPL';
       // Short fetch: ~140 calendar days ≈ SMA50 warmup + last ~30 trading days to score.
-      // Still one API call per symbol; smaller than the old 800-day pull.
       const keys = {
         tiingoApiKey: settings.tiingoApiKey || undefined,
         fmpApiKey: settings.fmpApiKey || undefined,
@@ -52,29 +59,93 @@ export default function BacktestScreen() {
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
         days: 140,
       };
-      const [symbolBars, spyBars] = await Promise.all([
+      const [symbolBars, spyBars, qqqBars] = await Promise.all([
         fetchDailyCandlesResolved(upper, keys),
         fetchDailyCandlesResolved('SPY', keys),
+        fetchDailyCandlesResolved('QQQ', keys),
       ]);
 
-      // Prefer freshly fetched bars; fall back to in-memory cache.
       const useSymbol = symbolBars.candles.length ? symbolBars.candles : candles[upper] ?? [];
       const useSpy = spyBars.candles.length ? spyBars.candles : candles.SPY ?? [];
+      const useQqq = qqqBars.candles.length ? qqqBars.candles : candles.QQQ ?? [];
 
-      const next = runBacktest({
-        setup: activeSetup,
-        symbol: upper,
-        candles: useSymbol,
-        spyCandles: useSpy,
-        sourceLabel: symbolBars.source,
-        warnings: [...symbolBars.warnings, ...spyBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha'))],
-        evalBars: 30,
-      });
-      setResult(next);
+      const first = useSymbol[0]?.time;
+      const last = useSymbol[useSymbol.length - 1]?.time;
+      const from = first
+        ? new Date(first * 1000).toISOString().slice(0, 10)
+        : new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10);
+      const to = last
+        ? new Date(last * 1000 + 2 * 86400000).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10);
+      const earningsDates = await fetchEarningsDates(
+        upper,
+        settings.finnhubApiKey || undefined,
+        from,
+        to
+      );
+
+      const warnings = [
+        ...symbolBars.warnings,
+        ...spyBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha')),
+        ...qqqBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha')),
+      ];
+      if (!earningsDates.length && settings.finnhubApiKey) {
+        warnings.push('No earnings dates returned for this window (blackout unchecked).');
+      } else if (!settings.finnhubApiKey) {
+        warnings.push('Add a Finnhub key to enable earnings blackout in backtests.');
+      }
+
+      if (mode === 'combined') {
+        setCombined(
+          runCombinedPlaybookBacktest({
+            symbol: upper,
+            setups,
+            candles: useSymbol,
+            spyCandles: useSpy,
+            qqqCandles: useQqq,
+            earningsDates,
+            sourceLabel: symbolBars.source,
+            warnings,
+            evalBars: 30,
+          })
+        );
+      } else if (activeSetup) {
+        setResult(
+          runBacktest({
+            setup: activeSetup,
+            symbol: upper,
+            candles: useSymbol,
+            spyCandles: useSpy,
+            qqqCandles: useQqq,
+            earningsDates,
+            sourceLabel: symbolBars.source,
+            warnings,
+            evalBars: 30,
+          })
+        );
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  const displayTrades = combined?.trades ?? result?.trades ?? [];
+  const displayWin = combined?.winRate ?? result?.winRate ?? null;
+  const displayAvg = combined?.avgR ?? result?.avgR ?? null;
+  const displayDd = result?.maxDrawdownR ?? null;
+  const displayNotes = combined?.notes ?? result?.notes ?? [];
+  const displayWarnings = combined?.warnings ?? result?.warnings ?? [];
+  const displayTitle = combined
+    ? `Combined playbook · ${combined.symbol}`
+    : result
+      ? `${result.setupName} · ${result.symbol}`
+      : '';
+  const displaySource = combined?.sourceLabel ?? result?.sourceLabel ?? '';
+  const displayMeta = combined
+    ? `${combined.trades.length} trades · ${combined.skippedOverlaps} overlaps skipped`
+    : result
+      ? `${result.barsUsed} bars · warmup ${result.warmupBars} · ${result.trades.length} trades`
+      : '';
 
   return (
     <Screen>
@@ -82,22 +153,44 @@ export default function BacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Setup backtest (last ~30 trading days)"
-          subtitle="Scores only the last ~30 trading days (keeps a little extra history for moving averages). One light API pull per symbol."
+          subtitle="Scores the last ~30 trading days with market-regime + earnings gates. Combined mode keeps one best setup per day."
         />
 
-        <Text style={styles.fieldLabel}>Setup</Text>
+        <Text style={styles.fieldLabel}>Mode</Text>
         <View style={styles.setupRow}>
-          {setups.map((s) => (
-            <Pressable
-              key={s.id}
-              onPress={() => setSelectedSetupId(s.id)}
-              style={[styles.chip, selectedSetupId === s.id && styles.chipOn]}>
-              <Text style={[styles.chipText, selectedSetupId === s.id && styles.chipTextOn]}>
-                {s.name}
-              </Text>
-            </Pressable>
-          ))}
+          <Pressable
+            onPress={() => setMode('combined')}
+            style={[styles.chip, mode === 'combined' && styles.chipOn]}>
+            <Text style={[styles.chipText, mode === 'combined' && styles.chipTextOn]}>
+              Combined (de-duped)
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setMode('setup')}
+            style={[styles.chip, mode === 'setup' && styles.chipOn]}>
+            <Text style={[styles.chipText, mode === 'setup' && styles.chipTextOn]}>
+              Single setup
+            </Text>
+          </Pressable>
         </View>
+
+        {mode === 'setup' ? (
+          <>
+            <Text style={styles.fieldLabel}>Setup</Text>
+            <View style={styles.setupRow}>
+              {setups.map((s) => (
+                <Pressable
+                  key={s.id}
+                  onPress={() => setSelectedSetupId(s.id)}
+                  style={[styles.chip, selectedSetupId === s.id && styles.chipOn]}>
+                  <Text style={[styles.chipText, selectedSetupId === s.id && styles.chipTextOn]}>
+                    {s.name}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </>
+        ) : null}
 
         <Field
           label="Symbol"
@@ -111,51 +204,55 @@ export default function BacktestScreen() {
         {loading ? (
           <View style={styles.loading}>
             <ActivityIndicator color={palette.moss} />
-            <Text style={styles.loadingText}>Fetching bars (sequential to respect rate limits)…</Text>
+            <Text style={styles.loadingText}>
+              Fetching bars + earnings (SPY/QQQ regime checks)…
+            </Text>
           </View>
         ) : null}
 
-        {result ? (
+        {result || combined ? (
           <View style={styles.results}>
             <View style={styles.resultHead}>
-              <Text style={styles.resultTitle}>
-                {result.setupName} · {result.symbol}
-              </Text>
+              <Text style={styles.resultTitle}>{displayTitle}</Text>
               <Pill
-                label={result.sourceLabel}
-                tone={result.sourceLabel === 'demo' ? 'warn' : 'good'}
+                label={displaySource}
+                tone={displaySource === 'demo' ? 'warn' : 'good'}
               />
             </View>
 
-            <Text style={styles.meta}>
-              {result.barsUsed} bars · warmup {result.warmupBars} · {result.trades.length} trades
-            </Text>
+            <Text style={styles.meta}>{displayMeta}</Text>
 
             <View style={styles.stats}>
               <View style={styles.stat}>
                 <Text style={styles.statLabel}>Win rate</Text>
                 <Text style={styles.statValue}>
-                  {result.winRate == null ? '—' : `${Math.round(result.winRate * 100)}%`}
+                  {displayWin == null ? '—' : `${Math.round(displayWin * 100)}%`}
                 </Text>
               </View>
               <View style={styles.stat}>
                 <Text style={styles.statLabel}>Avg R</Text>
                 <Text style={styles.statValue}>
-                  {result.avgR == null ? '—' : result.avgR.toFixed(2)}
+                  {displayAvg == null ? '—' : displayAvg.toFixed(2)}
                 </Text>
               </View>
               <View style={styles.stat}>
-                <Text style={styles.statLabel}>Max DD (R)</Text>
+                <Text style={styles.statLabel}>
+                  {combined ? 'Skipped' : 'Max DD (R)'}
+                </Text>
                 <Text style={styles.statValue}>
-                  {result.maxDrawdownR == null ? '—' : result.maxDrawdownR.toFixed(2)}
+                  {combined
+                    ? String(combined.skippedOverlaps)
+                    : displayDd == null
+                      ? '—'
+                      : displayDd.toFixed(2)}
                 </Text>
               </View>
             </View>
 
-            {result.warnings.length ? (
+            {displayWarnings.length ? (
               <View style={styles.warnBox}>
                 <Text style={styles.warnTitle}>Data / API notes</Text>
-                {result.warnings.map((w) => (
+                {displayWarnings.map((w) => (
                   <Text key={w} style={styles.warnItem}>
                     • {w}
                   </Text>
@@ -164,41 +261,46 @@ export default function BacktestScreen() {
             ) : null}
 
             <View style={styles.noteBox}>
-              {result.notes.map((n) => (
+              {displayNotes.map((n) => (
                 <Text key={n} style={styles.noteItem}>
                   • {n}
                 </Text>
               ))}
             </View>
 
-            {result.trades.length === 0 ? (
+            {displayTrades.length === 0 ? (
               <EmptyState
                 title="No trades fired"
                 body="Rules never reached the pass threshold on this sample, or history is too short."
               />
             ) : (
-              result.trades
+              displayTrades
                 .slice()
                 .reverse()
-                .map((t, idx) => (
-                  <View key={`${t.entryTime}-${idx}`} style={styles.trade}>
-                    <Text style={styles.tradeTitle}>
-                      {formatDate(t.entryTime)} → {formatDate(t.exitTime)} · {t.reason}
-                    </Text>
-                    <Text style={styles.tradeMeta}>
-                      Entry {t.entry.toFixed(2)} · Exit {t.exit.toFixed(2)} · Stop {t.stop.toFixed(2)} ·
-                      Target {t.target.toFixed(2)}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.tradeR,
-                        { color: t.rMultiple >= 0 ? palette.leaf : palette.danger },
-                      ]}>
-                      {t.rMultiple >= 0 ? '+' : ''}
-                      {t.rMultiple.toFixed(2)}R
-                    </Text>
-                  </View>
-                ))
+                .map((t, idx) => {
+                  const setupName =
+                    'setupName' in t && typeof t.setupName === 'string' ? t.setupName : null;
+                  return (
+                    <View key={`${t.entryTime}-${idx}`} style={styles.trade}>
+                      <Text style={styles.tradeTitle}>
+                        {formatDate(t.entryTime)} → {formatDate(t.exitTime)} · {t.reason}
+                        {setupName ? ` · ${setupName}` : ''}
+                      </Text>
+                      <Text style={styles.tradeMeta}>
+                        Entry {t.entry.toFixed(2)} · Exit {t.exit.toFixed(2)} · Stop{' '}
+                        {t.stop.toFixed(2)} · Target {t.target.toFixed(2)}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.tradeR,
+                          { color: t.rMultiple >= 0 ? palette.leaf : palette.danger },
+                        ]}>
+                        {t.rMultiple >= 0 ? '+' : ''}
+                        {t.rMultiple.toFixed(2)}R
+                      </Text>
+                    </View>
+                  );
+                })
             )}
           </View>
         ) : null}

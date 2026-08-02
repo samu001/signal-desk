@@ -17,7 +17,9 @@ export type RuleCheckId =
   | 'rejection_wick'
   | 'no_negative_catalyst'
   | 'rs_vs_spy'
-  | 'session_tradable';
+  | 'session_tradable'
+  | 'market_regime_ok'
+  | 'earnings_clear'
 
 export type Setup = {
   id: string;

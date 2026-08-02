@@ -127,6 +127,7 @@ export function buildCandidates(
   options?: {
     candles?: Record<string, Candle[]>;
     news?: Record<string, NewsItem[]>;
+    earningsDates?: Record<string, string[]>;
     trades?: Trade[];
     session?: SessionInfo;
   }
@@ -134,68 +135,94 @@ export function buildCandidates(
   const setupMap = Object.fromEntries(setups.map((s) => [s.id, s]));
   const candles = options?.candles ?? {};
   const news = options?.news ?? {};
+  const earningsDates = options?.earningsDates ?? {};
   const trades = options?.trades ?? [];
   const session = options?.session ?? getUsEquitySession();
   const expectancies = expectancyMap(setups, trades);
   const spyCandles = candles.SPY ?? [];
+  const qqqCandles = candles.QQQ ?? [];
 
   const useLatestClose =
     session.phase === 'afterhours' || session.phase === 'closed' || session.phase === 'weekend';
 
-  return watchlist
-    .map((item) => {
-      const quote = quotes[item.symbol.toUpperCase()] ?? null;
-      const symbolCandles = candles[item.symbol.toUpperCase()] ?? [];
-      const completed = useLatestClose
-        ? symbolCandles[symbolCandles.length - 1] ?? null
-        : lastCompletedCandle(symbolCandles);
-      const referenceClose = completed?.close ?? quote?.previousClose ?? null;
-      const zone = zoneStatus(item, quote?.price ?? null, referenceClose);
-      const setup = item.setupId ? setupMap[item.setupId] ?? null : null;
-      const rules = evaluateSetupRules(setup, {
-        item,
-        quote,
-        candles: symbolCandles,
-        spyCandles,
-        news: news[item.symbol.toUpperCase()] ?? [],
-        session,
-      });
-      const scored = scoreRuleResults(rules);
-      const expectancy = setup ? expectancies[setup.id] ?? null : null;
+  const scoredItems = watchlist.map((item) => {
+    const quote = quotes[item.symbol.toUpperCase()] ?? null;
+    const symbolCandles = candles[item.symbol.toUpperCase()] ?? [];
+    const completed = useLatestClose
+      ? symbolCandles[symbolCandles.length - 1] ?? null
+      : lastCompletedCandle(symbolCandles);
+    const referenceClose = completed?.close ?? quote?.previousClose ?? null;
+    const zone = zoneStatus(item, quote?.price ?? null, referenceClose);
+    const setup = item.setupId ? setupMap[item.setupId] ?? null : null;
+    const rules = evaluateSetupRules(setup, {
+      item,
+      quote,
+      candles: symbolCandles,
+      spyCandles,
+      qqqCandles,
+      news: news[item.symbol.toUpperCase()] ?? [],
+      earningsDates: earningsDates[item.symbol.toUpperCase()] ?? [],
+      session,
+    });
+    const scored = scoreRuleResults(rules);
+    const expectancy = setup ? expectancies[setup.id] ?? null : null;
 
-      // Promote to ready when in/near zone and rules mostly pass.
-      let status = zone.status;
-      let label = zone.label;
-      if (
-        (status === 'in_zone' || status === 'near_zone') &&
-        scored.passRate >= 0.7 &&
-        scored.failed === 0
-      ) {
-        status = 'ready';
-        label = 'Ready — rules passing';
-      } else if (status === 'in_zone' && scored.failed > 0) {
-        label = `In zone · ${scored.failed} rule${scored.failed === 1 ? '' : 's'} failing`;
+    // Promote to ready when in/near zone and rules mostly pass.
+    let status = zone.status;
+    let label = zone.label;
+    if (
+      (status === 'in_zone' || status === 'near_zone') &&
+      scored.passRate >= 0.7 &&
+      scored.failed === 0
+    ) {
+      status = 'ready';
+      label = 'Ready — rules passing';
+    } else if (status === 'in_zone' && scored.failed > 0) {
+      label = `In zone · ${scored.failed} rule${scored.failed === 1 ? '' : 's'} failing`;
+    }
+
+    const zoneBoost =
+      status === 'ready' ? 1 : status === 'in_zone' ? 0.85 : status === 'near_zone' ? 0.55 : status === 'watching' ? 0.2 : 0;
+    const readiness =
+      zoneBoost * 0.55 + scored.passRate * 0.35 + Math.max(0, expectancy?.score ?? 0) * 0.1;
+
+    return {
+      item,
+      setup,
+      quote,
+      status,
+      distanceToZonePct: zone.distanceToZonePct,
+      label,
+      rules,
+      passRate: scored.passRate,
+      readiness,
+      expectancy,
+      closeInvalidated: zone.closeInvalidated,
+      stopThreatened: zone.stopThreatened,
+    } satisfies Candidate;
+  });
+
+  // De-dupe: one best actionable candidate per ticker (highest readiness wins).
+  const bestBySymbol = new Map<string, Candidate>();
+  for (const c of scoredItems) {
+    const key = c.item.symbol.toUpperCase();
+    const prev = bestBySymbol.get(key);
+    if (!prev || c.readiness > prev.readiness) bestBySymbol.set(key, c);
+  }
+  const winners = new Set([...bestBySymbol.values()].map((c) => c.item.id));
+
+  return scoredItems
+    .map((c) => {
+      if (winners.has(c.item.id)) return c;
+      // Demote overlapping same-ticker rows so Today shows one primary plan.
+      if (c.status === 'ready' || c.status === 'in_zone' || c.status === 'near_zone') {
+        return {
+          ...c,
+          status: 'watching' as const,
+          label: `Overlap — prefer ${bestBySymbol.get(c.item.symbol.toUpperCase())?.setup?.name ?? 'top setup'}`,
+        };
       }
-
-      const zoneBoost =
-        status === 'ready' ? 1 : status === 'in_zone' ? 0.85 : status === 'near_zone' ? 0.55 : status === 'watching' ? 0.2 : 0;
-      const readiness =
-        zoneBoost * 0.55 + scored.passRate * 0.35 + Math.max(0, expectancy?.score ?? 0) * 0.1;
-
-      return {
-        item,
-        setup,
-        quote,
-        status,
-        distanceToZonePct: zone.distanceToZonePct,
-        label,
-        rules,
-        passRate: scored.passRate,
-        readiness,
-        expectancy,
-        closeInvalidated: zone.closeInvalidated,
-        stopThreatened: zone.stopThreatened,
-      };
+      return c;
     })
     .sort((a, b) => {
       const rank: Record<CandidateStatus, number> = {

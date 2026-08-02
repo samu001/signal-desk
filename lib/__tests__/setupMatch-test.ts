@@ -9,6 +9,7 @@ describe('matchPlaybookSetups', () => {
       quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
       candles: demoCandles.AAPL,
       spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
       news: getDemoNews('AAPL'),
     });
     expect(matches.length).toBe(defaultSetups.length);

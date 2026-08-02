@@ -129,6 +129,32 @@ export type EarningsWindow = {
   detail: string;
 };
 
+/** Historical earnings dates (YYYY-MM-DD) from Finnhub calendar for Playbook blackout. */
+export async function fetchEarningsDates(
+  symbol: string,
+  apiKey: string | undefined,
+  fromDate: string,
+  toDate: string
+): Promise<string[]> {
+  const upper = symbol.toUpperCase().trim();
+  if (!apiKey || !upper) return [];
+
+  try {
+    const url = `${FINNHUB_BASE}/calendar/earnings?from=${fromDate}&to=${toDate}&symbol=${encodeURIComponent(upper)}&token=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      earningsCalendar?: Array<{ date?: string; symbol?: string }>;
+    };
+    const rows = (data.earningsCalendar ?? []).filter(
+      (r) => (r.symbol ?? '').toUpperCase() === upper && r.date
+    );
+    return [...new Set(rows.map((r) => String(r.date).slice(0, 10)))].sort();
+  } catch {
+    return [];
+  }
+}
+
 /** Next earnings date near today (Finnhub calendar). Blocks Desk buys inside ±1 day. */
 export async function fetchEarningsWindow(
   symbol: string,
@@ -142,28 +168,19 @@ export async function fetchEarningsWindow(
     const from = new Date(today.getTime() - 2 * 86400000);
     const to = new Date(today.getTime() + 14 * 86400000);
     const fmt = (d: Date) => d.toISOString().slice(0, 10);
-    const url = `${FINNHUB_BASE}/calendar/earnings?from=${fmt(from)}&to=${fmt(to)}&symbol=${encodeURIComponent(upper)}&token=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      earningsCalendar?: Array<{ date?: string; symbol?: string }>;
-    };
-    const rows = (data.earningsCalendar ?? []).filter(
-      (r) => (r.symbol ?? '').toUpperCase() === upper && r.date
-    );
-    if (!rows.length) return null;
-    rows.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    const next = rows[0];
-    const earnDate = new Date(`${next.date}T12:00:00Z`);
+    const dates = await fetchEarningsDates(upper, apiKey, fmt(from), fmt(to));
+    if (!dates.length) return null;
+    const next = dates[0];
+    const earnDate = new Date(`${next}T12:00:00Z`);
     const daysUntil = Math.round((earnDate.getTime() - today.getTime()) / 86400000);
     const blocked = daysUntil >= -1 && daysUntil <= 1;
     return {
-      date: String(next.date),
+      date: next,
       daysUntil,
       blocked,
       detail: blocked
-        ? `Earnings ${next.date} is inside the ±1 day blackout`
-        : `Next earnings ${next.date} (~${daysUntil}d)`,
+        ? `Earnings ${next} is inside the ±1 day blackout`
+        : `Next earnings ${next} (~${daysUntil}d)`,
     };
   } catch {
     return null;
@@ -212,12 +229,16 @@ export async function fetchCompanyNews(
   }
 }
 
+const BENCHMARKS = new Set(['SPY', 'QQQ']);
+
 export type MarketBundle = {
   quotes: Record<string, Quote>;
   candles: Record<string, Candle[]>;
   candleSources: Record<string, CandleSource>;
   news: Record<string, NewsItem[]>;
   fundamentals: Record<string, FundamentalSnapshot>;
+  /** Near-term earnings dates per symbol (YYYY-MM-DD) for Playbook blackout. */
+  earningsDates: Record<string, string[]>;
   sourceSummary: CandleSource | 'mixed';
   warnings: string[];
 };
@@ -227,7 +248,9 @@ export async function fetchMarketBundle(
   options?: CandleApiOptions
 ): Promise<MarketBundle> {
   const apiKey = options?.finnhubApiKey;
-  const unique = [...new Set([...symbols.map((s) => s.toUpperCase().trim()), 'SPY'].filter(Boolean))];
+  const unique = [
+    ...new Set([...symbols.map((s) => s.toUpperCase().trim()), 'SPY', 'QQQ'].filter(Boolean)),
+  ];
   const quotes = await fetchQuotes(unique, apiKey);
 
   const bundle = await fetchCandleBundle(unique, {
@@ -235,13 +258,13 @@ export async function fetchMarketBundle(
     days: options?.days ?? 800,
   });
 
+  const equitySymbols = unique.filter((s) => !BENCHMARKS.has(s));
+
   const newsEntries = await Promise.all(
-    unique
-      .filter((s) => s !== 'SPY')
-      .map(async (symbol) => {
-        const result = await fetchCompanyNews(symbol, apiKey);
-        return [symbol, result] as const;
-      })
+    equitySymbols.map(async (symbol) => {
+      const result = await fetchCompanyNews(symbol, apiKey);
+      return [symbol, result] as const;
+    })
   );
   const news = Object.fromEntries(newsEntries.map(([symbol, result]) => [symbol, result.news]));
   const warnings = [...bundle.warnings];
@@ -249,8 +272,15 @@ export async function fetchMarketBundle(
     warnings.push('Using demo headlines where live company news was unavailable.');
   }
 
+  const earningsEntries = await Promise.all(
+    equitySymbols.map(async (symbol) => {
+      const window = await fetchEarningsWindow(symbol, apiKey);
+      return [symbol, window?.date ? [window.date] : []] as const;
+    })
+  );
+  const earningsDates = Object.fromEntries(earningsEntries);
+
   let fundamentals: Record<string, FundamentalSnapshot> = {};
-  const equitySymbols = unique.filter((s) => s !== 'SPY');
   if (options?.fmpApiKey) {
     const fmp = await fetchFmpFundamentalsBundle(equitySymbols, options.fmpApiKey);
     fundamentals = fmp.fundamentals;
@@ -278,6 +308,7 @@ export async function fetchMarketBundle(
     candleSources: bundle.sources,
     news,
     fundamentals,
+    earningsDates,
     sourceSummary,
     warnings,
   };

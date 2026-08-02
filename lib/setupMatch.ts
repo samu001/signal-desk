@@ -22,8 +22,11 @@ export function matchPlaybookSetups(input: {
   quote: Quote | null;
   candles: Candle[];
   spyCandles: Candle[];
+  qqqCandles?: Candle[];
   news?: NewsItem[];
   session?: SessionInfo;
+  /** YYYY-MM-DD earnings dates for ±1 day blackout. */
+  earningsDates?: string[];
   /** When true, also skip news catalyst checks (Desk historical mode). */
   historicalMode?: boolean;
   expectancy?: Record<string, SetupExpectancy>;
@@ -49,7 +52,9 @@ export function matchPlaybookSetups(input: {
       quote: input.quote,
       candles: input.candles,
       spyCandles: input.spyCandles,
+      qqqCandles: input.qqqCandles,
       news: input.news ?? [],
+      earningsDates: input.earningsDates,
       session,
     });
     const usable = results.filter((r) => !skip.has(r.id));

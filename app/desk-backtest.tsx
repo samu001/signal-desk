@@ -13,6 +13,7 @@ import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { fetchDailyCandlesResolved } from '@/lib/candles';
 import { DeskBacktestResult, runDeskBacktest } from '@/lib/deskBacktest';
+import { fetchEarningsDates } from '@/lib/finnhub';
 import { Stance } from '@/lib/recommend';
 
 function formatDate(ts: number) {
@@ -57,16 +58,34 @@ export default function DeskBacktestScreen() {
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
         days: 140,
       };
-      const [symbolBars, spyBars] = await Promise.all([
+      const [symbolBars, spyBars, qqqBars] = await Promise.all([
         fetchDailyCandlesResolved(upper, keys),
         fetchDailyCandlesResolved('SPY', keys),
+        fetchDailyCandlesResolved('QQQ', keys),
       ]);
       const useSymbol = symbolBars.candles.length ? symbolBars.candles : candles[upper] ?? [];
       const useSpy = spyBars.candles.length ? spyBars.candles : candles.SPY ?? [];
+      const useQqq = qqqBars.candles.length ? qqqBars.candles : candles.QQQ ?? [];
+      const first = useSymbol[0]?.time;
+      const last = useSymbol[useSymbol.length - 1]?.time;
+      const from = first
+        ? new Date(first * 1000).toISOString().slice(0, 10)
+        : new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10);
+      const to = last
+        ? new Date(last * 1000 + 2 * 86400000).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10);
+      const earningsDates = await fetchEarningsDates(
+        upper,
+        settings.finnhubApiKey || undefined,
+        from,
+        to
+      );
       const next = runDeskBacktest({
         symbol: upper,
         candles: useSymbol,
         spyCandles: useSpy,
+        qqqCandles: useQqq,
+        earningsDates,
         sourceLabel: symbolBars.source,
         warnings: symbolBars.warnings,
         evalBars: 30,

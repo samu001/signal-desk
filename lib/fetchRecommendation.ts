@@ -38,6 +38,8 @@ export async function fetchRecommendation(
           setups,
           candles: bundle.candles[upper],
           spyCandles: bundle.candles.SPY ?? [],
+          qqqCandles: bundle.candles.QQQ ?? [],
+          earningsDates: earnings?.date ? [earnings.date] : bundle.earningsDates[upper],
         })
       : [];
   const expectancy = setups.length ? blendSetupScores(setups, journal, recent) : undefined;
@@ -47,6 +49,7 @@ export async function fetchRecommendation(
     quote: bundle.quotes[upper] ?? null,
     candles: bundle.candles[upper] ?? [],
     spyCandles: bundle.candles.SPY ?? [],
+    qqqCandles: bundle.candles.QQQ ?? [],
     news: bundle.news[upper] ?? [],
     fundamentals: bundle.fundamentals[upper] ?? null,
     candleSource: bundle.candleSources[upper] ?? 'demo',
@@ -54,5 +57,8 @@ export async function fetchRecommendation(
     setups,
     expectancy,
     earnings,
+    earningsDates: earnings?.date
+      ? [earnings.date]
+      : bundle.earningsDates[upper] ?? [],
   });
 }

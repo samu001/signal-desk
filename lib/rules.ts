@@ -12,6 +12,7 @@ import {
   sma,
   smaCrossedUp,
 } from '@/lib/indicators';
+import { assessEarningsGate, assessMarketRegime, dayKeyFromUnix } from '@/lib/playbookGates';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import {
   Candle,
@@ -54,6 +55,8 @@ const LABELS: Record<RuleCheckId, string> = {
   no_negative_catalyst: 'No negative catalyst',
   rs_vs_spy: 'Relative strength vs SPY',
   session_tradable: 'Session OK for entry',
+  market_regime_ok: 'Market regime OK',
+  earnings_clear: 'Outside earnings blackout',
 };
 
 export function evaluateCheck(
@@ -63,8 +66,13 @@ export function evaluateCheck(
     quote: Quote | null;
     candles: Candle[];
     spyCandles: Candle[];
+    qqqCandles?: Candle[];
     news: NewsItem[];
     session: SessionInfo;
+    /** YYYY-MM-DD earnings dates for blackout (±1 day). */
+    earningsDates?: string[];
+    /** Signal day override for historical evaluation (unix seconds). */
+    asOfTime?: number;
   }
 ): RuleResult {
   const { item, quote, candles, spyCandles, news, session } = ctx;
@@ -315,6 +323,39 @@ export function evaluateCheck(
         detail: `${session.label} — ${session.detail}`,
       };
     }
+    case 'market_regime_ok': {
+      const regime = assessMarketRegime(spyCandles, ctx.qqqCandles);
+      if (spyCandles.length < 55) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: regime.detail };
+      }
+      return {
+        id,
+        label: LABELS[id],
+        verdict: regime.ok ? 'pass' : 'fail',
+        detail: regime.detail,
+      };
+    }
+    case 'earnings_clear': {
+      if (!ctx.earningsDates?.length) {
+        return {
+          id,
+          label: LABELS[id],
+          verdict: 'unknown',
+          detail: 'No earnings calendar loaded',
+        };
+      }
+      const asOf =
+        ctx.asOfTime ??
+        latestCandle(candles)?.time ??
+        Math.floor(Date.now() / 1000);
+      const gate = assessEarningsGate(dayKeyFromUnix(asOf), ctx.earningsDates);
+      return {
+        id,
+        label: LABELS[id],
+        verdict: gate.blocked ? 'fail' : 'pass',
+        detail: gate.detail,
+      };
+    }
     default:
       return { id, label: id, verdict: 'unknown', detail: 'Unhandled check' };
   }
@@ -327,13 +368,19 @@ export function evaluateSetupRules(
     quote: Quote | null;
     candles: Candle[];
     spyCandles: Candle[];
+    qqqCandles?: Candle[];
     news: NewsItem[];
     session?: SessionInfo;
+    earningsDates?: string[];
+    asOfTime?: number;
   }
 ): RuleResult[] {
   const session = ctx.session ?? getUsEquitySession();
   const checks = setup?.entryChecks ?? ['near_or_in_buy_zone', 'no_negative_catalyst', 'session_tradable'];
-  return checks.map((id) => evaluateCheck(id, { ...ctx, session }));
+  // Always append accuracy gates so every playbook setup respects regime + earnings.
+  const withGates = [...checks, 'market_regime_ok' as const, 'earnings_clear' as const];
+  const unique = [...new Set(withGates)];
+  return unique.map((id) => evaluateCheck(id, { ...ctx, session }));
 }
 
 export function scoreRuleResults(results: RuleResult[]): {
@@ -346,12 +393,13 @@ export function scoreRuleResults(results: RuleResult[]): {
   const passed = results.filter((r) => r.verdict === 'pass').length;
   const failed = results.filter((r) => r.verdict === 'fail').length;
   const unknown = results.filter((r) => r.verdict === 'unknown').length;
-  const total = results.length || 1;
+  const known = passed + failed;
   return {
     passed,
     failed,
     unknown,
     total: results.length,
-    passRate: passed / total,
+    // Unknown checks should not tank readiness (e.g. missing earnings calendar).
+    passRate: known > 0 ? passed / known : 0,
   };
 }

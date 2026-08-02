@@ -96,6 +96,8 @@ export function runDeskBacktest(input: {
   symbol: string;
   candles: Candle[];
   spyCandles: Candle[];
+  qqqCandles?: Candle[];
+  earningsDates?: string[];
   sourceLabel: string;
   warnings?: string[];
   evalBars?: number;
@@ -108,6 +110,7 @@ export function runDeskBacktest(input: {
   const notes = [
     'Desk historical mode: technicals + Playbook confirmation; company/news neutralized.',
     'Soft/Strong buy only when a playbook setup also matches and price is in/near the zone.',
+    'Playbook gates: market regime (SPY/QQQ) + earnings blackout when dates are provided.',
     'Exits on stop, target (~2R), or ~12-session time stop.',
   ];
   const evalBars = input.evalBars && input.evalBars > 0 ? input.evalBars : 30;
@@ -159,6 +162,8 @@ export function runDeskBacktest(input: {
     const history = candles.slice(0, i + 1);
     const spyHistory =
       spyCandles.length >= history.length ? spyCandles.slice(0, i + 1) : spyCandles;
+    const qqqFull = input.qqqCandles ?? [];
+    const qqqHistory = qqqFull.length >= history.length ? qqqFull.slice(0, i + 1) : qqqFull;
     const candle = history[history.length - 1];
     const prev = history[history.length - 2];
 
@@ -204,9 +209,11 @@ export function runDeskBacktest(input: {
       quote: quoteFromCandle(symbol, candle, prev),
       candles: history,
       spyCandles: spyHistory,
+      qqqCandles: qqqHistory,
       candleSource: 'demo',
       historicalMode: true,
       setups,
+      earningsDates: input.earningsDates,
     });
     signals[rec.stance] += 1;
 

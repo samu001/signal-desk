@@ -17,6 +17,7 @@ describe('buildRecommendation', () => {
       quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
       candles: demoCandles.AAPL,
       spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
       news: getDemoNews('AAPL'),
       fundamentals: getDemoFundamentals('AAPL'),
       candleSource: 'demo',
@@ -24,6 +25,7 @@ describe('buildRecommendation', () => {
     });
 
     expect(rec.levels.entryLow).toBeLessThanOrEqual(rec.levels.entryHigh);
+    expect(rec.matchedSetups.length).toBeLessThanOrEqual(1);
     expect(rec.technicalScore).toBeGreaterThan(50);
     expect(rec.reasons.length).toBeGreaterThan(0);
     if (rec.matchedSetups.length) {
@@ -41,6 +43,7 @@ describe('buildRecommendation', () => {
       quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
       candles: demoCandles.AAPL,
       spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
       news: getDemoNews('AAPL'),
       fundamentals: getDemoFundamentals('AAPL'),
       candleSource: 'demo',
@@ -56,6 +59,7 @@ describe('buildRecommendation', () => {
       quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
       candles: demoCandles.AAPL,
       spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
       news: [
         {
           id: 'bad',
@@ -79,6 +83,7 @@ describe('buildRecommendation', () => {
       quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
       candles: demoCandles.AAPL,
       spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
       news: getDemoNews('AAPL'),
       fundamentals: getDemoFundamentals('AAPL'),
       candleSource: 'demo',

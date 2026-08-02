@@ -54,7 +54,8 @@ function signalAt(
   setup: Setup,
   symbol: string,
   history: Candle[],
-  spyHistory: Candle[]
+  spyHistory: Candle[],
+  options?: { qqqCandles?: Candle[]; earningsDates?: string[] }
 ): { pass: boolean; passRate: number } {
   const levels = levelsForSetup(setup, history);
   const item: WatchlistItem = {
@@ -73,7 +74,10 @@ function signalAt(
     quote: quoteFromCandle(symbol, candle, prev),
     candles: history,
     spyCandles: spyHistory,
+    qqqCandles: options?.qqqCandles,
     news: [],
+    earningsDates: options?.earningsDates,
+    asOfTime: candle.time,
     session: {
       phase: 'rth',
       label: 'RTH open',
@@ -99,6 +103,9 @@ export function runBacktest(input: {
   warnings?: string[];
   /** Only look for new entries in the last N bars (keeps earlier bars for indicator warmup). */
   evalBars?: number;
+  qqqCandles?: Candle[];
+  /** YYYY-MM-DD earnings dates for ±1 day blackout. */
+  earningsDates?: string[];
 }): BacktestResult {
   const { setup, symbol, candles, spyCandles, sourceLabel } = input;
   const warnings = [...(input.warnings ?? [])];
@@ -106,6 +113,8 @@ export function runBacktest(input: {
     'Entries use next-bar open after a daily close signal.',
     'Stop/target are structure-based (not your current watchlist levels).',
     'Session + news checks are skipped in historical mode (free APIs lack reliable history).',
+    'Market regime gate: SPY/QQQ above 50-day MA with rising 20-day MA.',
+    'Earnings blackout: no new entries within ±1 day of reported earnings dates.',
   ];
 
   const trades: BacktestTrade[] = [];
@@ -192,7 +201,15 @@ export function runBacktest(input: {
       continue;
     }
 
-    const { pass } = signalAt(setup, symbol, history, spyHistory);
+    const spyHistoryForGates =
+      spyCandles.length >= history.length ? spyCandles.slice(0, i + 1) : spyCandles;
+    const qqqFull = input.qqqCandles ?? [];
+    const qqqHistory =
+      qqqFull.length >= history.length ? qqqFull.slice(0, i + 1) : qqqFull;
+    const { pass } = signalAt(setup, symbol, history, spyHistoryForGates, {
+      qqqCandles: qqqHistory,
+      earningsDates: input.earningsDates,
+    });
     if (!pass) continue;
 
     const levels = levelsForSetup(setup, history);

@@ -609,6 +609,7 @@ export function buildRecommendation(input: {
   quote: Quote | null;
   candles: Candle[];
   spyCandles: Candle[];
+  qqqCandles?: Candle[];
   news?: NewsItem[];
   fundamentals?: FundamentalSnapshot | null;
   candleSource?: CandleSource;
@@ -616,6 +617,8 @@ export function buildRecommendation(input: {
   setups?: Setup[];
   expectancy?: Record<string, SetupExpectancy>;
   earnings?: EarningsRisk | null;
+  /** Full YYYY-MM-DD earnings calendar for Playbook ±1 day blackout. */
+  earningsDates?: string[];
   /**
    * Historical replay mode: company/news are treated as neutral placeholders
    * (not point-in-time), so stance is driven mainly by technicals + Playbook match.
@@ -636,12 +639,17 @@ export function buildRecommendation(input: {
           quote: input.quote,
           candles,
           spyCandles: input.spyCandles,
+          qqqCandles: input.qqqCandles,
           news: historical ? [] : input.news ?? [],
+          earningsDates:
+            input.earningsDates ??
+            (input.earnings?.date ? [input.earnings.date] : undefined),
           historicalMode: historical,
           expectancy: input.expectancy,
         })
       : [];
-  const matchedSetups = rankMatchedSetups(allMatches);
+  // One best Playbook setup per ticker (de-dupe overlapping matches).
+  const matchedSetups = rankMatchedSetups(allMatches).slice(0, 1);
   const best = matchedSetups[0] ?? null;
   const bestSetup = best ? setups.find((s) => s.id === best.setupId) : undefined;
   const merged = mergeLevelsWithSetup(deskLevels, bestSetup, candles);

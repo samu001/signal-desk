@@ -30,10 +30,37 @@ describe('evaluateSetupRules', () => {
     });
 
     const scored = scoreRuleResults(results);
-    expect(results.length).toBe(setup.entryChecks.length);
+    // Always appends market_regime_ok + earnings_clear accuracy gates.
+    expect(results.length).toBe(setup.entryChecks.length + 2);
     expect(scored.passed).toBeGreaterThan(0);
     expect(results.find((r) => r.id === 'above_sma_50')?.verdict).toBe('pass');
     expect(results.find((r) => r.id === 'near_or_in_buy_zone')?.verdict).toBe('pass');
+    expect(results.find((r) => r.id === 'market_regime_ok')?.verdict).toBe('pass');
+    expect(results.find((r) => r.id === 'earnings_clear')?.verdict).toBe('unknown');
+  });
+
+  it('fails earnings_clear inside the blackout window', () => {
+    const setup = defaultSetups.find((s) => s.id === 'setup-trend-pullback')!;
+    const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;
+    const asOf = demoCandles.AAPL[demoCandles.AAPL.length - 1].time;
+    const day = new Date(asOf * 1000).toISOString().slice(0, 10);
+    const results = evaluateSetupRules(setup, {
+      item,
+      quote: null,
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
+      news: [],
+      earningsDates: [day],
+      asOfTime: asOf,
+      session: {
+        phase: 'rth',
+        label: 'RTH open',
+        tradable: true,
+        detail: 'ok',
+      },
+    });
+    expect(results.find((r) => r.id === 'earnings_clear')?.verdict).toBe('fail');
   });
 
   it('fails negative catalyst when headlines match', () => {
