@@ -152,6 +152,11 @@ export default function DeskScreen() {
                 <Text style={styles.quickChipText}>{ticker}</Text>
               </Pressable>
             ))}
+            <Link href={`/desk-backtest?symbol=${encodeURIComponent(symbol)}`} asChild>
+              <Pressable style={[styles.quickChip, styles.backtestChip]}>
+                <Text style={[styles.quickChipText, styles.backtestChipText]}>Backtest Desk →</Text>
+              </Pressable>
+            </Link>
           </View>
         </View>
 
@@ -320,6 +325,13 @@ export default function DeskScreen() {
                     • {w}
                   </Text>
                 ))}
+                <Link
+                  href={`/desk-backtest?symbol=${encodeURIComponent(recommendation.symbol)}`}
+                  asChild>
+                  <Pressable style={styles.linkBtn}>
+                    <Text style={styles.linkBtnText}>Backtest this Desk signal →</Text>
+                  </Pressable>
+                </Link>
                 <Link href="/settings" asChild>
                   <Pressable style={styles.linkBtn}>
                     <Text style={styles.linkBtnText}>Add API keys for live data →</Text>
@@ -497,6 +509,13 @@ const styles = StyleSheet.create({
     fontFamily: 'SpaceMono',
     color: palette.ink,
     fontWeight: '700',
+  },
+  backtestChip: {
+    backgroundColor: palette.mossSoft,
+    borderColor: palette.moss,
+  },
+  backtestChipText: {
+    color: palette.moss,
   },
   errorBox: {
     backgroundColor: palette.dangerSoft,

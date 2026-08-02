@@ -472,6 +472,11 @@ export function buildRecommendation(input: {
   fundamentals?: FundamentalSnapshot | null;
   candleSource?: CandleSource;
   warnings?: string[];
+  /**
+   * Historical replay mode: company/news are treated as neutral placeholders
+   * (not point-in-time), so stance is driven mainly by technicals + levels.
+   */
+  historicalMode?: boolean;
 }): Recommendation {
   const symbol = input.symbol.toUpperCase().trim();
   const candles = input.candles;
@@ -483,12 +488,38 @@ export function buildRecommendation(input: {
     spyCandles: input.spyCandles,
     levels,
   });
-  const fundamental = scoreFundamentals(input.fundamentals ?? null);
-  const news = scoreNews(input.news ?? []);
+  const historical = Boolean(input.historicalMode);
+  const fundamental = historical
+    ? {
+        score: 60,
+        factors: [
+          {
+            name: 'Company data',
+            pillar: 'company' as const,
+            verdict: 'unknown' as const,
+            detail: 'Neutral placeholder — fundamentals are not point-in-time historically',
+          },
+        ],
+      }
+    : scoreFundamentals(input.fundamentals ?? null);
+  const news = historical
+    ? {
+        score: 70,
+        hardFail: false,
+        factors: [
+          {
+            name: 'Catalyst screen',
+            pillar: 'news' as const,
+            verdict: 'unknown' as const,
+            detail: 'News archive skipped in historical Desk backtest',
+          },
+        ],
+      }
+    : scoreNews(input.news ?? []);
 
-  const overallScore = Math.round(
-    technical.score * 0.5 + fundamental.score * 0.3 + news.score * 0.2
-  );
+  const overallScore = historical
+    ? Math.round(technical.score * 0.75 + fundamental.score * 0.15 + news.score * 0.1)
+    : Math.round(technical.score * 0.5 + fundamental.score * 0.3 + news.score * 0.2);
   const stance = pickStance({
     overall: overallScore,
     technical: technical.score,
@@ -530,6 +561,13 @@ export function buildRecommendation(input: {
     )
   );
 
+  const warnings = [...(input.warnings ?? [])];
+  if (historical) {
+    warnings.push(
+      'Historical Desk mode: company/news are neutralized; stance is mostly technical + levels.'
+    );
+  }
+
   return {
     symbol,
     stance,
@@ -547,10 +585,10 @@ export function buildRecommendation(input: {
     overallScore,
     factors,
     reasons: reasons.slice(0, 8),
-    news: (input.news ?? []).slice(0, 6),
-    fundamentals: input.fundamentals ?? null,
+    news: historical ? [] : (input.news ?? []).slice(0, 6),
+    fundamentals: historical ? null : input.fundamentals ?? null,
     candleSource: input.candleSource ?? 'demo',
     quoteSource: input.quote?.source ?? 'demo',
-    warnings: input.warnings ?? [],
+    warnings,
   };
 }
