@@ -43,12 +43,14 @@ export default function BacktestScreen() {
     setLoading(true);
     try {
       const upper = symbol.toUpperCase().trim() || 'AAPL';
+      // Short fetch: ~140 calendar days ≈ SMA50 warmup + last ~30 trading days to score.
+      // Still one API call per symbol; smaller than the old 800-day pull.
       const keys = {
         tiingoApiKey: settings.tiingoApiKey || undefined,
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
-        days: 800,
+        days: 140,
       };
       const [symbolBars, spyBars] = await Promise.all([
         fetchDailyCandlesResolved(upper, keys),
@@ -66,6 +68,7 @@ export default function BacktestScreen() {
         spyCandles: useSpy,
         sourceLabel: symbolBars.source,
         warnings: [...symbolBars.warnings, ...spyBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha'))],
+        evalBars: 30,
       });
       setResult(next);
     } finally {
@@ -78,8 +81,8 @@ export default function BacktestScreen() {
       <Stack.Screen options={{ title: 'Backtest' }} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
-          title="Setup backtest"
-          subtitle="Replay daily bars through your auto-checks. Prefer Tiingo (long EOD) or FMP; Finnhub free OHLC is often blocked."
+          title="Setup backtest (last ~30 trading days)"
+          subtitle="Scores only the last ~30 trading days (keeps a little extra history for moving averages). One light API pull per symbol."
         />
 
         <Text style={styles.fieldLabel}>Setup</Text>

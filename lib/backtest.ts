@@ -142,6 +142,8 @@ export function runBacktest(input: {
   spyCandles: Candle[];
   sourceLabel: string;
   warnings?: string[];
+  /** Only look for new entries in the last N bars (keeps earlier bars for indicator warmup). */
+  evalBars?: number;
 }): BacktestResult {
   const { setup, symbol, candles, spyCandles, sourceLabel } = input;
   const warnings = [...(input.warnings ?? [])];
@@ -171,6 +173,16 @@ export function runBacktest(input: {
     };
   }
 
+  const evalBars = input.evalBars && input.evalBars > 0 ? input.evalBars : null;
+  const loopStart = evalBars
+    ? Math.max(WARMUP, candles.length - 1 - evalBars)
+    : WARMUP;
+  if (evalBars) {
+    notes.unshift(
+      `Short window: scoring the last ~${evalBars} trading days only (earlier bars used for warmup).`
+    );
+  }
+
   let open:
     | {
         entryTime: number;
@@ -181,7 +193,7 @@ export function runBacktest(input: {
       }
     | null = null;
 
-  for (let i = WARMUP; i < candles.length - 1; i++) {
+  for (let i = loopStart; i < candles.length - 1; i++) {
     const history = candles.slice(0, i + 1);
     const spyHistory =
       spyCandles.length >= history.length
