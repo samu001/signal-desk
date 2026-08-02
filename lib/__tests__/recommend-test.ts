@@ -1,4 +1,4 @@
-import { demoCandles, demoQuotes, getDemoFundamentals, getDemoNews } from '@/constants/seed';
+import { defaultSetups, demoCandles, demoQuotes, getDemoFundamentals, getDemoNews } from '@/constants/seed';
 import { buildRecommendation, computeTradeLevels } from '@/lib/recommend';
 
 describe('computeTradeLevels', () => {
@@ -11,7 +11,7 @@ describe('computeTradeLevels', () => {
 });
 
 describe('buildRecommendation', () => {
-  it('labels demo AAPL as a buy-leaning stance with entry levels', () => {
+  it('can issue a buy only with Playbook confirmation on demo AAPL', () => {
     const rec = buildRecommendation({
       symbol: 'AAPL',
       quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
@@ -20,13 +20,34 @@ describe('buildRecommendation', () => {
       news: getDemoNews('AAPL'),
       fundamentals: getDemoFundamentals('AAPL'),
       candleSource: 'demo',
+      setups: defaultSetups,
     });
 
-    expect(['strong_buy', 'soft_buy']).toContain(rec.stance);
     expect(rec.levels.entryLow).toBeLessThanOrEqual(rec.levels.entryHigh);
     expect(rec.technicalScore).toBeGreaterThan(50);
     expect(rec.reasons.length).toBeGreaterThan(0);
-    expect(rec.label).toMatch(/buy/i);
+    if (rec.matchedSetups.length) {
+      expect(['strong_buy', 'soft_buy', 'wait']).toContain(rec.stance);
+      expect(rec.bestSetupName).toBeTruthy();
+    } else {
+      expect(rec.stance).toBe('wait');
+      expect(rec.warnings.some((w) => /no playbook setup matched/i.test(w))).toBe(true);
+    }
+  });
+
+  it('blocks Soft/Strong buy when no setups are provided', () => {
+    const rec = buildRecommendation({
+      symbol: 'AAPL',
+      quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      news: getDemoNews('AAPL'),
+      fundamentals: getDemoFundamentals('AAPL'),
+      candleSource: 'demo',
+      setups: [],
+    });
+    expect(['wait', 'avoid']).toContain(rec.stance);
+    expect(rec.matchedSetups).toHaveLength(0);
   });
 
   it('returns avoid when negative catalyst headlines appear', () => {
@@ -45,9 +66,31 @@ describe('buildRecommendation', () => {
       ],
       fundamentals: getDemoFundamentals('AAPL'),
       candleSource: 'demo',
+      setups: defaultSetups,
     });
 
     expect(rec.stance).toBe('avoid');
     expect(rec.newsScore).toBeLessThan(30);
+  });
+
+  it('waits when earnings are inside the blackout window', () => {
+    const rec = buildRecommendation({
+      symbol: 'AAPL',
+      quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      news: getDemoNews('AAPL'),
+      fundamentals: getDemoFundamentals('AAPL'),
+      candleSource: 'demo',
+      setups: defaultSetups,
+      earnings: {
+        date: '2026-08-03',
+        daysUntil: 0,
+        blocked: true,
+        detail: 'Earnings 2026-08-03 is inside the ±1 day blackout',
+      },
+    });
+    expect(rec.stance).toBe('wait');
+    expect(rec.summary).toMatch(/earnings/i);
   });
 });

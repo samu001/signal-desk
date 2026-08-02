@@ -6,6 +6,25 @@ export function sma(values: number[], period: number): number | null {
   return slice.reduce((a, b) => a + b, 0) / period;
 }
 
+/** Average True Range over `period` completed bars. */
+export function atr(candles: Candle[], period = 14): number | null {
+  if (candles.length < period + 1) return null;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const cur = candles[i];
+    const prev = candles[i - 1];
+    const tr = Math.max(
+      cur.high - cur.low,
+      Math.abs(cur.high - prev.close),
+      Math.abs(cur.low - prev.close)
+    );
+    trs.push(tr);
+  }
+  if (trs.length < period) return null;
+  const slice = trs.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
 export function closes(candles: Candle[]): number[] {
   return candles.map((c) => c.close);
 }

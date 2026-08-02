@@ -1,3 +1,4 @@
+import { defaultSetups } from '../constants/seed';
 import { fetchDailyCandlesResolved } from '../lib/candles';
 import { runDeskBacktest } from '../lib/deskBacktest';
 
@@ -26,6 +27,7 @@ async function main() {
       sourceLabel: bars.source,
       warnings: bars.warnings,
       evalBars: 30,
+      setups: defaultSetups,
     });
 
     const win = result.winRate == null ? 'n/a' : `${(result.winRate * 100).toFixed(0)}%`;

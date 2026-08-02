@@ -68,7 +68,7 @@ function Sparkline({ recommendation }: { recommendation: Recommendation }) {
 }
 
 export default function DeskScreen() {
-  const { ready, settings } = useTrading();
+  const { ready, settings, setups, trades } = useTrading();
   const { width } = useWindowDimensions();
   const wide = width >= 900;
   const [symbol, setSymbol] = useState('AAPL');
@@ -86,7 +86,7 @@ export default function DeskScreen() {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchRecommendation(ticker, settings);
+      const result = await fetchRecommendation(ticker, settings, { setups, trades });
       setRecommendation(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not build a recommendation.');
@@ -127,9 +127,9 @@ export default function DeskScreen() {
           <Text style={styles.heroEyebrow}>Signal Desk</Text>
           <Text style={styles.heroTitle}>Stock signal dashboard</Text>
           <Text style={styles.heroBody}>
-            Type a ticker. Get a Soft buy / Strong buy stance with an entry zone, stop, and target —
-            using history, company basics, news, and technical checks. Demo data fills gaps until API
-            keys are added.
+            Type a ticker. Desk confirms Soft/Strong buy only when a Playbook setup also matches —
+            plus technicals, company basics, news, and an earnings blackout. Demo data fills gaps
+            until API keys are added.
           </Text>
 
           <View style={[styles.searchRow, wide && styles.searchRowWide]}>
@@ -185,6 +185,24 @@ export default function DeskScreen() {
                 </View>
                 <Text style={styles.summary}>{recommendation.summary}</Text>
                 <Text style={styles.confidence}>Confidence {recommendation.confidence}%</Text>
+                {recommendation.bestSetupName ? (
+                  <Text style={styles.confirmLine}>
+                    Playbook confirmation: {recommendation.bestSetupName}
+                    {recommendation.matchedSetups.length > 1
+                      ? ` (+${recommendation.matchedSetups.length - 1} more)`
+                      : ''}
+                  </Text>
+                ) : (
+                  <Text style={styles.confirmLineWarn}>No Playbook setup matched — buys blocked</Text>
+                )}
+                {recommendation.earnings ? (
+                  <Text
+                    style={
+                      recommendation.earnings.blocked ? styles.confirmLineWarn : styles.confirmLine
+                    }>
+                    Earnings: {recommendation.earnings.detail}
+                  </Text>
+                ) : null}
                 <Sparkline recommendation={recommendation} />
               </View>
 
@@ -582,6 +600,16 @@ const styles = StyleSheet.create({
   confidence: {
     fontFamily: fontBody,
     color: palette.muted,
+    fontWeight: '600',
+  },
+  confirmLine: {
+    fontFamily: fontBody,
+    color: palette.moss,
+    fontWeight: '600',
+  },
+  confirmLineWarn: {
+    fontFamily: fontBody,
+    color: palette.warn,
     fontWeight: '600',
   },
   spark: {

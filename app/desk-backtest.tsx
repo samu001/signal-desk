@@ -41,7 +41,7 @@ function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
 
 export default function DeskBacktestScreen() {
   const { symbol: symbolParam } = useLocalSearchParams<{ symbol?: string }>();
-  const { settings, candles } = useTrading();
+  const { settings, candles, setups } = useTrading();
   const [symbol, setSymbol] = useState((symbolParam || 'AAPL').toUpperCase());
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DeskBacktestResult | null>(null);
@@ -70,6 +70,7 @@ export default function DeskBacktestScreen() {
         sourceLabel: symbolBars.source,
         warnings: symbolBars.warnings,
         evalBars: 30,
+        setups,
       });
       setResult(next);
     } finally {
@@ -83,7 +84,7 @@ export default function DeskBacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Desk signal backtest"
-          subtitle="Replays Soft/Strong buy over the last ~30 trading days using technicals + levels. Company/news are neutralized historically."
+          subtitle="Replays Soft/Strong buy over the last ~30 trading days. Buys still need Playbook confirmation. Company/news are neutralized historically."
         />
 
         <Field

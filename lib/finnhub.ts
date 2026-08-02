@@ -122,6 +122,54 @@ export async function fetchDailyCandles(
   }
 }
 
+export type EarningsWindow = {
+  date: string;
+  daysUntil: number;
+  blocked: boolean;
+  detail: string;
+};
+
+/** Next earnings date near today (Finnhub calendar). Blocks Desk buys inside ±1 day. */
+export async function fetchEarningsWindow(
+  symbol: string,
+  apiKey?: string
+): Promise<EarningsWindow | null> {
+  const upper = symbol.toUpperCase().trim();
+  if (!apiKey) return null;
+
+  try {
+    const today = new Date();
+    const from = new Date(today.getTime() - 2 * 86400000);
+    const to = new Date(today.getTime() + 14 * 86400000);
+    const fmt = (d: Date) => d.toISOString().slice(0, 10);
+    const url = `${FINNHUB_BASE}/calendar/earnings?from=${fmt(from)}&to=${fmt(to)}&symbol=${encodeURIComponent(upper)}&token=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      earningsCalendar?: Array<{ date?: string; symbol?: string }>;
+    };
+    const rows = (data.earningsCalendar ?? []).filter(
+      (r) => (r.symbol ?? '').toUpperCase() === upper && r.date
+    );
+    if (!rows.length) return null;
+    rows.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const next = rows[0];
+    const earnDate = new Date(`${next.date}T12:00:00Z`);
+    const daysUntil = Math.round((earnDate.getTime() - today.getTime()) / 86400000);
+    const blocked = daysUntil >= -1 && daysUntil <= 1;
+    return {
+      date: String(next.date),
+      daysUntil,
+      blocked,
+      detail: blocked
+        ? `Earnings ${next.date} is inside the ±1 day blackout`
+        : `Next earnings ${next.date} (~${daysUntil}d)`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchCompanyNews(
   symbol: string,
   apiKey?: string,

@@ -1,5 +1,6 @@
+import { defaultSetups } from '@/constants/seed';
 import { buildRecommendation, Stance } from '@/lib/recommend';
-import { Candle, Quote } from '@/types/trading';
+import { Candle, Quote, Setup } from '@/types/trading';
 
 export type DeskBacktestTrade = {
   stance: Stance;
@@ -88,8 +89,8 @@ function statsFor(trades: DeskBacktestTrade[]): {
 
 /**
  * Replay Desk stances on daily history.
- * Company/news are neutralized (not point-in-time). Entries use next-bar open
- * after Soft/Strong buy when price is in/near the suggested zone.
+ * Company/news are neutralized (not point-in-time). Soft/Strong buy still requires
+ * a Playbook setup match. Entries use next-bar open when in/near the zone.
  */
 export function runDeskBacktest(input: {
   symbol: string;
@@ -98,13 +99,15 @@ export function runDeskBacktest(input: {
   sourceLabel: string;
   warnings?: string[];
   evalBars?: number;
+  setups?: Setup[];
 }): DeskBacktestResult {
   const symbol = input.symbol.toUpperCase().trim();
   const { candles, spyCandles, sourceLabel } = input;
+  const setups = input.setups?.length ? input.setups : defaultSetups;
   const warnings = [...(input.warnings ?? [])];
   const notes = [
-    'Desk historical mode: technicals + levels only; company/news are neutral placeholders.',
-    'Enters next-bar open after Soft/Strong buy when price is in/near the entry zone.',
+    'Desk historical mode: technicals + Playbook confirmation; company/news neutralized.',
+    'Soft/Strong buy only when a playbook setup also matches and price is in/near the zone.',
     'Exits on stop, target (~2R), or ~12-session time stop.',
   ];
   const evalBars = input.evalBars && input.evalBars > 0 ? input.evalBars : 30;
@@ -203,6 +206,7 @@ export function runDeskBacktest(input: {
       spyCandles: spyHistory,
       candleSource: 'demo',
       historicalMode: true,
+      setups,
     });
     signals[rec.stance] += 1;
 
