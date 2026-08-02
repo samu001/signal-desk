@@ -1,6 +1,7 @@
 import { defaultSetups } from '../constants/seed';
 import { fetchDailyCandlesResolved } from '../lib/candles';
 import { runDeskBacktest } from '../lib/deskBacktest';
+import { fetchEarningsDates } from '../lib/finnhub';
 
 const keys = {
   tiingoApiKey: process.env.TIINGO_API_KEY || undefined,
@@ -15,15 +16,29 @@ function fmt(ts: number) {
 
 async function main() {
   const symbols = ['AAPL', 'NVDA', 'MSFT'];
-  const spy = await fetchDailyCandlesResolved('SPY', keys);
+  const [spy, qqq] = await Promise.all([
+    fetchDailyCandlesResolved('SPY', keys),
+    fetchDailyCandlesResolved('QQQ', keys),
+  ]);
   console.log(`SPY source=${spy.source} bars=${spy.candles.length}`);
+  console.log(`QQQ source=${qqq.source} bars=${qqq.candles.length}`);
 
   for (const symbol of symbols) {
     const bars = await fetchDailyCandlesResolved(symbol, keys);
+    const first = bars.candles[0];
+    const last = bars.candles[bars.candles.length - 1];
+    const from = first ? fmt(first.time) : '2025-01-01';
+    const to = last
+      ? new Date(last.time * 1000 + 2 * 86400000).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    const earningsDates = await fetchEarningsDates(symbol, keys.finnhubApiKey, from, to);
+
     const result = runDeskBacktest({
       symbol,
       candles: bars.candles,
       spyCandles: spy.candles,
+      qqqCandles: qqq.candles,
+      earningsDates,
       sourceLabel: bars.source,
       warnings: bars.warnings,
       evalBars: 30,
@@ -32,7 +47,7 @@ async function main() {
 
     const win = result.winRate == null ? 'n/a' : `${(result.winRate * 100).toFixed(0)}%`;
     const avg = result.avgR == null ? 'n/a' : result.avgR.toFixed(2);
-    console.log(`\n==== ${symbol} source=${result.sourceLabel} ====`);
+    console.log(`\n==== ${symbol} source=${result.sourceLabel} earnings=${earningsDates.join(',') || 'none'} ====`);
     console.log(
       `Signals: strong=${result.signals.strong_buy} soft=${result.signals.soft_buy} wait=${result.signals.wait} avoid=${result.signals.avoid}`
     );
