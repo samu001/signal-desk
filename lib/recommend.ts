@@ -13,6 +13,7 @@ import {
 } from '@/lib/indicators';
 import { rewardToRisk } from '@/lib/positionSize';
 import { matchPlaybookSetups, rankMatchedSetups, SetupMatch } from '@/lib/setupMatch';
+import { levelsForSetup } from '@/lib/setupLevels';
 import { Candle, FundamentalSnapshot, NewsItem, Quote, Setup } from '@/types/trading';
 
 export type Stance = 'strong_buy' | 'soft_buy' | 'wait' | 'avoid';
@@ -65,6 +66,14 @@ export type Recommendation = {
   matchedSetups: SetupMatch[];
   bestSetupName: string | null;
   earnings: EarningsRisk | null;
+  /** Interesting for research even when not tradeable today. */
+  researchInteresting: boolean;
+  researchLabel: string;
+  /** True only for Soft/Strong buy trade stances. */
+  tradeable: boolean;
+  levelsSource: 'desk' | 'playbook';
+  relativeStrength20d: number | null;
+  dollarVolume20d: number | null;
   candleSource: CandleSource;
   quoteSource: Quote['source'];
   warnings: string[];
@@ -445,6 +454,72 @@ function scoreNews(news: NewsItem[]): { score: number; factors: RecommendFactor[
   };
 }
 
+function assessLiquidity(candles: Candle[], price: number): {
+  dollarVolume: number | null;
+  ok: boolean;
+  thin: boolean;
+  detail: string;
+} {
+  const vol = avgVolume(candles, 20);
+  if (vol == null || price <= 0) {
+    return { dollarVolume: null, ok: true, thin: false, detail: 'Volume history unavailable' };
+  }
+  const dollarVolume = vol * price;
+  const thin = dollarVolume < 5_000_000;
+  const ok = dollarVolume >= 20_000_000;
+  return {
+    dollarVolume,
+    ok,
+    thin,
+    detail: `~$${(dollarVolume / 1_000_000).toFixed(1)}M avg daily dollar volume`,
+  };
+}
+
+function assessMarketRelative(candles: Candle[], spyCandles: Candle[]): {
+  rs: number | null;
+  ok: boolean;
+  weak: boolean;
+  detail: string;
+} {
+  const rs = relativeStrength(candles, spyCandles, 20);
+  if (rs == null) {
+    return { rs: null, ok: true, weak: false, detail: 'Need SPY history for relative strength' };
+  }
+  return {
+    rs,
+    ok: rs >= -2,
+    weak: rs < -5,
+    detail: `20d RS vs SPY ${rs >= 0 ? '+' : ''}${rs.toFixed(1)}%`,
+  };
+}
+
+function mergeLevelsWithSetup(
+  deskLevels: TradeLevels,
+  setup: Setup | undefined,
+  candles: Candle[]
+): { levels: TradeLevels; source: 'desk' | 'playbook' } {
+  if (!setup || candles.length < 20) return { levels: deskLevels, source: 'desk' };
+  const setupLevels = levelsForSetup(setup, candles);
+  const atr14 = atr(candles, 14);
+  const price = latestCandle(candles)?.close ?? setupLevels.entryHigh;
+  const atrFloor = atr14 != null ? price - 1.8 * atr14 : setupLevels.stop;
+  const stop = Math.min(setupLevels.stop, deskLevels.stop, atrFloor);
+  const entryLow = Math.min(setupLevels.entryLow, deskLevels.entryLow);
+  const entryHigh = Math.max(setupLevels.entryHigh, deskLevels.entryHigh);
+  const entryMid = (entryLow + entryHigh) / 2;
+  const risk = Math.max(entryMid - stop, entryMid * 0.01);
+  const target = Math.max(setupLevels.target, deskLevels.target, entryMid + 2 * risk);
+  return {
+    source: 'playbook',
+    levels: {
+      entryLow: roundPrice(entryLow),
+      entryHigh: roundPrice(entryHigh),
+      stop: roundPrice(stop),
+      target: roundPrice(target),
+    },
+  };
+}
+
 function pickStance(input: {
   overall: number;
   technical: number;
@@ -458,12 +533,19 @@ function pickStance(input: {
   playbookMatched: boolean;
   bestExpectancy: number;
   earningsBlocked: boolean;
+  liquidityThin: boolean;
+  liquidityOk: boolean;
+  marketWeak: boolean;
+  marketOk: boolean;
 }): Stance {
   if (input.newsHardFail || input.price <= input.stop) return 'avoid';
   if (input.technical < 35) return 'avoid';
+  if (input.liquidityThin) return 'avoid';
+  if (input.marketWeak) return 'avoid';
   if (input.earningsBlocked) return 'wait';
   // Desk is a confirmation layer: no buy stance without a Playbook match.
   if (!input.playbookMatched) return 'wait';
+  if (!input.liquidityOk || !input.marketOk) return 'wait';
 
   const strong =
     input.overall >= 72 &&
@@ -471,7 +553,9 @@ function pickStance(input: {
     input.news >= 60 &&
     input.fundamental >= 55 &&
     (input.inEntry || input.nearEntry) &&
-    input.bestExpectancy >= -0.15;
+    input.bestExpectancy >= -0.05 &&
+    input.liquidityOk &&
+    input.marketOk;
 
   if (strong) return 'strong_buy';
   if (input.overall >= 55 && input.technical >= 45 && (input.inEntry || input.nearEntry)) {
@@ -480,31 +564,44 @@ function pickStance(input: {
   return 'wait';
 }
 
-function buildSummary(
-  stance: Stance,
-  symbol: string,
-  nearEntry: boolean,
-  inEntry: boolean,
-  bestSetupName: string | null,
-  earningsBlocked: boolean
-): string {
-  if (earningsBlocked) {
-    return `${symbol} is too close to earnings — Desk waits even if the chart looks okay.`;
+function buildSummary(input: {
+  stance: Stance;
+  symbol: string;
+  nearEntry: boolean;
+  inEntry: boolean;
+  bestSetupName: string | null;
+  earningsBlocked: boolean;
+  researchInteresting: boolean;
+  tradeable: boolean;
+  marketWeak: boolean;
+  liquidityThin: boolean;
+}): string {
+  if (input.liquidityThin) {
+    return `${input.symbol} looks too thin on liquidity — Desk avoids it for tradeable signals.`;
   }
-  switch (stance) {
-    case 'strong_buy':
-      return `${symbol} is confirmed by Playbook${bestSetupName ? ` (${bestSetupName})` : ''} with clean technicals${
-        inEntry ? ' and price already in the entry zone' : nearEntry ? ' and price near the entry zone' : ''
+  if (input.marketWeak) {
+    return `${input.symbol} is lagging the market hard — Desk avoids buy labels until relative strength improves.`;
+  }
+  if (input.earningsBlocked) {
+    return `${input.symbol} is too close to earnings — Desk waits even if the chart looks okay.`;
+  }
+  if (input.tradeable) {
+    if (input.stance === 'strong_buy') {
+      return `${input.symbol} is tradeable: Playbook${input.bestSetupName ? ` (${input.bestSetupName})` : ''} confirms with clean technicals${
+        input.inEntry ? ' and price in the entry zone' : input.nearEntry ? ' and price near the entry zone' : ''
       }.`;
-    case 'soft_buy':
-      return `${symbol} has a Playbook match${bestSetupName ? ` (${bestSetupName})` : ''} and looks constructive — patient Soft buy only near the zone.`;
-    case 'avoid':
-      return `${symbol} fails a hard filter right now (trend damage, stop risk, or negative news). Stand aside.`;
-    default:
-      return bestSetupName
-        ? `${symbol} matched ${bestSetupName}, but Desk still wants a cleaner zone/score before a buy label.`
-        : `${symbol} has no Playbook confirmation yet — Desk waits instead of forcing a Soft/Strong buy.`;
+    }
+    return `${input.symbol} is a patient Soft buy — Playbook${input.bestSetupName ? ` (${input.bestSetupName})` : ''} matches and price is cooperating with the zone.`;
   }
+  if (input.researchInteresting) {
+    return `${input.symbol} is interesting for research, but not tradeable yet${
+      input.bestSetupName ? ` (${input.bestSetupName} needs a cleaner trigger/zone)` : ' (no Playbook confirmation)'
+    }.`;
+  }
+  if (input.stance === 'avoid') {
+    return `${input.symbol} fails a hard filter right now (trend, liquidity, market RS, stop risk, or news). Stand aside.`;
+  }
+  return `${input.symbol} is not clean enough yet. Keep it on watch.`;
 }
 
 export function buildRecommendation(input: {
@@ -528,14 +625,34 @@ export function buildRecommendation(input: {
   const symbol = input.symbol.toUpperCase().trim();
   const candles = input.candles;
   const price = input.quote?.price ?? latestCandle(candles)?.close ?? 0;
-  const levels = computeTradeLevels(candles);
+  const deskLevels = computeTradeLevels(candles);
+  const historical = Boolean(input.historicalMode);
+  const setups = input.setups ?? [];
+  const allMatches =
+    setups.length && candles.length
+      ? matchPlaybookSetups({
+          symbol,
+          setups,
+          quote: input.quote,
+          candles,
+          spyCandles: input.spyCandles,
+          news: historical ? [] : input.news ?? [],
+          historicalMode: historical,
+          expectancy: input.expectancy,
+        })
+      : [];
+  const matchedSetups = rankMatchedSetups(allMatches);
+  const best = matchedSetups[0] ?? null;
+  const bestSetup = best ? setups.find((s) => s.id === best.setupId) : undefined;
+  const merged = mergeLevelsWithSetup(deskLevels, bestSetup, candles);
+  const levels = merged.levels;
+
   const technical = scoreTechnical({
     price,
     candles,
     spyCandles: input.spyCandles,
     levels,
   });
-  const historical = Boolean(input.historicalMode);
   const fundamental = historical
     ? {
         score: 60,
@@ -564,33 +681,30 @@ export function buildRecommendation(input: {
       }
     : scoreNews(input.news ?? []);
 
-  const setups = input.setups ?? [];
-  const allMatches =
-    setups.length && candles.length
-      ? matchPlaybookSetups({
-          symbol,
-          setups,
-          quote: input.quote,
-          candles,
-          spyCandles: input.spyCandles,
-          news: historical ? [] : input.news ?? [],
-          historicalMode: historical,
-          expectancy: input.expectancy,
-        })
-      : [];
-  const matchedSetups = rankMatchedSetups(allMatches);
-  const best = matchedSetups[0] ?? null;
   const playbookMatched = matchedSetups.length > 0;
   const earnings = input.earnings ?? null;
   const earningsBlocked = Boolean(earnings?.blocked);
+  const liquidity = assessLiquidity(candles, price);
+  const market = assessMarketRelative(candles, input.spyCandles);
 
   const playbookBoost = playbookMatched ? Math.min(12, 6 + matchedSetups.length * 2) : 0;
-  const expectancyBoost = best ? Math.max(-6, Math.min(8, best.expectancyScore * 8)) : 0;
+  const expectancyBoost = best ? Math.max(-8, Math.min(10, best.expectancyScore * 10)) : 0;
   const baseOverall = historical
     ? technical.score * 0.75 + fundamental.score * 0.15 + news.score * 0.1
     : technical.score * 0.5 + fundamental.score * 0.3 + news.score * 0.2;
   const overallScore = Math.round(
-    Math.max(0, Math.min(100, baseOverall + playbookBoost + expectancyBoost - (earningsBlocked ? 20 : 0)))
+    Math.max(
+      0,
+      Math.min(
+        100,
+        baseOverall +
+          playbookBoost +
+          expectancyBoost -
+          (earningsBlocked ? 20 : 0) -
+          (market.weak ? 15 : market.ok ? 0 : 8) -
+          (liquidity.thin ? 20 : liquidity.ok ? 0 : 8)
+      )
+    )
   );
 
   const stance = pickStance({
@@ -606,7 +720,21 @@ export function buildRecommendation(input: {
     playbookMatched,
     bestExpectancy: best?.expectancyScore ?? 0,
     earningsBlocked,
+    liquidityThin: liquidity.thin,
+    liquidityOk: liquidity.ok,
+    marketWeak: market.weak,
+    marketOk: market.ok,
   });
+
+  const tradeable = stance === 'soft_buy' || stance === 'strong_buy';
+  const researchInteresting =
+    !liquidity.thin &&
+    !market.weak &&
+    !news.hardFail &&
+    (playbookMatched ||
+      technical.score >= 55 ||
+      fundamental.score >= 70 ||
+      (technical.score >= 45 && fundamental.score >= 55));
 
   const factors = [...technical.factors, ...fundamental.factors, ...news.factors];
   if (playbookMatched && best) {
@@ -614,7 +742,7 @@ export function buildRecommendation(input: {
       name: 'Playbook confirmation',
       pillar: 'technical',
       verdict: 'pass',
-      detail: `${matchedSetups.length} setup(s) matched — best: ${best.setupName}`,
+      detail: `${matchedSetups.length} setup(s) matched — best: ${best.setupName} (score ${best.expectancyScore.toFixed(2)})`,
     });
   } else if (setups.length) {
     factors.unshift({
@@ -624,6 +752,18 @@ export function buildRecommendation(input: {
       detail: 'No playbook setup currently passes',
     });
   }
+  factors.push({
+    name: 'Liquidity',
+    pillar: 'technical',
+    verdict: liquidity.thin ? 'fail' : liquidity.ok ? 'pass' : 'unknown',
+    detail: liquidity.detail,
+  });
+  factors.push({
+    name: 'Market relative strength',
+    pillar: 'technical',
+    verdict: market.weak ? 'fail' : market.ok ? 'pass' : 'unknown',
+    detail: market.detail,
+  });
   if (earnings) {
     factors.push({
       name: 'Earnings window',
@@ -632,11 +772,25 @@ export function buildRecommendation(input: {
       detail: earnings.detail,
     });
   }
+  if (merged.source === 'playbook' && best) {
+    factors.push({
+      name: 'Level source',
+      pillar: 'technical',
+      verdict: 'pass',
+      detail: `Entry/stop/target anchored to ${best.setupName} + ATR`,
+    });
+  }
 
   const reasons: RecommendReason[] = [];
   for (const f of factors) {
     if (f.verdict === 'pass') reasons.push({ tone: 'good', text: `${f.name}: ${f.detail}` });
     else if (f.verdict === 'fail') reasons.push({ tone: 'bad', text: `${f.name}: ${f.detail}` });
+  }
+  if (researchInteresting && !tradeable) {
+    reasons.unshift({
+      tone: 'warn',
+      text: 'Marked interesting for research, but not tradeable yet.',
+    });
   }
   if (technical.inEntry) {
     reasons.unshift({
@@ -666,7 +820,9 @@ export function buildRecommendation(input: {
           (input.candleSource === 'demo' ? -8 : 4) +
           (technical.nearEntry ? 4 : 0) +
           (playbookMatched ? 8 : -10) +
-          (earningsBlocked ? -12 : 0)
+          (earningsBlocked ? -12 : 0) +
+          (tradeable ? 4 : -4) +
+          (best && best.expectancyScore > 0 ? 4 : 0)
       )
     )
   );
@@ -680,19 +836,26 @@ export function buildRecommendation(input: {
   if (!playbookMatched && setups.length) {
     warnings.push('No Playbook setup matched — Desk will not issue Soft/Strong buy.');
   }
+  if (researchInteresting && !tradeable) {
+    warnings.push('Research-interesting only — not a tradeable Soft/Strong buy.');
+  }
 
   return {
     symbol,
     stance,
     label: STANCE_LABEL[stance],
-    summary: buildSummary(
+    summary: buildSummary({
       stance,
       symbol,
-      technical.nearEntry,
-      technical.inEntry,
-      best?.setupName ?? null,
-      earningsBlocked
-    ),
+      nearEntry: technical.nearEntry,
+      inEntry: technical.inEntry,
+      bestSetupName: best?.setupName ?? null,
+      earningsBlocked,
+      researchInteresting,
+      tradeable,
+      marketWeak: market.weak,
+      liquidityThin: liquidity.thin,
+    }),
     confidence,
     price,
     levels,
@@ -704,12 +867,22 @@ export function buildRecommendation(input: {
     newsScore: news.score,
     overallScore,
     factors,
-    reasons: reasons.slice(0, 10),
+    reasons: reasons.slice(0, 12),
     news: historical ? [] : (input.news ?? []).slice(0, 6),
     fundamentals: historical ? null : input.fundamentals ?? null,
     matchedSetups,
     bestSetupName: best?.setupName ?? null,
     earnings,
+    researchInteresting,
+    researchLabel: researchInteresting
+      ? tradeable
+        ? 'Tradeable setup'
+        : 'Interesting (research only)'
+      : 'Not interesting',
+    tradeable,
+    levelsSource: merged.source,
+    relativeStrength20d: market.rs,
+    dollarVolume20d: liquidity.dollarVolume,
     candleSource: input.candleSource ?? 'demo',
     quoteSource: input.quote?.source ?? 'demo',
     warnings,

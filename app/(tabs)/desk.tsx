@@ -127,9 +127,9 @@ export default function DeskScreen() {
           <Text style={styles.heroEyebrow}>Signal Desk</Text>
           <Text style={styles.heroTitle}>Stock signal dashboard</Text>
           <Text style={styles.heroBody}>
-            Type a ticker. Desk confirms Soft/Strong buy only when a Playbook setup also matches —
-            plus technicals, company basics, news, and an earnings blackout. Demo data fills gaps
-            until API keys are added.
+            Desk is a confirmation layer: Soft/Strong buy only when Playbook matches, liquidity and
+            market RS look okay, and earnings are clear. Separates “interesting research” from
+            “tradeable today.” Demo data fills gaps until API keys are added.
           </Text>
 
           <View style={[styles.searchRow, wide && styles.searchRowWide]}>
@@ -181,10 +181,25 @@ export default function DeskScreen() {
                     <Text style={styles.symbol}>{recommendation.symbol}</Text>
                     <Text style={styles.price}>{formatMoney(recommendation.price)}</Text>
                   </View>
-                  <Pill label={recommendation.label} tone={stanceTone(recommendation.stance)} />
+                  <View style={styles.badgeCol}>
+                    <Pill label={recommendation.label} tone={stanceTone(recommendation.stance)} />
+                    <Pill
+                      label={recommendation.researchLabel}
+                      tone={
+                        recommendation.tradeable
+                          ? 'good'
+                          : recommendation.researchInteresting
+                            ? 'warn'
+                            : 'neutral'
+                      }
+                    />
+                  </View>
                 </View>
                 <Text style={styles.summary}>{recommendation.summary}</Text>
-                <Text style={styles.confidence}>Confidence {recommendation.confidence}%</Text>
+                <Text style={styles.confidence}>
+                  Confidence {recommendation.confidence}% · Levels from{' '}
+                  {recommendation.levelsSource === 'playbook' ? 'matched setup + ATR' : 'Desk structure'}
+                </Text>
                 {recommendation.bestSetupName ? (
                   <Text style={styles.confirmLine}>
                     Playbook confirmation: {recommendation.bestSetupName}
@@ -195,6 +210,23 @@ export default function DeskScreen() {
                 ) : (
                   <Text style={styles.confirmLineWarn}>No Playbook setup matched — buys blocked</Text>
                 )}
+                {recommendation.relativeStrength20d != null ? (
+                  <Text
+                    style={
+                      recommendation.relativeStrength20d < -5
+                        ? styles.confirmLineWarn
+                        : styles.confirmLine
+                    }>
+                    Market RS (20d vs SPY): {recommendation.relativeStrength20d >= 0 ? '+' : ''}
+                    {recommendation.relativeStrength20d.toFixed(1)}%
+                  </Text>
+                ) : null}
+                {recommendation.dollarVolume20d != null ? (
+                  <Text style={styles.confirmLine}>
+                    Liquidity: ~${(recommendation.dollarVolume20d / 1_000_000).toFixed(1)}M avg dollar
+                    volume
+                  </Text>
+                ) : null}
                 {recommendation.earnings ? (
                   <Text
                     style={
@@ -579,6 +611,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: spacing.md,
+  },
+  badgeCol: {
+    alignItems: 'flex-end',
+    gap: 6,
   },
   symbol: {
     fontFamily: 'SpaceMono',

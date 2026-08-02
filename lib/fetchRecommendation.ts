@@ -1,6 +1,7 @@
 import { expectancyMap } from '@/lib/expectancy';
 import { fetchEarningsWindow, fetchMarketBundle } from '@/lib/finnhub';
 import { buildRecommendation, Recommendation } from '@/lib/recommend';
+import { blendSetupScores, scoreRecentSetupPerformance } from '@/lib/setupPerformance';
 import { AppSettings, Setup, Trade } from '@/types/trading';
 
 export async function fetchRecommendation(
@@ -29,7 +30,17 @@ export async function fetchRecommendation(
 
   const earnings = await fetchEarningsWindow(upper, settings.finnhubApiKey || undefined);
   const setups = options?.setups ?? [];
-  const expectancy = setups.length ? expectancyMap(setups, options?.trades ?? []) : undefined;
+  const journal = setups.length ? expectancyMap(setups, options?.trades ?? []) : undefined;
+  const recent =
+    setups.length && bundle.candles[upper]?.length
+      ? scoreRecentSetupPerformance({
+          symbol: upper,
+          setups,
+          candles: bundle.candles[upper],
+          spyCandles: bundle.candles.SPY ?? [],
+        })
+      : [];
+  const expectancy = setups.length ? blendSetupScores(setups, journal, recent) : undefined;
 
   return buildRecommendation({
     symbol: upper,
