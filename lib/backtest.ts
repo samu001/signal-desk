@@ -7,6 +7,7 @@ import {
   describeCostModel,
   netLongR,
 } from '@/lib/backtestCosts';
+import { DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
 import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { Candle, Quote, Setup, WatchlistItem } from '@/types/trading';
@@ -66,7 +67,12 @@ function signalAt(
   symbol: string,
   history: Candle[],
   spyHistory: Candle[],
-  options?: { qqqCandles?: Candle[]; earningsDates?: string[] }
+  options?: {
+    qqqCandles?: Candle[];
+    sectorCandles?: Candle[];
+    earningsDates?: string[];
+    gates?: PlaybookGateFlags;
+  }
 ): { pass: boolean; passRate: number } {
   const levels = levelsForSetup(setup, history);
   const item: WatchlistItem = {
@@ -86,9 +92,11 @@ function signalAt(
     candles: history,
     spyCandles: spyHistory,
     qqqCandles: options?.qqqCandles,
+    sectorCandles: options?.sectorCandles,
     news: [],
     earningsDates: options?.earningsDates,
     asOfTime: candle.time,
+    gates: options?.gates ?? DEFAULT_LIVE_GATES,
     session: {
       phase: 'rth',
       label: 'RTH open',
@@ -146,14 +154,17 @@ export function runBacktest(input: {
   /** Only look for new entries in the last N bars (keeps earlier bars for indicator warmup). */
   evalBars?: number;
   qqqCandles?: Candle[];
+  sectorCandles?: Candle[];
   /** YYYY-MM-DD earnings dates for ±1 day blackout. */
   earningsDates?: string[];
   costs?: BacktestCostModel;
   /** Trading days to wait after a stop-out before re-entering this setup. */
   stopCooldownBars?: number;
+  gates?: PlaybookGateFlags;
 }): BacktestResult {
   const { setup, symbol, candles, spyCandles, sourceLabel } = input;
   const costs = input.costs ?? DEFAULT_BACKTEST_COSTS;
+  const gates = input.gates ?? DEFAULT_LIVE_GATES;
   const stopCooldownBars =
     input.stopCooldownBars != null && input.stopCooldownBars >= 0
       ? input.stopCooldownBars
@@ -163,13 +174,20 @@ export function runBacktest(input: {
     'Entries use next-bar open after a daily close signal.',
     'Stop/target are structure-based (not your current watchlist levels).',
     'Session + news checks are skipped in historical mode (free APIs lack reliable history).',
-    'Market regime gate: SPY/QQQ above 50-day MA with rising 20-day MA.',
-    'Earnings blackout: no new entries within ±1 day of reported earnings dates.',
     describeCostModel(costs),
     `Cooldown: after a stop-out, wait ${stopCooldownBars} trading day${
       stopCooldownBars === 1 ? '' : 's'
     } before re-entering this setup.`,
   ];
+  if (gates.marketRegime) {
+    notes.push('Market regime gate: SPY/QQQ above 50-day MA with rising 20-day MA.');
+  }
+  if (gates.earningsBlackout) {
+    notes.push('Earnings blackout: no new entries within ±1 day of reported earnings dates.');
+  }
+  if (gates.weeklyTrend) notes.push('Weekly trend gate: weekly close above rising SMA10.');
+  if (gates.sectorRs) notes.push('Sector RS gate: not lagging sector ETF by more than ~2%.');
+  if (gates.volatility) notes.push('Volatility gate: ATR% inside 0.9–5.5% band.');
 
   if (candles.length < WARMUP + 5) {
     warnings.push(`Need at least ${WARMUP + 5} daily bars; got ${candles.length}.`);
@@ -262,9 +280,14 @@ export function runBacktest(input: {
     const qqqFull = input.qqqCandles ?? [];
     const qqqHistory =
       qqqFull.length >= history.length ? qqqFull.slice(0, i + 1) : qqqFull;
+    const sectorFull = input.sectorCandles ?? [];
+    const sectorHistory =
+      sectorFull.length >= history.length ? sectorFull.slice(0, i + 1) : sectorFull;
     const { pass } = signalAt(setup, symbol, history, spyHistoryForGates, {
       qqqCandles: qqqHistory,
+      sectorCandles: sectorHistory,
       earningsDates: input.earningsDates,
+      gates,
     });
     if (!pass) continue;
 

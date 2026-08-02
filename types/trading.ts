@@ -20,6 +20,9 @@ export type RuleCheckId =
   | 'session_tradable'
   | 'market_regime_ok'
   | 'earnings_clear'
+  | 'weekly_trend_ok'
+  | 'sector_rs_ok'
+  | 'volatility_ok'
 
 export type Setup = {
   id: string;

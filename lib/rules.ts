@@ -12,6 +12,16 @@ import {
   sma,
   smaCrossedUp,
 } from '@/lib/indicators';
+import {
+  DEFAULT_LIVE_GATES,
+  PlaybookGateFlags,
+  gateChecksFromFlags,
+} from '@/lib/backtestProfile';
+import {
+  assessSectorRelativeStrength,
+  assessVolatilityBand,
+  assessWeeklyTrend,
+} from '@/lib/playbookExtras';
 import { assessEarningsGate, assessMarketRegime, dayKeyFromUnix } from '@/lib/playbookGates';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import {
@@ -57,6 +67,9 @@ const LABELS: Record<RuleCheckId, string> = {
   session_tradable: 'Session OK for entry',
   market_regime_ok: 'Market regime OK',
   earnings_clear: 'Outside earnings blackout',
+  weekly_trend_ok: 'Weekly trend OK',
+  sector_rs_ok: 'Sector relative strength OK',
+  volatility_ok: 'Volatility band OK',
 };
 
 export function evaluateCheck(
@@ -67,6 +80,8 @@ export function evaluateCheck(
     candles: Candle[];
     spyCandles: Candle[];
     qqqCandles?: Candle[];
+    /** Sector ETF daily history for sector RS gate. */
+    sectorCandles?: Candle[];
     news: NewsItem[];
     session: SessionInfo;
     /** YYYY-MM-DD earnings dates for blackout (±1 day). */
@@ -356,6 +371,42 @@ export function evaluateCheck(
         detail: gate.detail,
       };
     }
+    case 'weekly_trend_ok': {
+      const gate = assessWeeklyTrend(candles);
+      if (candles.length < 60) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: gate.detail };
+      }
+      return {
+        id,
+        label: LABELS[id],
+        verdict: gate.ok ? 'pass' : 'fail',
+        detail: gate.detail,
+      };
+    }
+    case 'sector_rs_ok': {
+      const gate = assessSectorRelativeStrength(item.symbol, candles, ctx.sectorCandles);
+      if (!ctx.sectorCandles?.length && gate.etf) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: gate.detail };
+      }
+      return {
+        id,
+        label: LABELS[id],
+        verdict: gate.ok ? 'pass' : 'fail',
+        detail: gate.detail,
+      };
+    }
+    case 'volatility_ok': {
+      const gate = assessVolatilityBand(candles);
+      if (candles.length < 20) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: gate.detail };
+      }
+      return {
+        id,
+        label: LABELS[id],
+        verdict: gate.ok ? 'pass' : 'fail',
+        detail: gate.detail,
+      };
+    }
     default:
       return { id, label: id, verdict: 'unknown', detail: 'Unhandled check' };
   }
@@ -369,16 +420,19 @@ export function evaluateSetupRules(
     candles: Candle[];
     spyCandles: Candle[];
     qqqCandles?: Candle[];
+    sectorCandles?: Candle[];
     news: NewsItem[];
     session?: SessionInfo;
     earningsDates?: string[];
     asOfTime?: number;
+    /** Which accuracy gates to append (defaults to live regime + earnings). */
+    gates?: PlaybookGateFlags;
   }
 ): RuleResult[] {
   const session = ctx.session ?? getUsEquitySession();
   const checks = setup?.entryChecks ?? ['near_or_in_buy_zone', 'no_negative_catalyst', 'session_tradable'];
-  // Always append accuracy gates so every playbook setup respects regime + earnings.
-  const withGates = [...checks, 'market_regime_ok' as const, 'earnings_clear' as const];
+  const gateFlags = ctx.gates ?? DEFAULT_LIVE_GATES;
+  const withGates = [...checks, ...gateChecksFromFlags(gateFlags)];
   const unique = [...new Set(withGates)];
   return unique.map((id) => evaluateCheck(id, { ...ctx, session }));
 }

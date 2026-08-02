@@ -5,6 +5,7 @@ import {
   DEFAULT_STOP_COOLDOWN_BARS,
   describeCostModel,
 } from '@/lib/backtestCosts';
+import { BacktestProfile, DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
 import { Candle, Setup } from '@/types/trading';
 
 export type CombinedPlaybookTrade = BacktestTrade & {
@@ -28,6 +29,7 @@ export type CombinedPlaybookResult = {
   totalR: number | null;
   costs: BacktestCostModel;
   stopCooldownBars: number;
+  profileId?: string;
 };
 
 function dayKey(ts: number) {
@@ -36,7 +38,7 @@ function dayKey(ts: number) {
 
 /**
  * Run all setups, then keep only the best trade per entry day for a ticker.
- * Also applies a ticker-level stop-out cooldown across setups.
+ * Also applies a ticker-level stop-out cooldown across setups when enabled.
  */
 export function runCombinedPlaybookBacktest(input: {
   symbol: string;
@@ -44,18 +46,24 @@ export function runCombinedPlaybookBacktest(input: {
   candles: Candle[];
   spyCandles: Candle[];
   qqqCandles?: Candle[];
+  sectorCandles?: Candle[];
   earningsDates?: string[];
   sourceLabel: string;
   warnings?: string[];
   evalBars?: number;
   costs?: BacktestCostModel;
   stopCooldownBars?: number;
+  gates?: PlaybookGateFlags;
+  profile?: BacktestProfile;
 }): CombinedPlaybookResult {
-  const costs = input.costs ?? DEFAULT_BACKTEST_COSTS;
+  const profile = input.profile;
+  const costs = profile?.costs ?? input.costs ?? DEFAULT_BACKTEST_COSTS;
+  const gates = profile?.gates ?? input.gates ?? DEFAULT_LIVE_GATES;
   const stopCooldownBars =
-    input.stopCooldownBars != null && input.stopCooldownBars >= 0
+    profile?.stopCooldownBars ??
+    (input.stopCooldownBars != null && input.stopCooldownBars >= 0
       ? input.stopCooldownBars
-      : DEFAULT_STOP_COOLDOWN_BARS;
+      : DEFAULT_STOP_COOLDOWN_BARS);
 
   const setupResults = input.setups.map((setup) =>
     runBacktest({
@@ -64,12 +72,14 @@ export function runCombinedPlaybookBacktest(input: {
       candles: input.candles,
       spyCandles: input.spyCandles,
       qqqCandles: input.qqqCandles,
+      sectorCandles: input.sectorCandles,
       earningsDates: input.earningsDates,
       sourceLabel: input.sourceLabel,
       warnings: input.warnings,
       evalBars: input.evalBars,
       costs,
       stopCooldownBars,
+      gates,
     })
   );
 
@@ -111,18 +121,17 @@ export function runCombinedPlaybookBacktest(input: {
     dayWinners.push(trade);
   }
 
-  // Ticker-level cooldown: after any selected stop-out, skip later entries for N days.
   dayWinners.sort((a, b) => a.entryTime - b.entryTime);
   const trades: CombinedPlaybookTrade[] = [];
   let skippedCooldown = 0;
   let cooldownUntil = 0;
   for (const trade of dayWinners) {
-    if (trade.entryTime < cooldownUntil) {
+    if (stopCooldownBars > 0 && trade.entryTime < cooldownUntil) {
       skippedCooldown += 1;
       continue;
     }
     trades.push(trade);
-    if (trade.reason === 'stop') {
+    if (trade.reason === 'stop' && stopCooldownBars > 0) {
       cooldownUntil = trade.exitTime + stopCooldownBars * 86400;
     }
   }
@@ -144,8 +153,10 @@ export function runCombinedPlaybookBacktest(input: {
     sourceLabel: input.sourceLabel,
     warnings,
     notes: [
+      profile
+        ? `Profile: ${profile.label} — ${profile.description}`
+        : 'Combined playbook: at most one entry per day (highest-scoring setup wins).',
       'Combined playbook: at most one entry per day (highest-scoring setup wins).',
-      'Includes market regime + earnings blackout gates on each setup.',
       describeCostModel(costs),
       `Ticker cooldown after stop-out: ${stopCooldownBars} trading day${
         stopCooldownBars === 1 ? '' : 's'
@@ -162,5 +173,6 @@ export function runCombinedPlaybookBacktest(input: {
     totalR,
     costs,
     stopCooldownBars,
+    profileId: profile?.id,
   };
 }
