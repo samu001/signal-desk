@@ -60,31 +60,42 @@ function dynamicLevels(setup: Setup, history: Candle[]): Pick<
   const swingHigh = Math.max(...window.map((c) => c.high));
   const sma20 = sma(closes(history), 20) ?? price;
 
-  if (setup.id.includes('breakout')) {
-    const level = swingHigh;
-    const stop = level * 0.97;
-    const entry = Math.max(price, level);
+  if (setup.id.includes('breakout') || setup.id.includes('momentum-gap')) {
+    const level = setup.id.includes('momentum-gap') ? Math.max(price * 0.995, swingHigh * 0.98) : swingHigh;
+    const stop = Math.min(swingLow, level * 0.97);
+    const entry = Math.max(price, level * 0.99);
     const risk = Math.max(entry - stop, entry * 0.01);
     return {
-      entryLow: level * 0.995,
-      entryHigh: level * 1.03,
+      entryLow: level * 0.99,
+      entryHigh: level * 1.04,
       stop,
       target: entry + 2 * risk,
     };
   }
 
-  if (setup.id.includes('mean-reversion')) {
+  if (setup.id.includes('mean-reversion') || setup.id.includes('rsi-oversold')) {
     const stop = swingLow * 0.99;
     const risk = Math.max(price - stop, price * 0.01);
     return {
       entryLow: sma20 * 0.96,
-      entryHigh: sma20 * 0.995,
+      entryHigh: Math.max(sma20 * 1.01, price * 1.005),
       stop,
-      target: sma20,
+      target: Math.max(sma20, price + risk),
     };
   }
 
-  // Trend pullback default
+  if (setup.id.includes('ma-cross') || setup.id.includes('simple-trend')) {
+    const stop = Math.min(swingLow, sma20 * 0.97);
+    const risk = Math.max(price - stop, price * 0.012);
+    return {
+      entryLow: price * 0.99,
+      entryHigh: price * 1.02,
+      stop,
+      target: price + 2 * risk,
+    };
+  }
+
+  // Trend pullback (+ active) default
   const stop = Math.min(swingLow, sma20 * 0.97);
   const risk = Math.max(price - stop, price * 0.01);
   return {

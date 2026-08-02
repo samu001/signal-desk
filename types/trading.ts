@@ -1,5 +1,10 @@
 export type RuleCheckId =
   | 'above_sma_50'
+  | 'above_sma_20'
+  | 'sma_20_rising'
+  | 'sma_cross_up'
+  | 'rsi_oversold_recovering'
+  | 'strong_up_day'
   | 'in_buy_zone'
   | 'near_or_in_buy_zone'
   | 'higher_low'

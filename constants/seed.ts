@@ -103,6 +103,105 @@ export const defaultSetups: Setup[] = [
       'News risk is checked',
     ],
   },
+  {
+    id: 'setup-simple-trend',
+    name: 'Simple Trend Follow',
+    summary: 'More active: buy strength while price holds above a rising 20-day average.',
+    entryRules: [
+      'Price closes above the 20-day moving average',
+      'The 20-day average itself is rising',
+      'Stay with the trend until the average breaks',
+    ],
+    entryChecks: ['above_sma_20', 'sma_20_rising', 'session_tradable'],
+    exitRules: [
+      'Stop under the recent swing low or ~3% below entry',
+      'Target about 2R, or trail under the 20-day average',
+    ],
+    checklist: [
+      'I am okay with more frequent signals',
+      'Stop and size are defined before entry',
+    ],
+  },
+  {
+    id: 'setup-ma-cross',
+    name: 'MA Crossover',
+    summary: 'More active: buy when the 10-day average crosses above the 30-day average.',
+    entryRules: [
+      '10-day MA crosses above 30-day MA (within a couple sessions)',
+      'Price is still above the 20-day average',
+      'Avoid if a hard negative catalyst just hit',
+    ],
+    entryChecks: ['sma_cross_up', 'above_sma_20', 'session_tradable'],
+    exitRules: [
+      'Stop under the 30-day average or recent swing low',
+      'Exit if the 10-day crosses back below the 30-day',
+      'Scale out near 2R',
+    ],
+    checklist: [
+      'Cross is fresh, not weeks old',
+      'I am not buying into a vertical spike',
+    ],
+  },
+  {
+    id: 'setup-rsi-oversold',
+    name: 'RSI Oversold Bounce',
+    summary: 'More active: buy short-term washouts when RSI turns up from oversold.',
+    entryRules: [
+      'RSI(14) recently dipped to ~35 or lower',
+      'RSI is turning up and still below 50',
+      'Use a tight stop under the flush low',
+    ],
+    entryChecks: ['rsi_oversold_recovering', 'session_tradable'],
+    exitRules: [
+      'Tight stop under the recent low',
+      'Take profits into the first bounce / toward the 20-day MA',
+      'Time stop if no bounce within a few sessions',
+    ],
+    checklist: [
+      'This is a bounce trade, size smaller',
+      'I know the invalidation low',
+    ],
+  },
+  {
+    id: 'setup-momentum-gap',
+    name: 'Momentum / Gap-and-Go',
+    summary: 'More active: buy strong up days with expanding volume (momentum continuation).',
+    entryRules: [
+      'Strong up day (about +1.2% or more), preferably with a gap up',
+      'Volume expands vs the 20-day average',
+      'Do not chase already-extended multi-day spikes blindly',
+    ],
+    entryChecks: ['strong_up_day', 'volume_expanding', 'session_tradable'],
+    exitRules: [
+      'Stop under the signal-day low',
+      'Take first profits near 2R',
+      'Exit if momentum fades back into the signal-day range',
+    ],
+    checklist: [
+      'I accept higher whipsaw risk for more activity',
+      'Position size accounts for wider daily ranges',
+    ],
+  },
+  {
+    id: 'setup-trend-pullback-active',
+    name: 'Trend Pullback (Active)',
+    summary: 'Looser version of Trend Pullback — fewer filters so it triggers more often.',
+    entryRules: [
+      'Price above the 50-day moving average',
+      'Near the pullback / buy zone',
+      'Skip the stricter volume and relative-strength filters',
+    ],
+    entryChecks: ['above_sma_50', 'near_or_in_buy_zone', 'session_tradable'],
+    exitRules: [
+      'Hard stop under the pullback low',
+      'Take first partial at 1.5R–2R',
+      'Exit if the thesis level breaks on a closing basis',
+    ],
+    checklist: [
+      'I know this fires more often than the strict pullback',
+      'Stop distance and size are still calculated',
+    ],
+  },
 ];
 
 export const defaultWatchlist: WatchlistItem[] = [

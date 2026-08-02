@@ -8,7 +8,7 @@ const STORAGE_KEY = 'personal_trading_guide_v1';
 function migrateSetups(raw: Setup[] | undefined): Setup[] {
   if (!raw?.length) return defaultSetups;
   const defaultsById = Object.fromEntries(defaultSetups.map((s) => [s.id, s]));
-  return raw.map((setup) => {
+  const merged = raw.map((setup) => {
     const fallback = defaultsById[setup.id];
     return {
       ...setup,
@@ -17,6 +17,11 @@ function migrateSetups(raw: Setup[] | undefined): Setup[] {
         : fallback?.entryChecks ?? ['near_or_in_buy_zone', 'session_tradable'],
     };
   });
+  const existingIds = new Set(merged.map((s) => s.id));
+  for (const setup of defaultSetups) {
+    if (!existingIds.has(setup.id)) merged.push(setup);
+  }
+  return merged;
 }
 
 export async function loadAppState(): Promise<AppState> {

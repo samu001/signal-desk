@@ -3,11 +3,14 @@ import {
   closes,
   hasHigherLow,
   hasRejectionWick,
+  isSmaRising,
   lastCompletedCandle,
   latestCandle,
   percentFrom,
   relativeStrength,
+  rsiSeries,
   sma,
+  smaCrossedUp,
 } from '@/lib/indicators';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import {
@@ -33,6 +36,11 @@ const NEGATIVE_NEWS =
 
 const LABELS: Record<RuleCheckId, string> = {
   above_sma_50: 'Above 50-day MA',
+  above_sma_20: 'Above 20-day MA',
+  sma_20_rising: '20-day MA rising',
+  sma_cross_up: '10/30 MA bullish cross',
+  rsi_oversold_recovering: 'RSI oversold recovery',
+  strong_up_day: 'Strong up / momentum day',
   in_buy_zone: 'Inside buy zone',
   near_or_in_buy_zone: 'In/near buy zone',
   higher_low: 'Higher low structure',
@@ -80,6 +88,75 @@ export function evaluateCheck(
         label: LABELS[id],
         verdict: ok ? 'pass' : 'fail',
         detail: `Price ${price.toFixed(2)} vs SMA50 ${sma50.toFixed(2)}`,
+      };
+    }
+    case 'above_sma_20': {
+      if (price == null || sma20 == null) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need 20 daily bars' };
+      }
+      const ok = price > sma20;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: `Price ${price.toFixed(2)} vs SMA20 ${sma20.toFixed(2)}`,
+      };
+    }
+    case 'sma_20_rising': {
+      const ok = isSmaRising(closeSeries, 20, 3);
+      return {
+        id,
+        label: LABELS[id],
+        verdict: closeSeries.length < 23 ? 'unknown' : ok ? 'pass' : 'fail',
+        detail: ok ? '20-day average sloping up' : '20-day average flat/down',
+      };
+    }
+    case 'sma_cross_up': {
+      const ok = smaCrossedUp(closeSeries, 10, 30, 5);
+      const s10 = sma(closeSeries, 10);
+      const s30 = sma(closeSeries, 30);
+      return {
+        id,
+        label: LABELS[id],
+        verdict: closeSeries.length < 36 ? 'unknown' : ok ? 'pass' : 'fail',
+        detail:
+          s10 != null && s30 != null
+            ? ok
+              ? `SMA10 ${s10.toFixed(2)} crossed above SMA30 ${s30.toFixed(2)}`
+              : `No recent cross (SMA10 ${s10.toFixed(2)} / SMA30 ${s30.toFixed(2)})`
+            : 'Need 30 daily bars',
+      };
+    }
+    case 'rsi_oversold_recovering': {
+      const series = rsiSeries(closeSeries, 14);
+      if (series.length < 5) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need RSI history' };
+      }
+      const cur = series[series.length - 1];
+      const prev = series[series.length - 2];
+      const recentLow = Math.min(...series.slice(-6));
+      const ok = recentLow <= 35 && cur > prev && cur <= 50;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: `RSI ${cur.toFixed(1)} (recent low ${recentLow.toFixed(1)})`,
+      };
+    }
+    case 'strong_up_day': {
+      if (!last || candles.length < 2) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need prior bar' };
+      }
+      const prev = candles[candles.length - 2];
+      const dayRet = percentFrom(last.close, prev.close);
+      const gapUp = last.open >= prev.close * 1.003;
+      const strongClose = last.close >= last.open && dayRet >= 1.2;
+      const ok = strongClose && (gapUp || dayRet >= 2.0);
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: `${dayRet >= 0 ? '+' : ''}${dayRet.toFixed(1)}% day${gapUp ? ', gap up' : ''}`,
       };
     }
     case 'in_buy_zone': {

@@ -74,3 +74,85 @@ export function relativeStrength(
   const benRet = (b1 - b0) / b0;
   return (symRet - benRet) * 100;
 }
+
+/** Wilder RSI. Returns null until enough bars exist. */
+export function rsi(values: number[], period = 14): number | null {
+  if (values.length < period + 1) return null;
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
+    if (change >= 0) avgGain += change;
+    else avgLoss -= change;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+/** Latest RSI plus prior bar RSI for turn detection. */
+export function rsiSeries(values: number[], period = 14): number[] {
+  if (values.length < period + 1) return [];
+  const out: number[] = [];
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
+    if (change >= 0) avgGain += change;
+    else avgLoss -= change;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  out.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    out.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  }
+  return out;
+}
+
+export function isSmaRising(values: number[], period: number, lookback = 3): boolean {
+  if (values.length < period + lookback) return false;
+  const latest = sma(values, period);
+  const earlier = sma(values.slice(0, values.length - lookback), period);
+  if (latest == null || earlier == null) return false;
+  return latest > earlier;
+}
+
+/** True when short SMA crossed above long SMA on this bar or within `withinBars`. */
+export function smaCrossedUp(
+  values: number[],
+  shortPeriod: number,
+  longPeriod: number,
+  withinBars = 2
+): boolean {
+  if (values.length < longPeriod + withinBars + 1) return false;
+  for (let offset = 0; offset <= withinBars; offset++) {
+    const end = values.length - offset;
+    const prevEnd = end - 1;
+    if (prevEnd < longPeriod) continue;
+    const shortNow = sma(values.slice(0, end), shortPeriod);
+    const longNow = sma(values.slice(0, end), longPeriod);
+    const shortPrev = sma(values.slice(0, prevEnd), shortPeriod);
+    const longPrev = sma(values.slice(0, prevEnd), longPeriod);
+    if (shortNow == null || longNow == null || shortPrev == null || longPrev == null) continue;
+    if (shortNow > longNow && shortPrev <= longPrev) return true;
+  }
+  return false;
+}
