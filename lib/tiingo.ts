@@ -79,6 +79,11 @@ export async function fetchTiingoDailyCandles(
       warning: `Tiingo EOD (${candles.length} adjusted daily bars).`,
     };
   } catch {
-    return { candles: [], warning: 'Tiingo request failed.' };
+    // Tiingo often omits CORS headers, so browser/web clients fail while native/server calls work.
+    return {
+      candles: [],
+      warning:
+        'Tiingo blocked in this browser (CORS). FMP/Finnhub still work on web; Tiingo works in Expo Go / native.',
+    };
   }
 }
