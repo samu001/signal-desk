@@ -1,4 +1,10 @@
 import { runBacktest, BacktestResult, BacktestTrade } from '@/lib/backtest';
+import {
+  BacktestCostModel,
+  DEFAULT_BACKTEST_COSTS,
+  DEFAULT_STOP_COOLDOWN_BARS,
+  describeCostModel,
+} from '@/lib/backtestCosts';
 import { Candle, Setup } from '@/types/trading';
 
 export type CombinedPlaybookTrade = BacktestTrade & {
@@ -16,9 +22,12 @@ export type CombinedPlaybookResult = {
   /** De-duplicated: at most one entry per day (best setup wins). */
   trades: CombinedPlaybookTrade[];
   skippedOverlaps: number;
+  skippedCooldown: number;
   winRate: number | null;
   avgR: number | null;
   totalR: number | null;
+  costs: BacktestCostModel;
+  stopCooldownBars: number;
 };
 
 function dayKey(ts: number) {
@@ -27,8 +36,7 @@ function dayKey(ts: number) {
 
 /**
  * Run all setups, then keep only the best trade per entry day for a ticker.
- * Best = highest setup passRate at signal time proxy via avgR tie-break on trade quality,
- * preferring higher expectancy from the individual setup's trade R after fill ranking by setup order score.
+ * Also applies a ticker-level stop-out cooldown across setups.
  */
 export function runCombinedPlaybookBacktest(input: {
   symbol: string;
@@ -40,7 +48,15 @@ export function runCombinedPlaybookBacktest(input: {
   sourceLabel: string;
   warnings?: string[];
   evalBars?: number;
+  costs?: BacktestCostModel;
+  stopCooldownBars?: number;
 }): CombinedPlaybookResult {
+  const costs = input.costs ?? DEFAULT_BACKTEST_COSTS;
+  const stopCooldownBars =
+    input.stopCooldownBars != null && input.stopCooldownBars >= 0
+      ? input.stopCooldownBars
+      : DEFAULT_STOP_COOLDOWN_BARS;
+
   const setupResults = input.setups.map((setup) =>
     runBacktest({
       setup,
@@ -52,6 +68,8 @@ export function runCombinedPlaybookBacktest(input: {
       sourceLabel: input.sourceLabel,
       warnings: input.warnings,
       evalBars: input.evalBars,
+      costs,
+      stopCooldownBars,
     })
   );
 
@@ -59,7 +77,6 @@ export function runCombinedPlaybookBacktest(input: {
   const candidates: Candidate[] = [];
   for (const result of setupResults) {
     for (const trade of result.trades) {
-      // Prefer setups with better trade R and historically higher win rate.
       const score =
         trade.rMultiple +
         (result.winRate ?? 0) * 0.25 +
@@ -80,7 +97,7 @@ export function runCombinedPlaybookBacktest(input: {
     return b.score - a.score;
   });
 
-  const trades: CombinedPlaybookTrade[] = [];
+  const dayWinners: CombinedPlaybookTrade[] = [];
   const seenDays = new Set<string>();
   let skippedOverlaps = 0;
   for (const c of candidates) {
@@ -91,11 +108,24 @@ export function runCombinedPlaybookBacktest(input: {
     }
     seenDays.add(key);
     const { score: _score, ...trade } = c;
-    trades.push(trade);
+    dayWinners.push(trade);
   }
 
-  // Sort chronologically for reporting.
-  trades.sort((a, b) => a.entryTime - b.entryTime);
+  // Ticker-level cooldown: after any selected stop-out, skip later entries for N days.
+  dayWinners.sort((a, b) => a.entryTime - b.entryTime);
+  const trades: CombinedPlaybookTrade[] = [];
+  let skippedCooldown = 0;
+  let cooldownUntil = 0;
+  for (const trade of dayWinners) {
+    if (trade.entryTime < cooldownUntil) {
+      skippedCooldown += 1;
+      continue;
+    }
+    trades.push(trade);
+    if (trade.reason === 'stop') {
+      cooldownUntil = trade.exitTime + stopCooldownBars * 86400;
+    }
+  }
 
   const rs = trades.map((t) => t.rMultiple);
   const wins = rs.filter((r) => r > 0);
@@ -116,13 +146,21 @@ export function runCombinedPlaybookBacktest(input: {
     notes: [
       'Combined playbook: at most one entry per day (highest-scoring setup wins).',
       'Includes market regime + earnings blackout gates on each setup.',
+      describeCostModel(costs),
+      `Ticker cooldown after stop-out: ${stopCooldownBars} trading day${
+        stopCooldownBars === 1 ? '' : 's'
+      }.`,
       `Overlapping same-day signals skipped: ${skippedOverlaps}.`,
+      `Post-stop cooldown skips: ${skippedCooldown}.`,
     ],
     setupResults,
     trades,
     skippedOverlaps,
+    skippedCooldown,
     winRate: rs.length ? wins.length / rs.length : null,
     avgR,
     totalR,
+    costs,
+    stopCooldownBars,
   };
 }

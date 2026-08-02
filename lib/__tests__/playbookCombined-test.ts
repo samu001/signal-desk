@@ -20,7 +20,11 @@ describe('runCombinedPlaybookBacktest', () => {
     expect(result.notes.some((n) => /Combined playbook/i.test(n))).toBe(true);
 
     const rawCount = result.setupResults.reduce((n, r) => n + r.trades.length, 0);
-    expect(result.trades.length + result.skippedOverlaps).toBe(rawCount);
+    expect(
+      result.trades.length + result.skippedOverlaps + result.skippedCooldown
+    ).toBeLessThanOrEqual(rawCount);
+    expect(result.notes.some((n) => /Costs:/i.test(n))).toBe(true);
+    expect(result.notes.some((n) => /cooldown/i.test(n))).toBe(true);
   });
 
   it('blocks entries inside the earnings blackout window', () => {

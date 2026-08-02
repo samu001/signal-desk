@@ -1,3 +1,12 @@
+import {
+  applyLongEntryFill,
+  applyLongExitFill,
+  BacktestCostModel,
+  DEFAULT_BACKTEST_COSTS,
+  DEFAULT_STOP_COOLDOWN_BARS,
+  describeCostModel,
+  netLongR,
+} from '@/lib/backtestCosts';
 import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { Candle, Quote, Setup, WatchlistItem } from '@/types/trading';
@@ -27,6 +36,8 @@ export type BacktestResult = {
   expectancyR: number | null;
   maxDrawdownR: number | null;
   notes: string[];
+  costs: BacktestCostModel;
+  stopCooldownBars: number;
 };
 
 const WARMUP = 55;
@@ -94,6 +105,37 @@ function signalAt(
   };
 }
 
+function emptyResult(
+  input: {
+    setup: Setup;
+    symbol: string;
+    sourceLabel: string;
+    warnings: string[];
+    notes: string[];
+    barsUsed: number;
+    costs: BacktestCostModel;
+    stopCooldownBars: number;
+  }
+): BacktestResult {
+  return {
+    symbol: input.symbol,
+    setupId: input.setup.id,
+    setupName: input.setup.name,
+    sourceLabel: input.sourceLabel,
+    warnings: input.warnings,
+    barsUsed: input.barsUsed,
+    warmupBars: WARMUP,
+    trades: [],
+    winRate: null,
+    avgR: null,
+    expectancyR: null,
+    maxDrawdownR: null,
+    notes: input.notes,
+    costs: input.costs,
+    stopCooldownBars: input.stopCooldownBars,
+  };
+}
+
 export function runBacktest(input: {
   setup: Setup;
   symbol: string;
@@ -106,8 +148,16 @@ export function runBacktest(input: {
   qqqCandles?: Candle[];
   /** YYYY-MM-DD earnings dates for ±1 day blackout. */
   earningsDates?: string[];
+  costs?: BacktestCostModel;
+  /** Trading days to wait after a stop-out before re-entering this setup. */
+  stopCooldownBars?: number;
 }): BacktestResult {
   const { setup, symbol, candles, spyCandles, sourceLabel } = input;
+  const costs = input.costs ?? DEFAULT_BACKTEST_COSTS;
+  const stopCooldownBars =
+    input.stopCooldownBars != null && input.stopCooldownBars >= 0
+      ? input.stopCooldownBars
+      : DEFAULT_STOP_COOLDOWN_BARS;
   const warnings = [...(input.warnings ?? [])];
   const notes = [
     'Entries use next-bar open after a daily close signal.',
@@ -115,26 +165,24 @@ export function runBacktest(input: {
     'Session + news checks are skipped in historical mode (free APIs lack reliable history).',
     'Market regime gate: SPY/QQQ above 50-day MA with rising 20-day MA.',
     'Earnings blackout: no new entries within ±1 day of reported earnings dates.',
+    describeCostModel(costs),
+    `Cooldown: after a stop-out, wait ${stopCooldownBars} trading day${
+      stopCooldownBars === 1 ? '' : 's'
+    } before re-entering this setup.`,
   ];
 
-  const trades: BacktestTrade[] = [];
   if (candles.length < WARMUP + 5) {
     warnings.push(`Need at least ${WARMUP + 5} daily bars; got ${candles.length}.`);
-    return {
+    return emptyResult({
+      setup,
       symbol,
-      setupId: setup.id,
-      setupName: setup.name,
       sourceLabel,
       warnings,
-      barsUsed: candles.length,
-      warmupBars: WARMUP,
-      trades,
-      winRate: null,
-      avgR: null,
-      expectancyR: null,
-      maxDrawdownR: null,
       notes,
-    };
+      barsUsed: candles.length,
+      costs,
+      stopCooldownBars,
+    });
   }
 
   const evalBars = input.evalBars && input.evalBars > 0 ? input.evalBars : null;
@@ -147,6 +195,7 @@ export function runBacktest(input: {
     );
   }
 
+  const trades: BacktestTrade[] = [];
   let open:
     | {
         entryTime: number;
@@ -156,50 +205,57 @@ export function runBacktest(input: {
         entryIndex: number;
       }
     | null = null;
+  /** First bar index where a new entry is allowed again after a stop. */
+  let cooldownUntilIndex = -1;
 
   for (let i = loopStart; i < candles.length - 1; i++) {
     const history = candles.slice(0, i + 1);
-    const spyHistory =
-      spyCandles.length >= history.length
-        ? spyCandles.slice(0, i + 1)
-        : spyCandles;
 
     if (open) {
       const bar = candles[i];
-      const risk = open.entry - open.stop;
       const hitStop = bar.low <= open.stop;
       const hitTarget = bar.high >= open.target;
       const timedOut = i - open.entryIndex >= MAX_HOLD_BARS;
 
       if (hitStop || hitTarget || timedOut) {
-        let exit = bar.close;
+        let rawExit = bar.close;
         let reason: BacktestTrade['reason'] = 'time';
         if (hitStop && hitTarget) {
           // Conservative: assume stop first on same bar.
-          exit = open.stop;
+          rawExit = open.stop;
           reason = 'stop';
         } else if (hitStop) {
-          exit = open.stop;
+          rawExit = open.stop;
           reason = 'stop';
         } else if (hitTarget) {
-          exit = open.target;
+          rawExit = open.target;
           reason = 'target';
         }
-        const rMultiple = risk > 0 ? (exit - open.entry) / risk : 0;
+        const exitFill = applyLongExitFill(rawExit, costs);
+        const rMultiple = netLongR({
+          entryFill: open.entry,
+          exitFill,
+          stop: open.stop,
+        });
         trades.push({
           entryTime: open.entryTime,
           exitTime: bar.time,
           entry: open.entry,
-          exit,
+          exit: exitFill,
           stop: open.stop,
           target: open.target,
           rMultiple,
           reason,
         });
+        if (reason === 'stop') {
+          cooldownUntilIndex = i + stopCooldownBars;
+        }
         open = null;
       }
       continue;
     }
+
+    if (i < cooldownUntilIndex) continue;
 
     const spyHistoryForGates =
       spyCandles.length >= history.length ? spyCandles.slice(0, i + 1) : spyCandles;
@@ -214,29 +270,34 @@ export function runBacktest(input: {
 
     const levels = levelsForSetup(setup, history);
     const next = candles[i + 1];
+    const entryFill = applyLongEntryFill(next.open, costs);
+    // Skip pathological fills where friction wipes the stop distance.
+    if (entryFill <= levels.stop) continue;
     open = {
       entryTime: next.time,
-      entry: next.open,
+      entry: entryFill,
       stop: levels.stop,
       target: levels.target,
       entryIndex: i + 1,
     };
-    // Jump index handling: loop will process exits from entry bar onward.
   }
 
   // Force-close any open trade on last bar.
   if (open) {
     const last = candles[candles.length - 1];
-    const risk = open.entry - open.stop;
-    const exit = last.close;
+    const exitFill = applyLongExitFill(last.close, costs);
     trades.push({
       entryTime: open.entryTime,
       exitTime: last.time,
       entry: open.entry,
-      exit,
+      exit: exitFill,
       stop: open.stop,
       target: open.target,
-      rMultiple: risk > 0 ? (exit - open.entry) / risk : 0,
+      rMultiple: netLongR({
+        entryFill: open.entry,
+        exitFill,
+        stop: open.stop,
+      }),
       reason: 'time',
     });
   }
@@ -267,5 +328,7 @@ export function runBacktest(input: {
     expectancyR: avgR,
     maxDrawdownR: rs.length ? maxDd : null,
     notes,
+    costs,
+    stopCooldownBars,
   };
 }

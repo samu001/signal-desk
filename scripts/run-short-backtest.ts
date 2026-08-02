@@ -54,7 +54,7 @@ async function main() {
     const win = combined.winRate == null ? 'n/a' : `${(combined.winRate * 100).toFixed(0)}%`;
     const avg = combined.avgR == null ? 'n/a' : combined.avgR.toFixed(2);
     console.log(
-      `\nCOMBINED (de-duped): trades=${combined.trades.length} skippedOverlaps=${combined.skippedOverlaps} win=${win} avgR=${avg}`
+      `\nCOMBINED (de-duped): trades=${combined.trades.length} skippedOverlaps=${combined.skippedOverlaps} skippedCooldown=${combined.skippedCooldown} win=${win} avgR=${avg}`
     );
     for (const t of combined.trades) {
       console.log(
