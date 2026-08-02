@@ -15,6 +15,16 @@ const SECTOR_ETF: Record<string, string> = {
   BAC: 'XLF',
   XOM: 'XLE',
   CVX: 'XLE',
+  DDOG: 'XLK',
+  NET: 'XLK',
+  DECK: 'XLY',
+  ULTA: 'XLY',
+  WSM: 'XLY',
+  TREX: 'XLB',
+  DVN: 'XLE',
+  FANG: 'XLE',
+  CFG: 'XLF',
+  DXCM: 'XLV',
 };
 
 export function sectorEtfForSymbol(symbol: string): string | null {
