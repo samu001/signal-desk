@@ -18,7 +18,10 @@ export function levelsForSetup(
     setup.id.includes('momentum-gap') ||
     setup.id.includes('prior-day-high') ||
     setup.id.includes('rs-breakout') ||
-    setup.id.includes('dryup-thrust')
+    setup.id.includes('dryup-thrust') ||
+    setup.id.includes('bull-flag') ||
+    setup.id.includes('atr-expansion') ||
+    setup.id.includes('earnings-momentum')
   ) {
     const level = setup.id.includes('momentum-gap')
       ? Math.max(price * 0.995, swingHigh * 0.98)

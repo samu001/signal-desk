@@ -29,6 +29,9 @@ export type RuleCheckId =
   | 'twenty_day_high'
   | 'volume_thrust_after_dryup'
   | 'mean_reclaim'
+  | 'post_earnings_hold'
+  | 'bull_flag_break'
+  | 'atr_expansion_day'
 
 export type Setup = {
   id: string;

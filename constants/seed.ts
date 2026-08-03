@@ -11,69 +11,11 @@ export const defaultSettings: AppSettings = {
   displayName: 'Trader',
 };
 
+/**
+ * Active Playbook setups (stronger in Must backtests).
+ * Weak setups are preserved in `retiredSetups` below — not deleted.
+ */
 export const defaultSetups: Setup[] = [
-  {
-    id: 'setup-trend-pullback',
-    name: 'Trend Pullback',
-    summary: 'Buy strength after a controlled dip into support inside an uptrend.',
-    entryRules: [
-      'Price above the 50-day moving average',
-      'Pullback into prior breakout or rising support',
-      'Higher low forms with volume drying up',
-      'Enter on reclaim of the pullback high',
-    ],
-    entryChecks: [
-      'above_sma_50',
-      'near_or_in_buy_zone',
-      'higher_low',
-      'volume_drying',
-      'no_negative_catalyst',
-      'rs_vs_spy',
-      'session_tradable',
-    ],
-    exitRules: [
-      'Hard stop under the pullback low',
-      'Take first partial at 1.5R–2R',
-      'Trail remainder under higher lows',
-      'Exit if thesis level breaks on a closing basis',
-    ],
-    checklist: [
-      'Uptrend structure still intact',
-      'Entry zone is defined before clicking buy',
-      'Stop distance and size calculated',
-      'No open trade already in the same theme',
-    ],
-  },
-  {
-    id: 'setup-breakout-hold',
-    name: 'Breakout Hold',
-    summary: 'Enter after a level break when price holds above resistance as support.',
-    entryRules: [
-      'Clear horizontal level with multiple touches',
-      'Break on expanding volume',
-      'First hold above the breakout level',
-      'No major opposing catalyst the same session',
-    ],
-    entryChecks: [
-      'holding_breakout_level',
-      'volume_expanding',
-      'not_chasing_extension',
-      'no_negative_catalyst',
-      'rs_vs_spy',
-      'session_tradable',
-    ],
-    exitRules: [
-      'Stop just under the reclaimed level',
-      'Scale out into measured move / prior swing',
-      'Full exit if the level fails and closes back below',
-    ],
-    checklist: [
-      'Level is marked and shared with plan',
-      'Risk per share is acceptable',
-      'I am not chasing after a 3R+ spike',
-      'I know the invalidation before entry',
-    ],
-  },
   {
     id: 'setup-mean-reversion',
     name: 'Oversold Bounce',
@@ -101,25 +43,6 @@ export const defaultSetups: Setup[] = [
       'Support is objective, not wishful',
       'Position size is smaller than trend trades',
       'News risk is checked',
-    ],
-  },
-  {
-    id: 'setup-simple-trend',
-    name: 'Simple Trend Follow',
-    summary: 'More active: buy strength while price holds above a rising 20-day average.',
-    entryRules: [
-      'Price closes above the 20-day moving average',
-      'The 20-day average itself is rising',
-      'Stay with the trend until the average breaks',
-    ],
-    entryChecks: ['above_sma_20', 'sma_20_rising', 'session_tradable'],
-    exitRules: [
-      'Stop under the recent swing low or ~3% below entry',
-      'Target about 2R, or trail under the 20-day average',
-    ],
-    checklist: [
-      'I am okay with more frequent signals',
-      'Stop and size are defined before entry',
     ],
   },
   {
@@ -183,26 +106,6 @@ export const defaultSetups: Setup[] = [
     ],
   },
   {
-    id: 'setup-trend-pullback-active',
-    name: 'Trend Pullback (Active)',
-    summary: 'Looser version of Trend Pullback — fewer filters so it triggers more often.',
-    entryRules: [
-      'Price above the 50-day moving average',
-      'Near the pullback / buy zone',
-      'Skip the stricter volume and relative-strength filters',
-    ],
-    entryChecks: ['above_sma_50', 'near_or_in_buy_zone', 'session_tradable'],
-    exitRules: [
-      'Hard stop under the pullback low',
-      'Take first partial at 1.5R–2R',
-      'Exit if the thesis level breaks on a closing basis',
-    ],
-    checklist: [
-      'I know this fires more often than the strict pullback',
-      'Stop distance and size are still calculated',
-    ],
-  },
-  {
     id: 'setup-prior-day-high',
     name: 'Prior-Day High Break',
     summary: 'Buy when price closes above yesterday’s high with expanding volume.',
@@ -247,26 +150,6 @@ export const defaultSetups: Setup[] = [
     ],
   },
   {
-    id: 'setup-rs-breakout',
-    name: 'RS Breakout',
-    summary: 'Buy a 20-day high only when the stock is also beating SPY.',
-    entryRules: [
-      'Close breaks the 20-day high',
-      '20-day relative strength vs SPY is non-negative',
-      'Prefer expanding volume on the break',
-    ],
-    entryChecks: ['twenty_day_high', 'rs_vs_spy', 'volume_expanding', 'session_tradable'],
-    exitRules: [
-      'Stop under the breakout bar low or prior swing',
-      'Scale out near 2R',
-      'Full exit if the breakout level fails on a closing basis',
-    ],
-    checklist: [
-      'RS confirms leadership — not a weak market breakout',
-      'Stop and size are defined before the break',
-    ],
-  },
-  {
     id: 'setup-dryup-thrust',
     name: 'Dry-Up Thrust',
     summary: 'Buy a volume thrust after a quiet multi-day dry-up in an upswing.',
@@ -306,7 +189,202 @@ export const defaultSetups: Setup[] = [
       'Invalidation under the dip is defined',
     ],
   },
+  {
+    id: 'setup-earnings-momentum',
+    name: 'Earnings Momentum',
+    summary: 'Buy strength 2–10 days after earnings when price still holds above the 20-day average.',
+    entryRules: [
+      'Outside the ±1 day earnings blackout',
+      'Within ~2–10 days after the report',
+      'Price holds above the 20-day average on an up/flat close',
+    ],
+    entryChecks: [
+      'post_earnings_hold',
+      'above_sma_20',
+      'volume_expanding',
+      'session_tradable',
+    ],
+    exitRules: [
+      'Stop under the post-report swing low',
+      'Take profits near 2R',
+      'Exit if the stock loses the 20-day average on a closing basis',
+    ],
+    checklist: [
+      'I am trading the hold, not guessing the print',
+      'Blackout window is already over',
+    ],
+  },
+  {
+    id: 'setup-bull-flag',
+    name: 'Bull Flag Break',
+    summary: 'Buy the break of a tight coil after a sharp up impulse.',
+    entryRules: [
+      'Recent impulse leg of roughly +4% or more',
+      'Followed by a tight 3–5 day flag / coil',
+      'Close breaks the flag high',
+    ],
+    entryChecks: ['bull_flag_break', 'above_sma_20', 'session_tradable'],
+    exitRules: [
+      'Stop under the flag low',
+      'Target about 2R or measured move from the impulse',
+      'Exit if the break fails back into the flag',
+    ],
+    checklist: [
+      'Flag is a pause, not a rollover',
+      'Impulse was real before the coil',
+    ],
+  },
+  {
+    id: 'setup-atr-expansion',
+    name: 'ATR Expansion Day',
+    summary: 'Buy a 2x ATR range expansion day that closes near the highs.',
+    entryRules: [
+      'Daily range is at least ~2x the 14-day ATR',
+      'Close finishes in the top of the day’s range',
+      'Prefer expanding volume on the thrust',
+    ],
+    entryChecks: ['atr_expansion_day', 'volume_expanding', 'session_tradable'],
+    exitRules: [
+      'Stop under the expansion-day low',
+      'Take first profits near 2R',
+      'Exit if momentum fades back through the midpoint of the signal bar',
+    ],
+    checklist: [
+      'This is a volatility breakout — size for wider stops',
+      'Close quality matters more than the open gap',
+    ],
+  },
 ];
+
+/**
+ * Retired for now (weak in Must backtests). Code kept so we can re-enable later.
+ * Not loaded into the live Playbook via `defaultSetups`.
+ */
+export const retiredSetups: Setup[] = [
+  {
+    id: 'setup-trend-pullback',
+    name: 'Trend Pullback',
+    summary: 'Buy strength after a controlled dip into support inside an uptrend.',
+    entryRules: [
+      'Price above the 50-day moving average',
+      'Pullback into prior breakout or rising support',
+      'Higher low forms with volume drying up',
+      'Enter on reclaim of the pullback high',
+    ],
+    entryChecks: [
+      'above_sma_50',
+      'near_or_in_buy_zone',
+      'higher_low',
+      'volume_drying',
+      'no_negative_catalyst',
+      'rs_vs_spy',
+      'session_tradable',
+    ],
+    exitRules: [
+      'Hard stop under the pullback low',
+      'Take first partial at 1.5R–2R',
+      'Trail remainder under higher lows',
+      'Exit if thesis level breaks on a closing basis',
+    ],
+    checklist: [
+      'Uptrend structure still intact',
+      'Entry zone is defined before clicking buy',
+      'Stop distance and size calculated',
+      'No open trade already in the same theme',
+    ],
+  },
+  {
+    id: 'setup-breakout-hold',
+    name: 'Breakout Hold',
+    summary: 'Enter after a level break when price holds above resistance as support.',
+    entryRules: [
+      'Clear horizontal level with multiple touches',
+      'Break on expanding volume',
+      'First hold above the breakout level',
+      'No major opposing catalyst the same session',
+    ],
+    entryChecks: [
+      'holding_breakout_level',
+      'volume_expanding',
+      'not_chasing_extension',
+      'no_negative_catalyst',
+      'rs_vs_spy',
+      'session_tradable',
+    ],
+    exitRules: [
+      'Stop just under the reclaimed level',
+      'Scale out into measured move / prior swing',
+      'Full exit if the level fails and closes back below',
+    ],
+    checklist: [
+      'Level is marked and shared with plan',
+      'Risk per share is acceptable',
+      'I am not chasing after a 3R+ spike',
+      'I know the invalidation before entry',
+    ],
+  },
+  {
+    id: 'setup-simple-trend',
+    name: 'Simple Trend Follow',
+    summary: 'More active: buy strength while price holds above a rising 20-day average.',
+    entryRules: [
+      'Price closes above the 20-day moving average',
+      'The 20-day average itself is rising',
+      'Stay with the trend until the average breaks',
+    ],
+    entryChecks: ['above_sma_20', 'sma_20_rising', 'session_tradable'],
+    exitRules: [
+      'Stop under the recent swing low or ~3% below entry',
+      'Target about 2R, or trail under the 20-day average',
+    ],
+    checklist: [
+      'I am okay with more frequent signals',
+      'Stop and size are defined before entry',
+    ],
+  },
+  {
+    id: 'setup-trend-pullback-active',
+    name: 'Trend Pullback (Active)',
+    summary: 'Looser version of Trend Pullback — fewer filters so it triggers more often.',
+    entryRules: [
+      'Price above the 50-day moving average',
+      'Near the pullback / buy zone',
+      'Skip the stricter volume and relative-strength filters',
+    ],
+    entryChecks: ['above_sma_50', 'near_or_in_buy_zone', 'session_tradable'],
+    exitRules: [
+      'Hard stop under the pullback low',
+      'Take first partial at 1.5R–2R',
+      'Exit if the thesis level breaks on a closing basis',
+    ],
+    checklist: [
+      'I know this fires more often than the strict pullback',
+      'Stop distance and size are still calculated',
+    ],
+  },
+  {
+    id: 'setup-rs-breakout',
+    name: 'RS Breakout',
+    summary: 'Buy a 20-day high only when the stock is also beating SPY.',
+    entryRules: [
+      'Close breaks the 20-day high',
+      '20-day relative strength vs SPY is non-negative',
+      'Prefer expanding volume on the break',
+    ],
+    entryChecks: ['twenty_day_high', 'rs_vs_spy', 'volume_expanding', 'session_tradable'],
+    exitRules: [
+      'Stop under the breakout bar low or prior swing',
+      'Scale out near 2R',
+      'Full exit if the breakout level fails on a closing basis',
+    ],
+    checklist: [
+      'RS confirms leadership — not a weak market breakout',
+      'Stop and size are defined before the break',
+    ],
+  },
+];
+
+export const retiredSetupIds = new Set(retiredSetups.map((s) => s.id));
 
 export const defaultWatchlist: WatchlistItem[] = [
   {
@@ -317,7 +395,7 @@ export const defaultWatchlist: WatchlistItem[] = [
     entryHigh: 212,
     stop: 198,
     target: 230,
-    setupId: 'setup-trend-pullback',
+    setupId: 'setup-prior-day-high',
     notes: 'Wait for reclaim of prior day high inside the zone.',
     createdAt: new Date().toISOString(),
   },
@@ -329,7 +407,7 @@ export const defaultWatchlist: WatchlistItem[] = [
     entryHigh: 122,
     stop: 112,
     target: 140,
-    setupId: 'setup-breakout-hold',
+    setupId: 'setup-momentum-gap',
     notes: 'Skip if market bias is defensive.',
     createdAt: new Date().toISOString(),
   },

@@ -1,25 +1,29 @@
-import { demoCandles, defaultSetups } from '@/constants/seed';
+import { demoCandles, defaultSetups, retiredSetups, retiredSetupIds } from '@/constants/seed';
 import { evaluateSetupRules } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
 
-const NEW_IDS = [
+const ACTIVE_NEW_IDS = [
   'setup-prior-day-high',
   'setup-ema-stack',
-  'setup-rs-breakout',
   'setup-dryup-thrust',
   'setup-mean-reclaim',
+  'setup-earnings-momentum',
+  'setup-bull-flag',
+  'setup-atr-expansion',
 ];
 
-describe('new playbook setups', () => {
-  it('includes the five replacement candidates in defaults', () => {
-    for (const id of NEW_IDS) {
+describe('playbook setup roster', () => {
+  it('keeps stronger setups active and preserves retired code', () => {
+    for (const id of ACTIVE_NEW_IDS) {
       expect(defaultSetups.find((s) => s.id === id)).toBeTruthy();
     }
+    expect(retiredSetups.length).toBeGreaterThan(0);
+    expect(retiredSetupIds.has('setup-trend-pullback-active')).toBe(true);
+    expect(defaultSetups.find((s) => s.id === 'setup-trend-pullback-active')).toBeFalsy();
   });
 
-  it('evaluates each new setup without throwing on demo candles', () => {
-    for (const id of NEW_IDS) {
-      const setup = defaultSetups.find((s) => s.id === id)!;
+  it('evaluates active setups without throwing on demo candles', () => {
+    for (const setup of defaultSetups) {
       const levels = levelsForSetup(setup, demoCandles.AAPL);
       const results = evaluateSetupRules(setup, {
         item: {
@@ -36,6 +40,8 @@ describe('new playbook setups', () => {
         spyCandles: demoCandles.SPY,
         qqqCandles: demoCandles.QQQ,
         news: [],
+        earningsDates: ['2026-07-20'],
+        asOfTime: demoCandles.AAPL[demoCandles.AAPL.length - 1].time,
         session: {
           phase: 'rth',
           label: 'RTH',

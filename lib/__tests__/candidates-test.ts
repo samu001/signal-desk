@@ -10,7 +10,7 @@ const item: WatchlistItem = {
   entryHigh: 210,
   stop: 190,
   target: 230,
-  setupId: 'setup-trend-pullback',
+  setupId: 'setup-prior-day-high',
   notes: '',
   createdAt: new Date().toISOString(),
 };

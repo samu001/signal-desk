@@ -1,9 +1,10 @@
-import { demoCandles, defaultSetups, defaultWatchlist } from '@/constants/seed';
+import { demoCandles, defaultSetups, defaultWatchlist, retiredSetups } from '@/constants/seed';
 import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
 
 describe('evaluateSetupRules', () => {
   it('scores trend pullback checks against demo AAPL history', () => {
-    const setup = defaultSetups.find((s) => s.id === 'setup-trend-pullback')!;
+    // Retired setup kept for rule coverage (still evaluates the same checks).
+    const setup = retiredSetups.find((s) => s.id === 'setup-trend-pullback')!;
     const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;
     const results = evaluateSetupRules(setup, {
       item,
@@ -40,7 +41,7 @@ describe('evaluateSetupRules', () => {
   });
 
   it('fails earnings_clear inside the blackout window', () => {
-    const setup = defaultSetups.find((s) => s.id === 'setup-trend-pullback')!;
+    const setup = defaultSetups.find((s) => s.id === 'setup-momentum-gap')!;
     const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;
     const asOf = demoCandles.AAPL[demoCandles.AAPL.length - 1].time;
     const day = new Date(asOf * 1000).toISOString().slice(0, 10);
@@ -64,7 +65,7 @@ describe('evaluateSetupRules', () => {
   });
 
   it('fails negative catalyst when headlines match', () => {
-    const setup = defaultSetups.find((s) => s.id === 'setup-breakout-hold')!;
+    const setup = retiredSetups.find((s) => s.id === 'setup-breakout-hold')!;
     const item = defaultWatchlist.find((w) => w.symbol === 'NVDA')!;
     const results = evaluateSetupRules(setup, {
       item,

@@ -1,4 +1,5 @@
 import {
+  atr,
   avgVolume,
   closes,
   ema,
@@ -79,6 +80,9 @@ const LABELS: Record<RuleCheckId, string> = {
   twenty_day_high: '20-day high break',
   volume_thrust_after_dryup: 'Thrust after volume dry-up',
   mean_reclaim: 'Reclaim of 20-day mean',
+  post_earnings_hold: 'Post-earnings hold',
+  bull_flag_break: 'Bull flag break',
+  atr_expansion_day: '2x ATR expansion day',
 };
 
 export function evaluateCheck(
@@ -526,6 +530,101 @@ export function evaluateCheck(
           : aboveNow
             ? 'Above SMA20 but no recent dip below'
             : 'Still below SMA20',
+      };
+    }
+    case 'post_earnings_hold': {
+      if (!ctx.earningsDates?.length) {
+        return {
+          id,
+          label: LABELS[id],
+          verdict: 'unknown',
+          detail: 'No earnings calendar for post-report hold',
+        };
+      }
+      if (price == null || !last || candles.length < 25) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need price history' };
+      }
+      const asOf =
+        ctx.asOfTime ?? last.time ?? Math.floor(Date.now() / 1000);
+      const day = dayKeyFromUnix(asOf);
+      const t = Date.parse(`${day}T12:00:00Z`);
+      let daysSince: number | null = null;
+      let earnDate: string | null = null;
+      for (const d of ctx.earningsDates) {
+        const e = Date.parse(`${d}T12:00:00Z`);
+        if (!Number.isFinite(e) || e > t) continue;
+        const since = Math.round((t - e) / 86400000);
+        if (daysSince == null || since < daysSince) {
+          daysSince = since;
+          earnDate = d;
+        }
+      }
+      if (daysSince == null || earnDate == null) {
+        return { id, label: LABELS[id], verdict: 'fail', detail: 'No recent past earnings date' };
+      }
+      const inWindow = daysSince >= 2 && daysSince <= 10;
+      const ma20 = sma(closeSeries, 20);
+      const holding = ma20 != null && price > ma20 && last.close >= last.open;
+      const ok = inWindow && holding;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Holding strength ${daysSince}d after earnings ${earnDate}`
+          : `Earnings ${earnDate} (~${daysSince}d) · window ${inWindow} · hold ${holding}`,
+      };
+    }
+    case 'bull_flag_break': {
+      if (candles.length < 16 || !last) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need ~16 bars for flag' };
+      }
+      const impulse = candles.slice(-15, -6);
+      const flag = candles.slice(-6, -1);
+      if (impulse.length < 5 || flag.length < 3) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Flag windows incomplete' };
+      }
+      const impulseRet =
+        (impulse[impulse.length - 1].close - impulse[0].open) / Math.max(impulse[0].open, 1e-9);
+      const flagHigh = Math.max(...flag.map((c) => c.high));
+      const flagLow = Math.min(...flag.map((c) => c.low));
+      const mid = (flagHigh + flagLow) / 2;
+      const flagWidthPct = mid > 0 ? ((flagHigh - flagLow) / mid) * 100 : 99;
+      const atr14 = atr(candles.slice(0, -1), 14);
+      const tight =
+        flagWidthPct <= 5.5 || (atr14 != null && flagHigh - flagLow <= atr14 * 1.35);
+      const broke = last.close > flagHigh;
+      const ok = impulseRet >= 0.04 && tight && broke;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Flag break after ${(impulseRet * 100).toFixed(1)}% impulse (width ${flagWidthPct.toFixed(1)}%)`
+          : `Impulse ${(impulseRet * 100).toFixed(1)}% · tight ${tight} · break ${broke}`,
+      };
+    }
+    case 'atr_expansion_day': {
+      if (!last || candles.length < 16) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need ATR history' };
+      }
+      const atr14 = atr(candles, 14);
+      if (atr14 == null || atr14 <= 0) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'ATR unavailable' };
+      }
+      const range = last.high - last.low;
+      const expanded = range >= 2 * atr14;
+      const loc = range > 0 ? (last.close - last.low) / range : 0;
+      const nearHighs = loc >= 0.7;
+      const up = last.close > last.open;
+      const ok = expanded && nearHighs && up;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Range ${(range / atr14).toFixed(1)}x ATR, close near highs`
+          : `Range ${(range / atr14).toFixed(1)}x ATR · nearHighs ${nearHighs} · up ${up}`,
       };
     }
     default:

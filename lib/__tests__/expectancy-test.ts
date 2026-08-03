@@ -28,14 +28,14 @@ describe('computeSetupExpectancy', () => {
     const trades = [
       closedTrade({
         id: 'a',
-        setupId: 'setup-trend-pullback',
+        setupId: 'setup-momentum-gap',
         entry: 100,
         stop: 95,
         exitPrice: 110, // +2R
       }),
       closedTrade({
         id: 'b',
-        setupId: 'setup-trend-pullback',
+        setupId: 'setup-momentum-gap',
         entry: 100,
         stop: 95,
         exitPrice: 95, // -1R
@@ -43,7 +43,7 @@ describe('computeSetupExpectancy', () => {
     ];
 
     const [edge] = computeSetupExpectancy(defaultSetups, trades).filter(
-      (e) => e.setupId === 'setup-trend-pullback'
+      (e) => e.setupId === 'setup-momentum-gap'
     );
     expect(edge.sampleSize).toBe(2);
     expect(edge.winRate).toBe(0.5);
