@@ -37,6 +37,27 @@ export type TradeLevels = {
   target: number;
 };
 
+/** One Playbook setup option with its own get-in / get-out levels. */
+export type SetupOption = {
+  rank: number;
+  setupId: string;
+  setupName: string;
+  summary: string;
+  passRate: number;
+  expectancyScore: number;
+  levels: TradeLevels;
+  rewardToRisk: number | null;
+  inEntry: boolean;
+  nearEntry: boolean;
+  priceVsZone: string;
+  entryRules: string[];
+  exitRules: string[];
+  passedChecks: string[];
+  failedChecks: string[];
+};
+
+export const MAX_SETUP_OPTIONS = 5;
+
 export type EarningsRisk = {
   date: string;
   daysUntil: number;
@@ -64,6 +85,8 @@ export type Recommendation = {
   news: NewsItem[];
   fundamentals: FundamentalSnapshot | null;
   matchedSetups: SetupMatch[];
+  /** Top matching Playbook setups (up to 5), each with its own levels. */
+  setupOptions: SetupOption[];
   bestSetupName: string | null;
   earnings: EarningsRisk | null;
   /** Interesting for research even when not tradeable today. */
@@ -520,6 +543,84 @@ function mergeLevelsWithSetup(
   };
 }
 
+function zoneForLevels(
+  price: number,
+  levels: TradeLevels
+): { inEntry: boolean; nearEntry: boolean; priceVsZone: string } {
+  const inEntry = price >= levels.entryLow && price <= levels.entryHigh;
+  const nearEntry =
+    inEntry ||
+    (price > levels.entryHigh && price <= levels.entryHigh * 1.03) ||
+    (price < levels.entryLow && price >= levels.entryLow * 0.97);
+  const priceVsZone = inEntry
+    ? 'In entry zone'
+    : nearEntry
+      ? 'Near entry zone'
+      : price > levels.entryHigh
+        ? 'Above entry zone'
+        : 'Waiting for entry zone';
+  return { inEntry, nearEntry, priceVsZone };
+}
+
+/** Per-option levels from that setup only (not blended with Desk structure). */
+function levelsForSetupOption(setup: Setup, candles: Candle[]): TradeLevels {
+  const raw = levelsForSetup(setup, candles);
+  const atr14 = atr(candles, 14);
+  const price = latestCandle(candles)?.close ?? raw.entryHigh;
+  const atrFloor = atr14 != null ? price - 1.8 * atr14 : raw.stop;
+  let entryLow = roundPrice(Math.min(raw.entryLow, raw.entryHigh));
+  let entryHigh = roundPrice(Math.max(raw.entryLow, raw.entryHigh));
+  let stop = roundPrice(Math.min(raw.stop, atrFloor));
+  if (!(stop < entryLow)) {
+    stop = roundPrice(entryLow * 0.97);
+  }
+  const entryMid = (entryLow + entryHigh) / 2;
+  const risk = Math.max(entryMid - stop, entryMid * 0.01);
+  let target = roundPrice(Math.max(raw.target, entryMid + 2 * risk));
+  if (!(target > entryHigh)) {
+    target = roundPrice(entryHigh + risk);
+  }
+  return { entryLow, entryHigh, stop, target };
+}
+
+function buildSetupOptions(input: {
+  matches: SetupMatch[];
+  setups: Setup[];
+  candles: Candle[];
+  price: number;
+}): SetupOption[] {
+  return input.matches.slice(0, MAX_SETUP_OPTIONS).map((match, index) => {
+    const setup = input.setups.find((s) => s.id === match.setupId);
+    const levels = setup
+      ? levelsForSetupOption(setup, input.candles)
+      : {
+          entryLow: 0,
+          entryHigh: 0,
+          stop: 0,
+          target: 0,
+        };
+    const zone = zoneForLevels(input.price, levels);
+    const entryMid = (levels.entryLow + levels.entryHigh) / 2;
+    return {
+      rank: index + 1,
+      setupId: match.setupId,
+      setupName: match.setupName,
+      summary: setup?.summary ?? '',
+      passRate: match.passRate,
+      expectancyScore: match.expectancyScore,
+      levels,
+      rewardToRisk: rewardToRisk(entryMid, levels.stop, levels.target),
+      inEntry: zone.inEntry,
+      nearEntry: zone.nearEntry,
+      priceVsZone: zone.priceVsZone,
+      entryRules: setup?.entryRules ?? [],
+      exitRules: setup?.exitRules ?? [],
+      passedChecks: match.passedChecks ?? [],
+      failedChecks: match.failedChecks ?? [],
+    };
+  });
+}
+
 function pickStance(input: {
   overall: number;
   technical: number;
@@ -648,12 +749,19 @@ export function buildRecommendation(input: {
           expectancy: input.expectancy,
         })
       : [];
-  // One best Playbook setup per ticker (de-dupe overlapping matches).
-  const matchedSetups = rankMatchedSetups(allMatches).slice(0, 1);
+  // Top Playbook matches per ticker (up to 5), ranked by edge then pass rate.
+  const matchedSetups = rankMatchedSetups(allMatches).slice(0, MAX_SETUP_OPTIONS);
+  const setupOptions = buildSetupOptions({
+    matches: matchedSetups,
+    setups,
+    candles,
+    price,
+  });
   const best = matchedSetups[0] ?? null;
   const bestSetup = best ? setups.find((s) => s.id === best.setupId) : undefined;
   const merged = mergeLevelsWithSetup(deskLevels, bestSetup, candles);
-  const levels = merged.levels;
+  // Primary levels: prefer #1 option's own levels; fall back to Desk blend.
+  const levels = setupOptions[0]?.levels ?? merged.levels;
 
   const technical = scoreTechnical({
     price,
@@ -750,7 +858,7 @@ export function buildRecommendation(input: {
       name: 'Playbook confirmation',
       pillar: 'technical',
       verdict: 'pass',
-      detail: `${matchedSetups.length} setup(s) matched — best: ${best.setupName} (score ${best.expectancyScore.toFixed(2)})`,
+      detail: `${matchedSetups.length} setup(s) matched — top: ${best.setupName} (score ${best.expectancyScore.toFixed(2)})`,
     });
   } else if (setups.length) {
     factors.unshift({
@@ -879,6 +987,7 @@ export function buildRecommendation(input: {
     news: historical ? [] : (input.news ?? []).slice(0, 6),
     fundamentals: historical ? null : input.fundamentals ?? null,
     matchedSetups,
+    setupOptions,
     bestSetupName: best?.setupName ?? null,
     earnings,
     researchInteresting,

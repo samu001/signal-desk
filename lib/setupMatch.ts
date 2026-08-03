@@ -10,6 +10,10 @@ export type SetupMatch = {
   pass: boolean;
   passRate: number;
   expectancyScore: number;
+  /** Human-readable auto-check labels that passed (Desk detail). */
+  passedChecks: string[];
+  /** Human-readable auto-check labels that failed (Desk detail). */
+  failedChecks: string[];
 };
 
 const MIN_PASS_RATE = 0.7;
@@ -61,12 +65,16 @@ export function matchPlaybookSetups(input: {
     const scored = scoreRuleResults(usable.length ? usable : results);
     const hardFails = usable.filter((r) => r.verdict === 'fail').length;
     const pass = scored.passRate >= MIN_PASS_RATE && hardFails === 0;
+    const passedChecks = usable.filter((r) => r.verdict === 'pass').map((r) => r.label);
+    const failedChecks = usable.filter((r) => r.verdict === 'fail').map((r) => r.label);
     return {
       setupId: setup.id,
       setupName: setup.name,
       pass,
       passRate: scored.passRate,
       expectancyScore: input.expectancy?.[setup.id]?.score ?? 0,
+      passedChecks,
+      failedChecks,
     };
   });
 }

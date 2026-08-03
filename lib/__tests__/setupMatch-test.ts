@@ -17,6 +17,8 @@ describe('matchPlaybookSetups', () => {
     for (const m of ranked) {
       expect(m.pass).toBe(true);
       expect(m.passRate).toBeGreaterThanOrEqual(0.7);
+      expect(Array.isArray(m.passedChecks)).toBe(true);
+      expect(Array.isArray(m.failedChecks)).toBe(true);
     }
   });
 });

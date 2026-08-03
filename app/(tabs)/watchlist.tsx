@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 
+import { SetupOptionCard } from '@/components/SetupOptionCard';
 import { Button, EmptyState, formatMoney, Pill, Screen, SectionTitle } from '@/components/ui';
 import { isAwaitingDeskSignal } from '@/constants/watchlist';
 import { palette, spacing } from '@/constants/theme';
@@ -167,14 +168,27 @@ export default function WatchlistScreen() {
                   {formatMoney(rec.levels.stop)} · Target {formatMoney(rec.levels.target)}
                 </Text>
                 {rec.bestSetupName ? (
-                  <Text style={styles.setup}>Playbook · {rec.bestSetupName}</Text>
+                  <Text style={styles.setup}>
+                    Top Playbook · {rec.bestSetupName}
+                    {rec.setupOptions.length > 1 ? ` (+${rec.setupOptions.length - 1} more)` : ''}
+                  </Text>
                 ) : (
                   <Text style={styles.setupWarn}>No Playbook setup matched — buys blocked</Text>
                 )}
                 <Text style={styles.confidence}>
                   Confidence {rec.confidence}%
-                  {rec.rewardToRisk != null ? ` · ~${rec.rewardToRisk.toFixed(1)}R` : ''}
+                  {rec.rewardToRisk != null ? ` · ~${rec.rewardToRisk.toFixed(1)}R primary` : ''}
                 </Text>
+                {rec.setupOptions.length > 0 ? (
+                  <View style={styles.optionsWrap}>
+                    <Text style={styles.optionsTitle}>
+                      Setup options ({rec.setupOptions.length})
+                    </Text>
+                    {rec.setupOptions.map((option) => (
+                      <SetupOptionCard key={`${rec.symbol}-${option.setupId}`} option={option} />
+                    ))}
+                  </View>
+                ) : null}
               </View>
             ))}
           </View>
@@ -324,6 +338,15 @@ const styles = StyleSheet.create({
   summary: { color: palette.ink, lineHeight: 21 },
   confidence: { color: palette.muted, fontSize: 13 },
   setupWarn: { color: palette.warn, fontWeight: '600' },
+  optionsWrap: { marginTop: 6, gap: 4 },
+  optionsTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: palette.ink,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 4,
+  },
   listHead: { marginTop: spacing.lg },
   card: {
     backgroundColor: palette.white,
