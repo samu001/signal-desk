@@ -6,6 +6,58 @@ export function sma(values: number[], period: number): number | null {
   return slice.reduce((a, b) => a + b, 0) / period;
 }
 
+/** Exponential moving average (seeded with SMA). */
+export function ema(values: number[], period: number): number | null {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let value = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i++) {
+    value = values[i] * k + value * (1 - k);
+  }
+  return value;
+}
+
+/** EMA series aligned to input length (nulls until warm). */
+export function emaSeries(values: number[], period: number): Array<number | null> {
+  const out: Array<number | null> = values.map(() => null);
+  if (values.length < period) return out;
+  const k = 2 / (period + 1);
+  let value = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out[period - 1] = value;
+  for (let i = period; i < values.length; i++) {
+    value = values[i] * k + value * (1 - k);
+    out[i] = value;
+  }
+  return out;
+}
+
+/** True when latest close is at/above the highest high of the prior `lookback` bars. */
+export function isBreakOfHigh(candles: Candle[], lookback = 20): boolean {
+  if (candles.length < lookback + 1) return false;
+  const last = candles[candles.length - 1];
+  const priorHigh = Math.max(...candles.slice(-(lookback + 1), -1).map((c) => c.high));
+  return last.close >= priorHigh;
+}
+
+/** Average True Range over `period` completed bars. */
+export function atr(candles: Candle[], period = 14): number | null {
+  if (candles.length < period + 1) return null;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const cur = candles[i];
+    const prev = candles[i - 1];
+    const tr = Math.max(
+      cur.high - cur.low,
+      Math.abs(cur.high - prev.close),
+      Math.abs(cur.low - prev.close)
+    );
+    trs.push(tr);
+  }
+  if (trs.length < period) return null;
+  const slice = trs.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
 export function closes(candles: Candle[]): number[] {
   return candles.map((c) => c.close);
 }
@@ -73,4 +125,86 @@ export function relativeStrength(
   const symRet = (s1 - s0) / s0;
   const benRet = (b1 - b0) / b0;
   return (symRet - benRet) * 100;
+}
+
+/** Wilder RSI. Returns null until enough bars exist. */
+export function rsi(values: number[], period = 14): number | null {
+  if (values.length < period + 1) return null;
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
+    if (change >= 0) avgGain += change;
+    else avgLoss -= change;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+/** Latest RSI plus prior bar RSI for turn detection. */
+export function rsiSeries(values: number[], period = 14): number[] {
+  if (values.length < period + 1) return [];
+  const out: number[] = [];
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
+    if (change >= 0) avgGain += change;
+    else avgLoss -= change;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  out.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    out.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  }
+  return out;
+}
+
+export function isSmaRising(values: number[], period: number, lookback = 3): boolean {
+  if (values.length < period + lookback) return false;
+  const latest = sma(values, period);
+  const earlier = sma(values.slice(0, values.length - lookback), period);
+  if (latest == null || earlier == null) return false;
+  return latest > earlier;
+}
+
+/** True when short SMA crossed above long SMA on this bar or within `withinBars`. */
+export function smaCrossedUp(
+  values: number[],
+  shortPeriod: number,
+  longPeriod: number,
+  withinBars = 2
+): boolean {
+  if (values.length < longPeriod + withinBars + 1) return false;
+  for (let offset = 0; offset <= withinBars; offset++) {
+    const end = values.length - offset;
+    const prevEnd = end - 1;
+    if (prevEnd < longPeriod) continue;
+    const shortNow = sma(values.slice(0, end), shortPeriod);
+    const longNow = sma(values.slice(0, end), longPeriod);
+    const shortPrev = sma(values.slice(0, prevEnd), shortPeriod);
+    const longPrev = sma(values.slice(0, prevEnd), longPeriod);
+    if (shortNow == null || longNow == null || shortPrev == null || longPrev == null) continue;
+    if (shortNow > longNow && shortPrev <= longPrev) return true;
+  }
+  return false;
 }

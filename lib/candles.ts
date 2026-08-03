@@ -1,7 +1,7 @@
 import { fetchAlphaVantageDailyCandles } from '@/lib/alphavantage';
 import { fetchFmpDailyCandles } from '@/lib/fmp';
 import { fetchTiingoDailyCandles } from '@/lib/tiingo';
-import { demoCandles } from '@/constants/seed';
+import { getDemoCandles } from '@/constants/seed';
 import { Candle } from '@/types/trading';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
@@ -23,7 +23,7 @@ export type CandleApiOptions = {
 };
 
 function demoSeries(symbol: string): Candle[] {
-  return demoCandles[symbol.toUpperCase()] ?? demoCandles.SPY ?? [];
+  return getDemoCandles(symbol);
 }
 
 async function fetchFinnhubCandles(

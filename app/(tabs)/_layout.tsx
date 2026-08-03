@@ -11,6 +11,10 @@ function TabBarIcon(props: {
   return <FontAwesome size={22} style={{ marginBottom: -2 }} {...props} />;
 }
 
+export const unstable_settings = {
+  initialRouteName: 'desk',
+};
+
 export default function TabLayout() {
   useColorScheme();
 
@@ -27,6 +31,13 @@ export default function TabLayout() {
           borderTopColor: palette.line,
         },
       }}>
+      <Tabs.Screen
+        name="desk"
+        options={{
+          title: 'Desk',
+          tabBarIcon: ({ color }) => <TabBarIcon name="line-chart" color={color} />,
+        }}
+      />
       <Tabs.Screen
         name="index"
         options={{

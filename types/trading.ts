@@ -1,5 +1,10 @@
 export type RuleCheckId =
   | 'above_sma_50'
+  | 'above_sma_20'
+  | 'sma_20_rising'
+  | 'sma_cross_up'
+  | 'rsi_oversold_recovering'
+  | 'strong_up_day'
   | 'in_buy_zone'
   | 'near_or_in_buy_zone'
   | 'higher_low'
@@ -12,7 +17,25 @@ export type RuleCheckId =
   | 'rejection_wick'
   | 'no_negative_catalyst'
   | 'rs_vs_spy'
-  | 'session_tradable';
+  | 'session_tradable'
+  | 'market_regime_ok'
+  | 'earnings_clear'
+  | 'weekly_trend_ok'
+  | 'sector_rs_ok'
+  | 'volatility_ok'
+  | 'prior_day_high_break'
+  | 'ema_stack_bull'
+  | 'near_ema_21'
+  | 'twenty_day_high'
+  | 'volume_thrust_after_dryup'
+  | 'mean_reclaim'
+  | 'post_earnings_hold'
+  | 'bull_flag_break'
+  | 'atr_expansion_day'
+  | 'two_day_flush_reversal'
+  | 'inside_day_breakout'
+  | 'near_52w_high'
+  | 'first_touch_sma_20'
 
 export type Setup = {
   id: string;
@@ -97,7 +120,7 @@ export type FundamentalSnapshot = {
   revenueGrowth: number | null;
   roe: number | null;
   debtToEquity: number | null;
-  source: 'fmp';
+  source: 'fmp' | 'demo';
 };
 
 export type Candle = {

@@ -1,0 +1,898 @@
+import { CandleSource } from '@/lib/candles';
+import { SetupExpectancy } from '@/lib/expectancy';
+import {
+  atr,
+  avgVolume,
+  closes,
+  hasHigherLow,
+  hasRejectionWick,
+  latestCandle,
+  percentFrom,
+  relativeStrength,
+  sma,
+} from '@/lib/indicators';
+import { rewardToRisk } from '@/lib/positionSize';
+import { matchPlaybookSetups, rankMatchedSetups, SetupMatch } from '@/lib/setupMatch';
+import { levelsForSetup } from '@/lib/setupLevels';
+import { Candle, FundamentalSnapshot, NewsItem, Quote, Setup } from '@/types/trading';
+
+export type Stance = 'strong_buy' | 'soft_buy' | 'wait' | 'avoid';
+
+export type RecommendFactor = {
+  name: string;
+  pillar: 'technical' | 'company' | 'news';
+  verdict: 'pass' | 'fail' | 'unknown';
+  detail: string;
+};
+
+export type RecommendReason = {
+  tone: 'good' | 'warn' | 'bad' | 'neutral';
+  text: string;
+};
+
+export type TradeLevels = {
+  entryLow: number;
+  entryHigh: number;
+  stop: number;
+  target: number;
+};
+
+export type EarningsRisk = {
+  date: string;
+  daysUntil: number;
+  blocked: boolean;
+  detail: string;
+};
+
+export type Recommendation = {
+  symbol: string;
+  stance: Stance;
+  label: string;
+  summary: string;
+  confidence: number;
+  price: number;
+  levels: TradeLevels;
+  rewardToRisk: number | null;
+  nearEntry: boolean;
+  inEntry: boolean;
+  technicalScore: number;
+  fundamentalScore: number;
+  newsScore: number;
+  overallScore: number;
+  factors: RecommendFactor[];
+  reasons: RecommendReason[];
+  news: NewsItem[];
+  fundamentals: FundamentalSnapshot | null;
+  matchedSetups: SetupMatch[];
+  bestSetupName: string | null;
+  earnings: EarningsRisk | null;
+  /** Interesting for research even when not tradeable today. */
+  researchInteresting: boolean;
+  researchLabel: string;
+  /** True only for Soft/Strong buy trade stances. */
+  tradeable: boolean;
+  levelsSource: 'desk' | 'playbook';
+  relativeStrength20d: number | null;
+  dollarVolume20d: number | null;
+  candleSource: CandleSource;
+  quoteSource: Quote['source'];
+  warnings: string[];
+};
+
+const NEGATIVE_NEWS =
+  /\b(downgrade|miss(?:es|ed)?|lawsuit|probe|investigation|fraud|recall|bankrupt|sec charges|cuts guidance|plunge|crash)\b/i;
+const POSITIVE_NEWS =
+  /\b(upgrade|beat|beats|raises guidance|record|surge|partnership|win|approval|strong demand)\b/i;
+
+const STANCE_LABEL: Record<Stance, string> = {
+  strong_buy: 'Strong buy',
+  soft_buy: 'Soft buy',
+  wait: 'Wait',
+  avoid: 'Avoid',
+};
+
+function roundPrice(n: number): number {
+  if (n >= 100) return Math.round(n * 100) / 100;
+  if (n >= 10) return Math.round(n * 100) / 100;
+  return Math.round(n * 1000) / 1000;
+}
+
+/** Derive entry / stop / target from recent daily structure (+ ATR buffer). */
+export function computeTradeLevels(candles: Candle[]): TradeLevels {
+  const last = latestCandle(candles);
+  const price = last?.close ?? 100;
+  const window = candles.slice(-15);
+  const swingLow = window.length ? Math.min(...window.map((c) => c.low)) : price * 0.97;
+  const swingHigh = window.length ? Math.max(...window.map((c) => c.high)) : price * 1.03;
+  const sma20 = sma(closes(candles), 20) ?? price;
+  const atr14 = atr(candles, 14);
+  const atrStop = atr14 != null ? price - 1.5 * atr14 : price * 0.97;
+  const aboveSma50 = (() => {
+    const s50 = sma(closes(candles), 50);
+    return s50 != null ? price >= s50 : true;
+  })();
+
+  // Breakout-ish: price near recent highs → enter on hold above resistance.
+  if (price >= swingHigh * 0.985 && aboveSma50) {
+    const entryLow = roundPrice(swingHigh * 0.995);
+    const entryHigh = roundPrice(swingHigh * 1.02);
+    const stop = roundPrice(Math.min(swingLow, atrStop, entryLow * 0.97));
+    const entryMid = (entryLow + entryHigh) / 2;
+    const risk = Math.max(entryMid - stop, entryMid * 0.01);
+    return {
+      entryLow,
+      entryHigh,
+      stop,
+      target: roundPrice(entryMid + 2 * risk),
+    };
+  }
+
+  // Default trend pullback: buy near 20-day average with stop under swing low / ATR.
+  const entryLow = roundPrice(Math.min(sma20 * 0.985, price * 0.99));
+  const entryHigh = roundPrice(Math.max(sma20 * 1.015, price * 1.005));
+  const stop = roundPrice(Math.min(swingLow * 0.995, atrStop));
+  const entryMid = (entryLow + entryHigh) / 2;
+  const risk = Math.max(entryMid - stop, entryMid * 0.01);
+  return {
+    entryLow: Math.min(entryLow, entryHigh),
+    entryHigh: Math.max(entryLow, entryHigh),
+    stop,
+    target: roundPrice(entryMid + 2 * risk),
+  };
+}
+
+function scoreTechnical(input: {
+  price: number;
+  candles: Candle[];
+  spyCandles: Candle[];
+  levels: TradeLevels;
+}): { score: number; factors: RecommendFactor[]; nearEntry: boolean; inEntry: boolean } {
+  const { price, candles, spyCandles, levels } = input;
+  const factors: RecommendFactor[] = [];
+  let points = 0;
+  let weight = 0;
+
+  const add = (factor: RecommendFactor, passPts: number, failPts = 0, unknownPts = passPts * 0.45) => {
+    factors.push(factor);
+    weight += passPts;
+    if (factor.verdict === 'pass') points += passPts;
+    else if (factor.verdict === 'fail') points += failPts;
+    else points += unknownPts;
+  };
+
+  const closeSeries = closes(candles);
+  const sma50 = sma(closeSeries, 50);
+  const sma20 = sma(closeSeries, 20);
+  const last = latestCandle(candles);
+  const avgVol20 = avgVolume(candles, 20);
+  const inEntry = price >= levels.entryLow && price <= levels.entryHigh;
+  const nearEntry =
+    inEntry ||
+    (price > levels.entryHigh && price <= levels.entryHigh * 1.03) ||
+    (price < levels.entryLow && price >= levels.entryLow * 0.97);
+
+  if (sma50 == null) {
+    add(
+      { name: 'Above 50-day trend', pillar: 'technical', verdict: 'unknown', detail: 'Need more history' },
+      25
+    );
+  } else {
+    add(
+      {
+        name: 'Above 50-day trend',
+        pillar: 'technical',
+        verdict: price > sma50 ? 'pass' : 'fail',
+        detail: `Price ${price.toFixed(2)} vs SMA50 ${sma50.toFixed(2)}`,
+      },
+      25
+    );
+  }
+
+  add(
+    {
+      name: 'In / near entry zone',
+      pillar: 'technical',
+      verdict: nearEntry ? 'pass' : 'fail',
+      detail: inEntry
+        ? `Inside ${levels.entryLow}–${levels.entryHigh}`
+        : nearEntry
+          ? 'Within 3% of entry zone'
+          : `Zone ${levels.entryLow}–${levels.entryHigh}`,
+    },
+    22
+  );
+
+  const hl = hasHigherLow(candles);
+  add(
+    {
+      name: 'Higher-low structure',
+      pillar: 'technical',
+      verdict: candles.length < 6 ? 'unknown' : hl ? 'pass' : 'fail',
+      detail: hl ? 'Recent swing lows are rising' : 'No clear higher low yet',
+    },
+    14
+  );
+
+  const rs = relativeStrength(candles, spyCandles, 20);
+  if (rs == null) {
+    add(
+      { name: 'Relative strength vs SPY', pillar: 'technical', verdict: 'unknown', detail: 'Need SPY history' },
+      14
+    );
+  } else {
+    add(
+      {
+        name: 'Relative strength vs SPY',
+        pillar: 'technical',
+        verdict: rs >= 0 ? 'pass' : 'fail',
+        detail: `20d RS ${rs >= 0 ? '+' : ''}${rs.toFixed(1)}%`,
+      },
+      14
+    );
+  }
+
+  const lastVol = last?.volume ?? null;
+  if (lastVol == null || avgVol20 == null) {
+    add(
+      { name: 'Volume confirmation', pillar: 'technical', verdict: 'unknown', detail: 'Need volume history' },
+      10
+    );
+  } else {
+    const drying = lastVol <= avgVol20 * 0.9;
+    const expanding = lastVol >= avgVol20 * 1.2;
+    const ok = drying || expanding;
+    add(
+      {
+        name: 'Volume confirmation',
+        pillar: 'technical',
+        verdict: ok ? 'pass' : 'fail',
+        detail: drying ? 'Pullback volume cooling' : expanding ? 'Breakout volume expanding' : 'Volume mixed',
+      },
+      10
+    );
+  }
+
+  const wick = hasRejectionWick(last);
+  add(
+    {
+      name: 'Rejection / support wick',
+      pillar: 'technical',
+      verdict: last ? (wick ? 'pass' : 'fail') : 'unknown',
+      detail: wick ? 'Buyers defended the lows on the last bar' : 'No clear rejection wick',
+    },
+    8,
+    3
+  );
+
+  if (sma20 != null) {
+    const dist = percentFrom(price, sma20);
+    const chasing = dist > 6;
+    add(
+      {
+        name: 'Not chasing extension',
+        pillar: 'technical',
+        verdict: chasing ? 'fail' : 'pass',
+        detail: `${dist >= 0 ? '+' : ''}${dist.toFixed(1)}% vs 20-day average`,
+      },
+      7
+    );
+  }
+
+  const score = weight > 0 ? Math.round((points / weight) * 100) : 50;
+  return { score, factors, nearEntry, inEntry };
+}
+
+function scoreFundamentals(fundamentals: FundamentalSnapshot | null): {
+  score: number;
+  factors: RecommendFactor[];
+} {
+  const factors: RecommendFactor[] = [];
+  if (!fundamentals) {
+    return {
+      score: 50,
+      factors: [
+        {
+          name: 'Company data',
+          pillar: 'company',
+          verdict: 'unknown',
+          detail: 'No fundamentals available',
+        },
+      ],
+    };
+  }
+
+  let points = 0;
+  let weight = 0;
+  const add = (
+    name: string,
+    verdict: RecommendFactor['verdict'],
+    detail: string,
+    passPts: number,
+    failPts = 0,
+    unknownPts = passPts * 0.5
+  ) => {
+    factors.push({ name, pillar: 'company', verdict, detail });
+    weight += passPts;
+    if (verdict === 'pass') points += passPts;
+    else if (verdict === 'fail') points += failPts;
+    else points += unknownPts;
+  };
+
+  if (fundamentals.pe == null) {
+    add('Valuation (P/E)', 'unknown', 'P/E unavailable', 20);
+  } else if (fundamentals.pe > 0 && fundamentals.pe <= 40) {
+    add('Valuation (P/E)', 'pass', `P/E ${fundamentals.pe.toFixed(1)}`, 20);
+  } else if (fundamentals.pe > 40 && fundamentals.pe <= 70) {
+    add('Valuation (P/E)', 'unknown', `Rich P/E ${fundamentals.pe.toFixed(1)}`, 20, 8, 12);
+  } else {
+    add('Valuation (P/E)', 'fail', `P/E ${fundamentals.pe.toFixed(1)} looks stretched or distorted`, 20);
+  }
+
+  if (fundamentals.profitMargin == null) {
+    add('Profit margin', 'unknown', 'Margin unavailable', 20);
+  } else {
+    const m = fundamentals.profitMargin;
+    const pct = m > 1 ? m : m * 100;
+    add(
+      'Profit margin',
+      pct >= 10 ? 'pass' : pct >= 3 ? 'unknown' : 'fail',
+      `Net margin ~${pct.toFixed(1)}%`,
+      20,
+      4,
+      10
+    );
+  }
+
+  if (fundamentals.roe == null) {
+    add('Return on equity', 'unknown', 'ROE unavailable', 20);
+  } else {
+    // FMP / demo may store 0.38 (38%) or already-percent-like values.
+    const roePct = Math.abs(fundamentals.roe) <= 5 ? fundamentals.roe * 100 : fundamentals.roe;
+    add(
+      'Return on equity',
+      roePct >= 12 ? 'pass' : roePct >= 5 ? 'unknown' : 'fail',
+      `ROE ${roePct.toFixed(1)}%`,
+      20,
+      4,
+      10
+    );
+  }
+
+  if (fundamentals.revenueGrowth == null) {
+    add('Revenue growth', 'unknown', 'Growth unavailable', 20);
+  } else {
+    const g =
+      Math.abs(fundamentals.revenueGrowth) <= 5
+        ? fundamentals.revenueGrowth * 100
+        : fundamentals.revenueGrowth;
+    add(
+      'Revenue growth',
+      g >= 5 ? 'pass' : g >= 0 ? 'unknown' : 'fail',
+      `Revenue growth ~${g.toFixed(1)}%`,
+      20,
+      3,
+      10
+    );
+  }
+
+  if (fundamentals.debtToEquity == null) {
+    add('Balance sheet leverage', 'unknown', 'Debt/equity unavailable', 20);
+  } else {
+    add(
+      'Balance sheet leverage',
+      fundamentals.debtToEquity <= 1.5 ? 'pass' : fundamentals.debtToEquity <= 2.5 ? 'unknown' : 'fail',
+      `Debt/equity ${fundamentals.debtToEquity.toFixed(2)}`,
+      20,
+      4,
+      10
+    );
+  }
+
+  return { score: weight > 0 ? Math.round((points / weight) * 100) : 50, factors };
+}
+
+function scoreNews(news: NewsItem[]): { score: number; factors: RecommendFactor[]; hardFail: boolean } {
+  if (!news.length) {
+    return {
+      score: 55,
+      hardFail: false,
+      factors: [
+        {
+          name: 'Catalyst screen',
+          pillar: 'news',
+          verdict: 'unknown',
+          detail: 'No recent headlines to screen',
+        },
+      ],
+    };
+  }
+
+  const negatives = news.filter((n) => NEGATIVE_NEWS.test(n.headline));
+  const positives = news.filter((n) => POSITIVE_NEWS.test(n.headline));
+
+  if (negatives.length) {
+    return {
+      score: 18,
+      hardFail: true,
+      factors: [
+        {
+          name: 'Catalyst screen',
+          pillar: 'news',
+          verdict: 'fail',
+          detail: negatives[0].headline,
+        },
+      ],
+    };
+  }
+
+  if (positives.length) {
+    return {
+      score: 88,
+      hardFail: false,
+      factors: [
+        {
+          name: 'Catalyst screen',
+          pillar: 'news',
+          verdict: 'pass',
+          detail: positives[0].headline,
+        },
+      ],
+    };
+  }
+
+  return {
+    score: 78,
+    hardFail: false,
+    factors: [
+      {
+        name: 'Catalyst screen',
+        pillar: 'news',
+        verdict: 'pass',
+        detail: 'No red-flag headlines in the recent lookback',
+      },
+    ],
+  };
+}
+
+function assessLiquidity(candles: Candle[], price: number): {
+  dollarVolume: number | null;
+  ok: boolean;
+  thin: boolean;
+  detail: string;
+} {
+  const vol = avgVolume(candles, 20);
+  if (vol == null || price <= 0) {
+    return { dollarVolume: null, ok: true, thin: false, detail: 'Volume history unavailable' };
+  }
+  const dollarVolume = vol * price;
+  const thin = dollarVolume < 5_000_000;
+  const ok = dollarVolume >= 20_000_000;
+  return {
+    dollarVolume,
+    ok,
+    thin,
+    detail: `~$${(dollarVolume / 1_000_000).toFixed(1)}M avg daily dollar volume`,
+  };
+}
+
+function assessMarketRelative(candles: Candle[], spyCandles: Candle[]): {
+  rs: number | null;
+  ok: boolean;
+  weak: boolean;
+  detail: string;
+} {
+  const rs = relativeStrength(candles, spyCandles, 20);
+  if (rs == null) {
+    return { rs: null, ok: true, weak: false, detail: 'Need SPY history for relative strength' };
+  }
+  return {
+    rs,
+    ok: rs >= -2,
+    weak: rs < -5,
+    detail: `20d RS vs SPY ${rs >= 0 ? '+' : ''}${rs.toFixed(1)}%`,
+  };
+}
+
+function mergeLevelsWithSetup(
+  deskLevels: TradeLevels,
+  setup: Setup | undefined,
+  candles: Candle[]
+): { levels: TradeLevels; source: 'desk' | 'playbook' } {
+  if (!setup || candles.length < 20) return { levels: deskLevels, source: 'desk' };
+  const setupLevels = levelsForSetup(setup, candles);
+  const atr14 = atr(candles, 14);
+  const price = latestCandle(candles)?.close ?? setupLevels.entryHigh;
+  const atrFloor = atr14 != null ? price - 1.8 * atr14 : setupLevels.stop;
+  const stop = Math.min(setupLevels.stop, deskLevels.stop, atrFloor);
+  const entryLow = Math.min(setupLevels.entryLow, deskLevels.entryLow);
+  const entryHigh = Math.max(setupLevels.entryHigh, deskLevels.entryHigh);
+  const entryMid = (entryLow + entryHigh) / 2;
+  const risk = Math.max(entryMid - stop, entryMid * 0.01);
+  const target = Math.max(setupLevels.target, deskLevels.target, entryMid + 2 * risk);
+  return {
+    source: 'playbook',
+    levels: {
+      entryLow: roundPrice(entryLow),
+      entryHigh: roundPrice(entryHigh),
+      stop: roundPrice(stop),
+      target: roundPrice(target),
+    },
+  };
+}
+
+function pickStance(input: {
+  overall: number;
+  technical: number;
+  fundamental: number;
+  news: number;
+  newsHardFail: boolean;
+  nearEntry: boolean;
+  inEntry: boolean;
+  price: number;
+  stop: number;
+  playbookMatched: boolean;
+  bestExpectancy: number;
+  earningsBlocked: boolean;
+  liquidityThin: boolean;
+  liquidityOk: boolean;
+  marketWeak: boolean;
+  marketOk: boolean;
+}): Stance {
+  if (input.newsHardFail || input.price <= input.stop) return 'avoid';
+  if (input.technical < 35) return 'avoid';
+  if (input.liquidityThin) return 'avoid';
+  if (input.marketWeak) return 'avoid';
+  if (input.earningsBlocked) return 'wait';
+  // Desk is a confirmation layer: no buy stance without a Playbook match.
+  if (!input.playbookMatched) return 'wait';
+  if (!input.liquidityOk || !input.marketOk) return 'wait';
+
+  const strong =
+    input.overall >= 72 &&
+    input.technical >= 65 &&
+    input.news >= 60 &&
+    input.fundamental >= 55 &&
+    (input.inEntry || input.nearEntry) &&
+    input.bestExpectancy >= -0.05 &&
+    input.liquidityOk &&
+    input.marketOk;
+
+  if (strong) return 'strong_buy';
+  if (input.overall >= 55 && input.technical >= 45 && (input.inEntry || input.nearEntry)) {
+    return 'soft_buy';
+  }
+  return 'wait';
+}
+
+function buildSummary(input: {
+  stance: Stance;
+  symbol: string;
+  nearEntry: boolean;
+  inEntry: boolean;
+  bestSetupName: string | null;
+  earningsBlocked: boolean;
+  researchInteresting: boolean;
+  tradeable: boolean;
+  marketWeak: boolean;
+  liquidityThin: boolean;
+}): string {
+  if (input.liquidityThin) {
+    return `${input.symbol} looks too thin on liquidity — Desk avoids it for tradeable signals.`;
+  }
+  if (input.marketWeak) {
+    return `${input.symbol} is lagging the market hard — Desk avoids buy labels until relative strength improves.`;
+  }
+  if (input.earningsBlocked) {
+    return `${input.symbol} is too close to earnings — Desk waits even if the chart looks okay.`;
+  }
+  if (input.tradeable) {
+    if (input.stance === 'strong_buy') {
+      return `${input.symbol} is tradeable: Playbook${input.bestSetupName ? ` (${input.bestSetupName})` : ''} confirms with clean technicals${
+        input.inEntry ? ' and price in the entry zone' : input.nearEntry ? ' and price near the entry zone' : ''
+      }.`;
+    }
+    return `${input.symbol} is a patient Soft buy — Playbook${input.bestSetupName ? ` (${input.bestSetupName})` : ''} matches and price is cooperating with the zone.`;
+  }
+  if (input.researchInteresting) {
+    return `${input.symbol} is interesting for research, but not tradeable yet${
+      input.bestSetupName ? ` (${input.bestSetupName} needs a cleaner trigger/zone)` : ' (no Playbook confirmation)'
+    }.`;
+  }
+  if (input.stance === 'avoid') {
+    return `${input.symbol} fails a hard filter right now (trend, liquidity, market RS, stop risk, or news). Stand aside.`;
+  }
+  return `${input.symbol} is not clean enough yet. Keep it on watch.`;
+}
+
+export function buildRecommendation(input: {
+  symbol: string;
+  quote: Quote | null;
+  candles: Candle[];
+  spyCandles: Candle[];
+  qqqCandles?: Candle[];
+  news?: NewsItem[];
+  fundamentals?: FundamentalSnapshot | null;
+  candleSource?: CandleSource;
+  warnings?: string[];
+  setups?: Setup[];
+  expectancy?: Record<string, SetupExpectancy>;
+  earnings?: EarningsRisk | null;
+  /** Full YYYY-MM-DD earnings calendar for Playbook ±1 day blackout. */
+  earningsDates?: string[];
+  /**
+   * Historical replay mode: company/news are treated as neutral placeholders
+   * (not point-in-time), so stance is driven mainly by technicals + Playbook match.
+   */
+  historicalMode?: boolean;
+}): Recommendation {
+  const symbol = input.symbol.toUpperCase().trim();
+  const candles = input.candles;
+  const price = input.quote?.price ?? latestCandle(candles)?.close ?? 0;
+  const deskLevels = computeTradeLevels(candles);
+  const historical = Boolean(input.historicalMode);
+  const setups = input.setups ?? [];
+  const allMatches =
+    setups.length && candles.length
+      ? matchPlaybookSetups({
+          symbol,
+          setups,
+          quote: input.quote,
+          candles,
+          spyCandles: input.spyCandles,
+          qqqCandles: input.qqqCandles,
+          news: historical ? [] : input.news ?? [],
+          earningsDates:
+            input.earningsDates ??
+            (input.earnings?.date ? [input.earnings.date] : undefined),
+          historicalMode: historical,
+          expectancy: input.expectancy,
+        })
+      : [];
+  // One best Playbook setup per ticker (de-dupe overlapping matches).
+  const matchedSetups = rankMatchedSetups(allMatches).slice(0, 1);
+  const best = matchedSetups[0] ?? null;
+  const bestSetup = best ? setups.find((s) => s.id === best.setupId) : undefined;
+  const merged = mergeLevelsWithSetup(deskLevels, bestSetup, candles);
+  const levels = merged.levels;
+
+  const technical = scoreTechnical({
+    price,
+    candles,
+    spyCandles: input.spyCandles,
+    levels,
+  });
+  const fundamental = historical
+    ? {
+        score: 60,
+        factors: [
+          {
+            name: 'Company data',
+            pillar: 'company' as const,
+            verdict: 'unknown' as const,
+            detail: 'Neutral placeholder — fundamentals are not point-in-time historically',
+          },
+        ],
+      }
+    : scoreFundamentals(input.fundamentals ?? null);
+  const news = historical
+    ? {
+        score: 70,
+        hardFail: false,
+        factors: [
+          {
+            name: 'Catalyst screen',
+            pillar: 'news' as const,
+            verdict: 'unknown' as const,
+            detail: 'News archive skipped in historical Desk backtest',
+          },
+        ],
+      }
+    : scoreNews(input.news ?? []);
+
+  const playbookMatched = matchedSetups.length > 0;
+  const earnings = input.earnings ?? null;
+  const earningsBlocked = Boolean(earnings?.blocked);
+  const liquidity = assessLiquidity(candles, price);
+  const market = assessMarketRelative(candles, input.spyCandles);
+
+  const playbookBoost = playbookMatched ? Math.min(12, 6 + matchedSetups.length * 2) : 0;
+  const expectancyBoost = best ? Math.max(-8, Math.min(10, best.expectancyScore * 10)) : 0;
+  const baseOverall = historical
+    ? technical.score * 0.75 + fundamental.score * 0.15 + news.score * 0.1
+    : technical.score * 0.5 + fundamental.score * 0.3 + news.score * 0.2;
+  const overallScore = Math.round(
+    Math.max(
+      0,
+      Math.min(
+        100,
+        baseOverall +
+          playbookBoost +
+          expectancyBoost -
+          (earningsBlocked ? 20 : 0) -
+          (market.weak ? 15 : market.ok ? 0 : 8) -
+          (liquidity.thin ? 20 : liquidity.ok ? 0 : 8)
+      )
+    )
+  );
+
+  const stance = pickStance({
+    overall: overallScore,
+    technical: technical.score,
+    fundamental: fundamental.score,
+    news: news.score,
+    newsHardFail: news.hardFail,
+    nearEntry: technical.nearEntry,
+    inEntry: technical.inEntry,
+    price,
+    stop: levels.stop,
+    playbookMatched,
+    bestExpectancy: best?.expectancyScore ?? 0,
+    earningsBlocked,
+    liquidityThin: liquidity.thin,
+    liquidityOk: liquidity.ok,
+    marketWeak: market.weak,
+    marketOk: market.ok,
+  });
+
+  const tradeable = stance === 'soft_buy' || stance === 'strong_buy';
+  const researchInteresting =
+    !liquidity.thin &&
+    !market.weak &&
+    !news.hardFail &&
+    (playbookMatched ||
+      technical.score >= 55 ||
+      fundamental.score >= 70 ||
+      (technical.score >= 45 && fundamental.score >= 55));
+
+  const factors = [...technical.factors, ...fundamental.factors, ...news.factors];
+  if (playbookMatched && best) {
+    factors.unshift({
+      name: 'Playbook confirmation',
+      pillar: 'technical',
+      verdict: 'pass',
+      detail: `${matchedSetups.length} setup(s) matched — best: ${best.setupName} (score ${best.expectancyScore.toFixed(2)})`,
+    });
+  } else if (setups.length) {
+    factors.unshift({
+      name: 'Playbook confirmation',
+      pillar: 'technical',
+      verdict: 'fail',
+      detail: 'No playbook setup currently passes',
+    });
+  }
+  factors.push({
+    name: 'Liquidity',
+    pillar: 'technical',
+    verdict: liquidity.thin ? 'fail' : liquidity.ok ? 'pass' : 'unknown',
+    detail: liquidity.detail,
+  });
+  factors.push({
+    name: 'Market relative strength',
+    pillar: 'technical',
+    verdict: market.weak ? 'fail' : market.ok ? 'pass' : 'unknown',
+    detail: market.detail,
+  });
+  if (earnings) {
+    factors.push({
+      name: 'Earnings window',
+      pillar: 'news',
+      verdict: earnings.blocked ? 'fail' : 'pass',
+      detail: earnings.detail,
+    });
+  }
+  if (merged.source === 'playbook' && best) {
+    factors.push({
+      name: 'Level source',
+      pillar: 'technical',
+      verdict: 'pass',
+      detail: `Entry/stop/target anchored to ${best.setupName} + ATR`,
+    });
+  }
+
+  const reasons: RecommendReason[] = [];
+  for (const f of factors) {
+    if (f.verdict === 'pass') reasons.push({ tone: 'good', text: `${f.name}: ${f.detail}` });
+    else if (f.verdict === 'fail') reasons.push({ tone: 'bad', text: `${f.name}: ${f.detail}` });
+  }
+  if (researchInteresting && !tradeable) {
+    reasons.unshift({
+      tone: 'warn',
+      text: 'Marked interesting for research, but not tradeable yet.',
+    });
+  }
+  if (technical.inEntry) {
+    reasons.unshift({
+      tone: 'good',
+      text: `Price is inside the suggested entry zone (${levels.entryLow}–${levels.entryHigh}).`,
+    });
+  } else if (technical.nearEntry) {
+    reasons.unshift({
+      tone: 'warn',
+      text: `Price is near the entry zone (${levels.entryLow}–${levels.entryHigh}) — wait for a touch or reclaim.`,
+    });
+  } else {
+    reasons.unshift({
+      tone: 'neutral',
+      text: `Suggested entry zone is ${levels.entryLow}–${levels.entryHigh}; current price is ${price.toFixed(2)}.`,
+    });
+  }
+
+  const entryMid = (levels.entryLow + levels.entryHigh) / 2;
+  const rr = rewardToRisk(entryMid, levels.stop, levels.target);
+  const confidence = Math.max(
+    20,
+    Math.min(
+      94,
+      Math.round(
+        overallScore * 0.8 +
+          (input.candleSource === 'demo' ? -8 : 4) +
+          (technical.nearEntry ? 4 : 0) +
+          (playbookMatched ? 8 : -10) +
+          (earningsBlocked ? -12 : 0) +
+          (tradeable ? 4 : -4) +
+          (best && best.expectancyScore > 0 ? 4 : 0)
+      )
+    )
+  );
+
+  const warnings = [...(input.warnings ?? [])];
+  if (historical) {
+    warnings.push(
+      'Historical Desk mode: company/news neutralized; buys still require Playbook confirmation.'
+    );
+  }
+  if (!playbookMatched && setups.length) {
+    warnings.push('No Playbook setup matched — Desk will not issue Soft/Strong buy.');
+  }
+  if (researchInteresting && !tradeable) {
+    warnings.push('Research-interesting only — not a tradeable Soft/Strong buy.');
+  }
+
+  return {
+    symbol,
+    stance,
+    label: STANCE_LABEL[stance],
+    summary: buildSummary({
+      stance,
+      symbol,
+      nearEntry: technical.nearEntry,
+      inEntry: technical.inEntry,
+      bestSetupName: best?.setupName ?? null,
+      earningsBlocked,
+      researchInteresting,
+      tradeable,
+      marketWeak: market.weak,
+      liquidityThin: liquidity.thin,
+    }),
+    confidence,
+    price,
+    levels,
+    rewardToRisk: rr,
+    nearEntry: technical.nearEntry,
+    inEntry: technical.inEntry,
+    technicalScore: technical.score,
+    fundamentalScore: fundamental.score,
+    newsScore: news.score,
+    overallScore,
+    factors,
+    reasons: reasons.slice(0, 12),
+    news: historical ? [] : (input.news ?? []).slice(0, 6),
+    fundamentals: historical ? null : input.fundamentals ?? null,
+    matchedSetups,
+    bestSetupName: best?.setupName ?? null,
+    earnings,
+    researchInteresting,
+    researchLabel: researchInteresting
+      ? tradeable
+        ? 'Tradeable setup'
+        : 'Interesting (research only)'
+      : 'Not interesting',
+    tradeable,
+    levelsSource: merged.source,
+    relativeStrength20d: market.rs,
+    dollarVolume20d: liquidity.dollarVolume,
+    candleSource: input.candleSource ?? 'demo',
+    quoteSource: input.quote?.source ?? 'demo',
+    warnings,
+  };
+}
