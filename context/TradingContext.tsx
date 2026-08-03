@@ -1,8 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
+import { AWAITING_DESK_THESIS, isAwaitingDeskSignal } from '@/constants/watchlist';
 import { actionableCandidates, buildCandidates, Candidate } from '@/lib/candidates';
 import { computeSetupExpectancy, SetupExpectancy } from '@/lib/expectancy';
 import { fetchMarketBundle } from '@/lib/finnhub';
+import { Recommendation } from '@/lib/recommend';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { createId, loadAppState, saveAppState } from '@/lib/storage';
 import { CandleSource } from '@/lib/candles';
@@ -38,6 +40,10 @@ type TradingContextValue = {
   refreshQuotes: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => void;
   upsertWatchlistItem: (item: Omit<WatchlistItem, 'id' | 'createdAt'> & { id?: string }) => string;
+  /** Add a ticker by symbol only — Desk fills levels on Get signals. */
+  addWatchlistSymbol: (symbol: string) => { id: string; created: boolean };
+  /** Write Desk recommendation levels / best setup back onto matching watchlist rows. */
+  applyDeskSignals: (recommendations: Recommendation[]) => void;
   removeWatchlistItem: (id: string) => void;
   updateSetup: (setup: Setup) => void;
   addTrade: (trade: Omit<Trade, 'id'>) => string;
@@ -159,6 +165,65 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  const addWatchlistSymbol = useCallback((symbol: string) => {
+    const upper = symbol.toUpperCase().trim();
+    if (!upper) {
+      throw new Error('Enter a stock ticker first.');
+    }
+    let result = { id: '', created: false };
+    setState((prev) => {
+      if (!prev) return prev;
+      const existing = prev.watchlist.find((w) => w.symbol.toUpperCase() === upper);
+      if (existing) {
+        result = { id: existing.id, created: false };
+        return prev;
+      }
+      const id = createId('wl');
+      result = { id, created: true };
+      const nextItem: WatchlistItem = {
+        id,
+        symbol: upper,
+        thesis: AWAITING_DESK_THESIS,
+        entryLow: 0,
+        entryHigh: 0,
+        stop: 0,
+        target: 0,
+        setupId: null,
+        notes: '',
+        createdAt: new Date().toISOString(),
+      };
+      return { ...prev, watchlist: [nextItem, ...prev.watchlist] };
+    });
+    return result;
+  }, []);
+
+  const applyDeskSignals = useCallback((recommendations: Recommendation[]) => {
+    if (!recommendations.length) return;
+    const bySymbol = Object.fromEntries(
+      recommendations.map((r) => [r.symbol.toUpperCase(), r])
+    );
+    setState((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        watchlist: prev.watchlist.map((item) => {
+          const rec = bySymbol[item.symbol.toUpperCase()];
+          if (!rec) return item;
+          const bestSetupId = rec.matchedSetups[0]?.setupId ?? item.setupId;
+          return {
+            ...item,
+            thesis: isAwaitingDeskSignal(item.thesis) ? rec.summary : item.thesis,
+            entryLow: rec.levels.entryLow,
+            entryHigh: rec.levels.entryHigh,
+            stop: rec.levels.stop,
+            target: rec.levels.target,
+            setupId: bestSetupId,
+          };
+        }),
+      };
+    });
+  }, []);
+
   const removeWatchlistItem = useCallback((id: string) => {
     setState((prev) =>
       prev ? { ...prev, watchlist: prev.watchlist.filter((w) => w.id !== id) } : prev
@@ -258,6 +323,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       refreshQuotes,
       updateSettings,
       upsertWatchlistItem,
+      addWatchlistSymbol,
+      applyDeskSignals,
       removeWatchlistItem,
       updateSetup,
       addTrade,
@@ -281,6 +348,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     refreshQuotes,
     updateSettings,
     upsertWatchlistItem,
+    addWatchlistSymbol,
+    applyDeskSignals,
     removeWatchlistItem,
     updateSetup,
     addTrade,

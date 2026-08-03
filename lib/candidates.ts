@@ -55,6 +55,17 @@ function zoneStatus(
     };
   }
 
+  // Symbol-only watchlist rows wait for Desk "Get signals" before zones are live.
+  if (!(item.entryHigh > 0) || !(item.stop > 0) || !(item.target > 0)) {
+    return {
+      status: 'watching',
+      distanceToZonePct: null,
+      label: 'Awaiting Desk signal',
+      closeInvalidated: false,
+      stopThreatened: false,
+    };
+  }
+
   const closeInvalidated = completedClose != null && completedClose <= item.stop;
   const stopThreatened = price <= item.stop && !closeInvalidated;
 

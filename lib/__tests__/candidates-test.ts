@@ -30,6 +30,30 @@ function quote(price: number, previousClose = price): Quote {
 }
 
 describe('buildCandidates', () => {
+  it('marks symbol-only rows as awaiting Desk signal', () => {
+    const pending: WatchlistItem = {
+      ...item,
+      id: 'wl-pending',
+      thesis: 'Awaiting Desk signal',
+      entryLow: 0,
+      entryHigh: 0,
+      stop: 0,
+      target: 0,
+      setupId: null,
+    };
+    const [candidate] = buildCandidates([pending], defaultSetups, { AAPL: quote(205) }, {
+      candles: demoCandles,
+      session: {
+        phase: 'rth',
+        label: 'RTH open',
+        tradable: true,
+        detail: 'ok',
+      },
+    });
+    expect(candidate.status).toBe('watching');
+    expect(candidate.label).toMatch(/awaiting desk signal/i);
+  });
+
   it('flags names inside the buy zone', () => {
     const [candidate] = buildCandidates([item], defaultSetups, { AAPL: quote(205) }, {
       candles: demoCandles,
