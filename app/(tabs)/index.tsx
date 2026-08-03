@@ -105,7 +105,7 @@ export default function TodayScreen() {
         {actionable.length === 0 ? (
           <EmptyState
             title="No actionable setups"
-            body="Pull to refresh candles/quotes, or wait for price to enter your zones with rules passing."
+            body="Add tickers on Watchlist and Get signals, then wait for price to enter Desk zones with rules passing."
           />
         ) : (
           actionable.map((c) => <CandidateRow key={c.item.id} candidate={c} />)

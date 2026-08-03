@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 
+import { SetupOptionCard } from '@/components/SetupOptionCard';
 import { BrandMark, Button, formatMoney, Pill, Screen } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
@@ -204,8 +205,8 @@ export default function DeskScreen() {
                 {recommendation.bestSetupName ? (
                   <Text style={styles.confirmLine}>
                     Playbook confirmation: {recommendation.bestSetupName}
-                    {recommendation.matchedSetups.length > 1
-                      ? ` (+${recommendation.matchedSetups.length - 1} more)`
+                    {recommendation.setupOptions.length > 1
+                      ? ` · ${recommendation.setupOptions.length} options below`
                       : ''}
                   </Text>
                 ) : (
@@ -241,7 +242,7 @@ export default function DeskScreen() {
 
               <View style={[styles.levelsRow, wide && styles.levelsRowWide]}>
                 <LevelBox
-                  label="Entry zone"
+                  label="Primary entry zone"
                   value={`${formatMoney(recommendation.levels.entryLow)} – ${formatMoney(recommendation.levels.entryHigh)}`}
                   emphasis
                 />
@@ -256,6 +257,28 @@ export default function DeskScreen() {
                       : undefined
                   }
                 />
+              </View>
+
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>
+                  Top Playbook options
+                  {recommendation.setupOptions.length
+                    ? ` (${recommendation.setupOptions.length})`
+                    : ''}
+                </Text>
+                <Text style={styles.optionsHint}>
+                  Ranked by journal edge and rule pass-rate. Each option has its own get-in / get-out
+                  levels.
+                </Text>
+                {recommendation.setupOptions.length === 0 ? (
+                  <Text style={styles.confirmLineWarn}>
+                    No setups currently pass — Soft/Strong buy stays blocked.
+                  </Text>
+                ) : (
+                  recommendation.setupOptions.map((option) => (
+                    <SetupOptionCard key={option.setupId} option={option} />
+                  ))
+                )}
               </View>
 
               <View style={styles.panel}>
@@ -740,6 +763,13 @@ const styles = StyleSheet.create({
     fontFamily: fontDisplay,
     fontSize: 20,
     color: palette.ink,
+  },
+  optionsHint: {
+    color: palette.muted,
+    fontFamily: fontBody,
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 4,
   },
   reasonRow: {
     flexDirection: 'row',
