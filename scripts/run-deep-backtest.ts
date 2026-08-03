@@ -8,7 +8,7 @@
  *   TIINGO_API_KEY=... npx tsx scripts/run-deep-backtest.ts
  */
 import { defaultSetups } from '../constants/seed';
-import { PROFILE_MUST } from '../lib/backtestProfile';
+import { BacktestProfile, PROFILE_MUST } from '../lib/backtestProfile';
 import { fetchDailyCandlesResolved } from '../lib/candles';
 import { runBacktest } from '../lib/backtest';
 import { runCombinedPlaybookBacktest } from '../lib/playbookCombined';
@@ -17,11 +17,24 @@ import { Candle } from '../types/trading';
 const DAYS = Number(process.env.BT_DAYS ?? 800);
 const EVAL_BARS = process.env.BT_EVAL_BARS ? Number(process.env.BT_EVAL_BARS) : undefined;
 const SLEEP_MS = Number(process.env.BT_SLEEP_MS ?? 1200);
+const REGIME = process.env.BT_REGIME === '1';
 const OUTLIER_R = 3;
 
+/** Must realism, optionally with the SPY/QQQ market-regime gate stacked on. */
+const PROFILE: BacktestProfile = REGIME
+  ? {
+      ...PROFILE_MUST,
+      label: 'Must + regime gate',
+      description: `${PROFILE_MUST.description} Plus SPY/QQQ market-regime gate.`,
+      gates: { ...PROFILE_MUST.gates, marketRegime: true },
+    }
+  : PROFILE_MUST;
+
+// SKX taken private (no Yahoo data) → DECK. Chronic losers PENN → CZR, LYFT → ETSY
+// (similar sector + size replacements).
 const BIG = ['AAPL', 'AMZN', 'JPM', 'XOM'];
 const MID = ['FANG', 'CFG', 'WSM', 'DDOG'];
-const SMALL = ['CROX', 'SKX', 'PENN', 'LYFT', 'PATH', 'RKLB'];
+const SMALL = ['CROX', 'DECK', 'CZR', 'ETSY', 'PATH', 'RKLB'];
 const SYMBOLS = [...BIG, ...MID, ...SMALL];
 
 const keys = {
@@ -148,7 +161,7 @@ async function main() {
   );
   console.log(`Setups (${defaultSetups.length}): ${defaultSetups.map((s) => s.name).join(', ')}`);
   console.log(`Universe (${SYMBOLS.length}): ${SYMBOLS.join(', ')}`);
-  console.log(`Profile: ${PROFILE_MUST.description}`);
+  console.log(`Profile: ${PROFILE.description}`);
   console.log(
     `Keys: tiingo=${Boolean(keys.tiingoApiKey)} fmp=${Boolean(keys.fmpApiKey)} finnhub=${Boolean(
       keys.finnhubApiKey
@@ -201,7 +214,7 @@ async function main() {
       sourceLabel: bars.source,
       warnings: bars.warnings,
       evalBars: EVAL_BARS,
-      profile: PROFILE_MUST,
+      profile: PROFILE,
     };
 
     const combined = runCombinedPlaybookBacktest({
@@ -224,9 +237,9 @@ async function main() {
       const result = runBacktest({
         setup,
         ...common,
-        costs: PROFILE_MUST.costs,
-        stopCooldownBars: PROFILE_MUST.stopCooldownBars,
-        gates: PROFILE_MUST.gates,
+        costs: PROFILE.costs,
+        stopCooldownBars: PROFILE.stopCooldownBars,
+        gates: PROFILE.gates,
       });
       const trades = result.trades.filter((t) => Math.abs(t.rMultiple) <= OUTLIER_R);
       const totalR = trades.reduce((a, t) => a + t.rMultiple, 0);
@@ -243,7 +256,7 @@ async function main() {
     }
   }
 
-  console.log('\n=== SETUP RANK (Must, |R|>3 removed) ===');
+  console.log(`\n=== SETUP RANK (${PROFILE.label}, |R|>${OUTLIER_R} removed) ===`);
   const ranked = Object.values(bySetup).sort((a, b) => b.totalR - a.totalR);
   for (const [i, row] of ranked.entries()) {
     console.log(
