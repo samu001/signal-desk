@@ -239,14 +239,16 @@ export function runBacktest(input: {
         let rawExit = bar.close;
         let reason: BacktestTrade['reason'] = 'time';
         if (hitStop && hitTarget) {
-          // Conservative: assume stop first on same bar.
-          rawExit = open.stop;
+          // Conservative: assume stop first on same bar. Gap-aware: a bar that
+          // opens through the stop fills at the open, not the stop price.
+          rawExit = Math.min(open.stop, bar.open);
           reason = 'stop';
         } else if (hitStop) {
-          rawExit = open.stop;
+          rawExit = Math.min(open.stop, bar.open);
           reason = 'stop';
         } else if (hitTarget) {
-          rawExit = open.target;
+          // Favorable gaps fill at the open too.
+          rawExit = Math.max(open.target, bar.open);
           reason = 'target';
         }
         const exitFill = applyLongExitFill(rawExit, costs);

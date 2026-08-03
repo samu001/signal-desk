@@ -18,7 +18,14 @@ const DAYS = Number(process.env.BT_DAYS ?? 800);
 const EVAL_BARS = process.env.BT_EVAL_BARS ? Number(process.env.BT_EVAL_BARS) : undefined;
 const SLEEP_MS = Number(process.env.BT_SLEEP_MS ?? 1200);
 const REGIME = process.env.BT_REGIME === '1';
+/** Trades kept in full — outliers reported separately instead of deleted. */
 const OUTLIER_R = 3;
+/** Score only bars up to this date (YYYY-MM-DD) — walk-forward "train" window. */
+const END_DATE = process.env.BT_END || undefined;
+/** Score only bars after this date (YYYY-MM-DD) — walk-forward "test" window. */
+const START_DATE = process.env.BT_START || undefined;
+/** Max simultaneous open positions across the whole portfolio (capital limit). */
+const MAX_CONCURRENT = Number(process.env.BT_MAX_OPEN ?? 3);
 
 /** Must realism, optionally with the SPY/QQQ market-regime gate stacked on. */
 const PROFILE: BacktestProfile = REGIME
@@ -37,6 +44,33 @@ const BIG = ['AAPL', 'AMZN', 'JPM', 'XOM'];
 const MID = ['FANG', 'CFG', 'WSM', 'DDOG'];
 const SMALL = ['CROX', 'DUOL', 'FIX', 'IOT', 'PATH', 'RKLB'];
 const SYMBOLS = [...BIG, ...MID, ...SMALL];
+
+/** Wider slippage for less liquid tiers (5 bps is only realistic for megacaps). */
+function costsForSymbol(symbol: string) {
+  if (BIG.includes(symbol)) return { slippagePct: 0.0005, commissionPct: 0 };
+  if (MID.includes(symbol)) return { slippagePct: 0.001, commissionPct: 0 };
+  return { slippagePct: 0.002, commissionPct: 0 };
+}
+
+function clipWindow(candles: Candle[]): Candle[] {
+  let out = candles;
+  if (END_DATE) {
+    const end = Math.floor(Date.parse(`${END_DATE}T23:59:59Z`) / 1000);
+    out = out.filter((c) => c.time <= end);
+  }
+  if (START_DATE) {
+    // Keep warmup history before the start; scoring window is handled via evalBars.
+    return out;
+  }
+  return out;
+}
+
+function evalBarsForWindow(candles: Candle[]): number | undefined {
+  if (!START_DATE) return EVAL_BARS;
+  const start = Math.floor(Date.parse(`${START_DATE}T00:00:00Z`) / 1000);
+  const after = candles.filter((c) => c.time >= start).length;
+  return after > 0 ? after : EVAL_BARS;
+}
 
 const keys = {
   tiingoApiKey: process.env.TIINGO_API_KEY || undefined,
@@ -158,11 +192,16 @@ async function fetchBars(symbol: string): Promise<{
 
 async function main() {
   console.log(
-    `Deep Must backtest · days=${DAYS} evalBars=${EVAL_BARS ?? 'full-after-warmup'} sleep=${SLEEP_MS}ms`
+    `Deep Must backtest · days=${DAYS} evalBars=${EVAL_BARS ?? 'full-after-warmup'} window=${
+      START_DATE ?? '…'
+    }→${END_DATE ?? 'today'} maxOpen=${MAX_CONCURRENT}`
   );
   console.log(`Setups (${defaultSetups.length}): ${defaultSetups.map((s) => s.name).join(', ')}`);
   console.log(`Universe (${SYMBOLS.length}): ${SYMBOLS.join(', ')}`);
   console.log(`Profile: ${PROFILE.description}`);
+  console.log(
+    'Realism: gap-aware fills, outliers kept, tiered slippage 5/10/20 bps, portfolio position cap.'
+  );
   console.log(
     `Keys: tiingo=${Boolean(keys.tiingoApiKey)} fmp=${Boolean(keys.fmpApiKey)} finnhub=${Boolean(
       keys.finnhubApiKey
@@ -173,7 +212,9 @@ async function main() {
   await sleep(SLEEP_MS);
   const qqq = await fetchBars('QQQ');
   await sleep(SLEEP_MS);
-  console.log(`SPY=${spy.source}/${spy.candles.length} QQQ=${qqq.source}/${qqq.candles.length}`);
+  const spyBars = clipWindow(spy.candles);
+  const qqqBars = clipWindow(qqq.candles);
+  console.log(`SPY=${spy.source}/${spyBars.length} QQQ=${qqq.source}/${qqqBars.length}`);
 
   type SetupAgg = {
     name: string;
@@ -186,51 +227,60 @@ async function main() {
     bySetup[s.id] = { name: s.name, trades: 0, wins: 0, totalR: 0 };
   }
 
-  let combinedTrades = 0;
-  let combinedWins = 0;
-  let combinedR = 0;
-  let sources: Record<string, number> = {};
+  type PortfolioTrade = { symbol: string; entryTime: number; exitTime: number; r: number };
+  const allCombined: PortfolioTrade[] = [];
+  let outlierLosses = 0;
+  let outlierWins = 0;
+  const sources: Record<string, number> = {};
 
   for (const symbol of SYMBOLS) {
-    const bars = await fetchBars(symbol);
+    const raw = await fetchBars(symbol);
     await sleep(SLEEP_MS);
-    sources[bars.source] = (sources[bars.source] ?? 0) + 1;
-    const first = bars.candles[0];
-    const last = bars.candles[bars.candles.length - 1];
+    sources[raw.source] = (sources[raw.source] ?? 0) + 1;
+    const candles = clipWindow(raw.candles);
+    const first = candles[0];
+    const last = candles[candles.length - 1];
     console.log(
-      `\n==== ${symbol} source=${bars.source} bars=${bars.candles.length} ${
+      `\n==== ${symbol} source=${raw.source} bars=${candles.length} ${
         first ? fmt(first.time) : '?'
       } → ${last ? fmt(last.time) : '?'} ====`
     );
-    if (bars.candles.length < 60) {
+    if (candles.length < 60) {
       console.log('  skip: insufficient bars');
       continue;
     }
 
+    const costs = costsForSymbol(symbol);
     const common = {
       symbol,
-      candles: bars.candles,
-      spyCandles: spy.candles,
-      qqqCandles: qqq.candles,
-      sourceLabel: bars.source,
-      warnings: bars.warnings,
-      evalBars: EVAL_BARS,
-      profile: PROFILE,
+      candles,
+      spyCandles: spyBars,
+      qqqCandles: qqqBars,
+      sourceLabel: raw.source,
+      warnings: raw.warnings,
+      evalBars: evalBarsForWindow(candles),
     };
 
     const combined = runCombinedPlaybookBacktest({
       ...common,
       setups: defaultSetups,
+      profile: { ...PROFILE, costs },
     });
-    const filteredCombined = combined.trades.filter((t) => Math.abs(t.rMultiple) <= OUTLIER_R);
-    const cR = filteredCombined.reduce((a, t) => a + t.rMultiple, 0);
-    const cW = filteredCombined.filter((t) => t.rMultiple > 0).length;
-    combinedTrades += filteredCombined.length;
-    combinedWins += cW;
-    combinedR += cR;
+    const cR = combined.trades.reduce((a, t) => a + t.rMultiple, 0);
+    const cW = combined.trades.filter((t) => t.rMultiple > 0).length;
+    outlierLosses += combined.trades.filter((t) => t.rMultiple < -OUTLIER_R).length;
+    outlierWins += combined.trades.filter((t) => t.rMultiple > OUTLIER_R).length;
+    for (const t of combined.trades) {
+      allCombined.push({
+        symbol,
+        entryTime: t.entryTime,
+        exitTime: t.exitTime,
+        r: t.rMultiple,
+      });
+    }
     console.log(
-      `  COMBINED: trades=${filteredCombined.length} (raw ${combined.trades.length}) win=${
-        filteredCombined.length ? pct(cW / filteredCombined.length) : 'n/a'
+      `  COMBINED: trades=${combined.trades.length} win=${
+        combined.trades.length ? pct(cW / combined.trades.length) : 'n/a'
       } totalR=${r(cR)} overlaps=${combined.skippedOverlaps}`
     );
 
@@ -238,26 +288,25 @@ async function main() {
       const result = runBacktest({
         setup,
         ...common,
-        costs: PROFILE.costs,
+        costs,
         stopCooldownBars: PROFILE.stopCooldownBars,
         gates: PROFILE.gates,
       });
-      const trades = result.trades.filter((t) => Math.abs(t.rMultiple) <= OUTLIER_R);
-      const totalR = trades.reduce((a, t) => a + t.rMultiple, 0);
-      const wins = trades.filter((t) => t.rMultiple > 0).length;
+      const totalR = result.trades.reduce((a, t) => a + t.rMultiple, 0);
+      const wins = result.trades.filter((t) => t.rMultiple > 0).length;
       const agg = bySetup[setup.id];
-      agg.trades += trades.length;
+      agg.trades += result.trades.length;
       agg.wins += wins;
       agg.totalR += totalR;
       console.log(
-        `  ${setup.name}: trades=${trades.length} win=${
-          trades.length ? pct(wins / trades.length) : 'n/a'
-        } avgR=${r(trades.length ? totalR / trades.length : null)} totalR=${r(totalR)}`
+        `  ${setup.name}: trades=${result.trades.length} win=${
+          result.trades.length ? pct(wins / result.trades.length) : 'n/a'
+        } avgR=${r(result.trades.length ? totalR / result.trades.length : null)} totalR=${r(totalR)}`
       );
     }
   }
 
-  console.log(`\n=== SETUP RANK (${PROFILE.label}, |R|>${OUTLIER_R} removed) ===`);
+  console.log(`\n=== SETUP RANK (${PROFILE.label}, outliers kept, gap-aware fills) ===`);
   const ranked = Object.values(bySetup).sort((a, b) => b.totalR - a.totalR);
   for (const [i, row] of ranked.entries()) {
     console.log(
@@ -268,10 +317,38 @@ async function main() {
       )} totalR=${r(row.totalR)}`
     );
   }
+
+  // Unconstrained portfolio (all signals taken).
+  const totTrades = allCombined.length;
+  const totWins = allCombined.filter((t) => t.r > 0).length;
+  const totR = allCombined.reduce((a, t) => a + t.r, 0);
   console.log(
-    `\nPORTFOLIO COMBINED (de-duped, |R|>${OUTLIER_R} removed): trades=${combinedTrades} win=${
-      combinedTrades ? pct(combinedWins / combinedTrades) : 'n/a'
-    } totalR=${r(combinedR)} avgR=${r(combinedTrades ? combinedR / combinedTrades : null)}`
+    `\nPORTFOLIO (all signals): trades=${totTrades} win=${
+      totTrades ? pct(totWins / totTrades) : 'n/a'
+    } totalR=${r(totR)} avgR=${r(totTrades ? totR / totTrades : null)}`
+  );
+  console.log(
+    `Outlier trades kept: ${outlierWins} wins > +${OUTLIER_R}R, ${outlierLosses} losses < -${OUTLIER_R}R`
+  );
+
+  // Capital-constrained portfolio: max N open positions, first-come first-served.
+  const sorted = [...allCombined].sort((a, b) => a.entryTime - b.entryTime);
+  const taken: PortfolioTrade[] = [];
+  let skippedForCapital = 0;
+  for (const t of sorted) {
+    const openNow = taken.filter((o) => o.exitTime > t.entryTime).length;
+    if (openNow >= MAX_CONCURRENT) {
+      skippedForCapital += 1;
+      continue;
+    }
+    taken.push(t);
+  }
+  const capWins = taken.filter((t) => t.r > 0).length;
+  const capR = taken.reduce((a, t) => a + t.r, 0);
+  console.log(
+    `PORTFOLIO (max ${MAX_CONCURRENT} open): trades=${taken.length} skipped=${skippedForCapital} win=${
+      taken.length ? pct(capWins / taken.length) : 'n/a'
+    } totalR=${r(capR)} avgR=${r(taken.length ? capR / taken.length : null)}`
   );
   console.log(`Sources used: ${JSON.stringify(sources)}`);
 }

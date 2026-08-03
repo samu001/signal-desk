@@ -177,13 +177,14 @@ export function runDeskBacktest(input: {
         let exit = bar.close;
         let reason: DeskBacktestTrade['reason'] = 'time';
         if (hitStop && hitTarget) {
-          exit = open.stop;
+          // Conservative stop-first; gap-aware fill at the open when it gaps through.
+          exit = Math.min(open.stop, bar.open);
           reason = 'stop';
         } else if (hitStop) {
-          exit = open.stop;
+          exit = Math.min(open.stop, bar.open);
           reason = 'stop';
         } else if (hitTarget) {
-          exit = open.target;
+          exit = Math.max(open.target, bar.open);
           reason = 'target';
         }
         trades.push({
