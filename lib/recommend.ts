@@ -949,6 +949,11 @@ export function buildRecommendation(input: {
       'Historical Desk mode: company/news neutralized; buys still require Playbook confirmation.'
     );
   }
+  if ((input.candleSource ?? 'demo') === 'demo') {
+    warnings.push(
+      'Levels use demo daily history — add Tiingo or FMP API keys in Settings for real bars.'
+    );
+  }
   if (!playbookMatched && setups.length) {
     warnings.push('No Playbook setup matched — Desk will not issue Soft/Strong buy.');
   }

@@ -626,8 +626,17 @@ export function buildSyntheticDemoCandles(symbol: string, endPrice?: number): Ca
   return buildSeries(start, pattern);
 }
 
-export function getDemoCandles(symbol: string): Candle[] {
+export function getDemoCandles(symbol: string, endPrice?: number): Candle[] {
   const upper = symbol.toUpperCase().trim();
+  if (endPrice && endPrice > 0) {
+    const baked = demoCandles[upper];
+    const last = baked?.[baked.length - 1]?.close;
+    // Keep curated offline series only when it already matches the quote.
+    if (baked && last && Math.abs(last - endPrice) / endPrice <= 0.15) {
+      return baked;
+    }
+    return buildSyntheticDemoCandles(upper, endPrice);
+  }
   if (demoCandles[upper]) return demoCandles[upper];
   const quote = demoQuotes[upper];
   return buildSyntheticDemoCandles(upper, quote?.price);

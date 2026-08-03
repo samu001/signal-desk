@@ -1,5 +1,16 @@
-import { demoQuotes, getDemoCandles, getDemoFundamentals, getDemoNews } from '@/constants/seed';
-import { CandleApiOptions, CandleSource, fetchCandleBundle } from '@/lib/candles';
+import {
+  buildSyntheticDemoCandles,
+  demoQuotes,
+  getDemoCandles,
+  getDemoFundamentals,
+  getDemoNews,
+} from '@/constants/seed';
+import {
+  alignDemoBundleToQuotes,
+  CandleApiOptions,
+  CandleSource,
+  fetchCandleBundle,
+} from '@/lib/candles';
 import { fetchFmpFundamentalsBundle } from '@/lib/fmp';
 import { Candle, FundamentalSnapshot, NewsItem, Quote } from '@/types/trading';
 
@@ -7,19 +18,25 @@ const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
 function fromDemoQuote(symbol: string): Quote {
   const upper = symbol.toUpperCase();
-  const demo = demoQuotes[upper] ?? {
-    price: 100,
-    change: 0,
-    percentChange: 0,
-    high: 101,
-    low: 99,
-    open: 100,
-    previousClose: 100,
-  };
-
+  if (demoQuotes[upper]) {
+    return {
+      symbol: upper,
+      ...demoQuotes[upper],
+      source: 'demo',
+    };
+  }
+  // Match synthetic demo candle end price so unknown tickers stay consistent offline.
+  const series = buildSyntheticDemoCandles(upper);
+  const price = series[series.length - 1]?.close ?? 100;
   return {
     symbol: upper,
-    ...demo,
+    price,
+    change: 0,
+    percentChange: 0,
+    high: price * 1.01,
+    low: price * 0.99,
+    open: price,
+    previousClose: price,
     source: 'demo',
   };
 }
@@ -258,6 +275,9 @@ export async function fetchMarketBundle(
     days: options?.days ?? 800,
   });
 
+  // Live quote + hash-based demo bars caused nonsense levels (e.g. BILI $19 vs ~$167 zone).
+  const aligned = alignDemoBundleToQuotes(bundle.candles, bundle.sources, quotes);
+
   const equitySymbols = unique.filter((s) => !BENCHMARKS.has(s));
 
   const newsEntries = await Promise.all(
@@ -268,6 +288,9 @@ export async function fetchMarketBundle(
   );
   const news = Object.fromEntries(newsEntries.map(([symbol, result]) => [symbol, result.news]));
   const warnings = [...bundle.warnings];
+  for (const w of aligned.warnings) {
+    if (!warnings.includes(w)) warnings.push(w);
+  }
   if (newsEntries.some(([, result]) => result.demo)) {
     warnings.push('Using demo headlines where live company news was unavailable.');
   }
@@ -304,7 +327,7 @@ export async function fetchMarketBundle(
 
   return {
     quotes,
-    candles: bundle.candles,
+    candles: aligned.candles,
     candleSources: bundle.sources,
     news,
     fundamentals,

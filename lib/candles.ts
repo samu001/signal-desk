@@ -1,10 +1,13 @@
 import { fetchAlphaVantageDailyCandles } from '@/lib/alphavantage';
 import { fetchFmpDailyCandles } from '@/lib/fmp';
 import { fetchTiingoDailyCandles } from '@/lib/tiingo';
-import { getDemoCandles } from '@/constants/seed';
+import { buildSyntheticDemoCandles, getDemoCandles } from '@/constants/seed';
 import { Candle } from '@/types/trading';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+
+/** Rematerialize demo bars when last close is >15% away from the live quote. */
+export const DEMO_QUOTE_MISMATCH_PCT = 0.15;
 
 export type CandleSource = 'tiingo' | 'fmp' | 'finnhub' | 'alphavantage' | 'demo';
 
@@ -22,8 +25,49 @@ export type CandleApiOptions = {
   days?: number;
 };
 
-function demoSeries(symbol: string): Candle[] {
-  return getDemoCandles(symbol);
+function demoSeries(symbol: string, endPrice?: number): Candle[] {
+  return getDemoCandles(symbol, endPrice);
+}
+
+/**
+ * When candle history fell back to demo but we have a real (or better) quote,
+ * rebuild synthetic bars around that price so entry/stop/target cannot float
+ * at an unrelated fake level (e.g. BILI quote $19 vs hash-demo ~$167).
+ */
+export function alignDemoCandlesToQuote(
+  symbol: string,
+  candles: Candle[],
+  quotePrice: number | undefined,
+  source: CandleSource
+): { candles: Candle[]; reanchored: boolean; warning: string | null } {
+  if (source !== 'demo') {
+    return { candles, reanchored: false, warning: null };
+  }
+  const upper = symbol.toUpperCase().trim();
+  if (!(quotePrice && quotePrice > 0)) {
+    return {
+      candles,
+      reanchored: false,
+      warning: `${upper}: using demo daily history — add Tiingo/FMP keys for real bars.`,
+    };
+  }
+  const last = candles[candles.length - 1]?.close;
+  const mismatched =
+    last == null || Math.abs(last - quotePrice) / quotePrice > DEMO_QUOTE_MISMATCH_PCT;
+  if (!mismatched) {
+    return {
+      candles,
+      reanchored: false,
+      warning: `${upper}: using demo daily history (anchored near last quote). Add Tiingo/FMP for real bars.`,
+    };
+  }
+  return {
+    candles: buildSyntheticDemoCandles(upper, quotePrice),
+    reanchored: true,
+    warning: `${upper}: demo daily history re-anchored to last quote $${quotePrice.toFixed(
+      2
+    )} (live bars unavailable — add Tiingo/FMP keys).`,
+  };
 }
 
 async function fetchFinnhubCandles(
@@ -150,6 +194,35 @@ export async function fetchDailyCandlesResolved(
 
   warnings.push('Using built-in demo daily history for offline backtests.');
   return { candles: demoSeries(upper), source: 'demo', warnings };
+}
+
+/** Align any demo series in a bundle to the provided quote prices. */
+export function alignDemoBundleToQuotes(
+  candles: Record<string, Candle[]>,
+  sources: Record<string, CandleSource>,
+  quotes: Record<string, { price: number } | undefined>
+): {
+  candles: Record<string, Candle[]>;
+  warnings: string[];
+  reanchored: string[];
+} {
+  const next: Record<string, Candle[]> = { ...candles };
+  const warnings: string[] = [];
+  const reanchored: string[] = [];
+  for (const symbol of Object.keys(sources)) {
+    const aligned = alignDemoCandlesToQuote(
+      symbol,
+      next[symbol] ?? [],
+      quotes[symbol]?.price,
+      sources[symbol]
+    );
+    next[symbol] = aligned.candles;
+    if (aligned.reanchored) reanchored.push(symbol);
+    if (aligned.warning && !warnings.includes(aligned.warning)) {
+      warnings.push(aligned.warning);
+    }
+  }
+  return { candles: next, warnings, reanchored };
 }
 
 export async function fetchCandleBundle(

@@ -50,6 +50,13 @@ export function DeskSignalDetail({
         · Target {formatMoney(recommendation.levels.target)}
       </Text>
 
+      {recommendation.candleSource === 'demo' ? (
+        <Text style={styles.demoWarn}>
+          {recommendation.warnings.find((w) => /re-anchored/i.test(w)) ??
+            'Demo daily history — levels are approximate until Tiingo/FMP keys are set in Settings.'}
+        </Text>
+      ) : null}
+
       {recommendation.bestSetupName ? (
         <Text style={styles.setup}>
           Top Playbook · {recommendation.bestSetupName}
@@ -131,6 +138,12 @@ const styles = StyleSheet.create({
     fontFamily: 'SpaceMono',
     fontSize: 12,
     color: palette.muted,
+  },
+  demoWarn: {
+    color: palette.warn,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
   },
   setup: { color: palette.moss, fontWeight: '600' },
   setupWarn: { color: palette.warn, fontWeight: '600' },
