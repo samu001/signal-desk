@@ -331,6 +331,28 @@ async function main() {
     `Outlier trades kept: ${outlierWins} wins > +${OUTLIER_R}R, ${outlierLosses} losses < -${OUTLIER_R}R`
   );
 
+  // How crowded is the uncapped book? Daily count of simultaneously open trades.
+  if (allCombined.length) {
+    const DAY = 86400;
+    const minT = Math.min(...allCombined.map((t) => t.entryTime));
+    const maxT = Math.max(...allCombined.map((t) => t.exitTime));
+    const counts: number[] = [];
+    for (let d = minT; d <= maxT; d += DAY) {
+      const openCount = allCombined.filter((t) => t.entryTime <= d && t.exitTime > d).length;
+      counts.push(openCount);
+    }
+    const activeDays = counts.filter((c) => c > 0);
+    const sortedCounts = [...activeDays].sort((a, b) => a - b);
+    const pick = (q: number) =>
+      sortedCounts.length ? sortedCounts[Math.min(sortedCounts.length - 1, Math.floor(q * sortedCounts.length))] : 0;
+    const over = activeDays.filter((c) => c > MAX_CONCURRENT).length;
+    console.log(
+      `CONCURRENCY (uncapped): max=${Math.max(0, ...counts)} median=${pick(0.5)} p90=${pick(0.9)} ` +
+        `avg=${(activeDays.reduce((a, b) => a + b, 0) / Math.max(activeDays.length, 1)).toFixed(1)} ` +
+        `days>${MAX_CONCURRENT} open: ${pct(over / Math.max(activeDays.length, 1))} of active days`
+    );
+  }
+
   // Capital-constrained portfolio: max N open positions, first-come first-served.
   const sorted = [...allCombined].sort((a, b) => a.entryTime - b.entryTime);
   const taken: PortfolioTrade[] = [];
