@@ -33,6 +33,12 @@ type TradingContextValue = {
   dataSource: CandleSource | 'mixed';
   dataWarnings: string[];
   quotesLoading: boolean;
+  /** Epoch ms of last successful quote refresh. */
+  quotesUpdatedAt: number | null;
+  /** Epoch ms of last applyDeskSignals write. */
+  signalsUpdatedAt: number | null;
+  /** True when quotes are newer than Desk levels — Refresh signals recommended. */
+  signalsStale: boolean;
   candidates: Candidate[];
   actionable: Candidate[];
   session: SessionInfo;
@@ -40,7 +46,7 @@ type TradingContextValue = {
   refreshQuotes: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => void;
   upsertWatchlistItem: (item: Omit<WatchlistItem, 'id' | 'createdAt'> & { id?: string }) => string;
-  /** Add a ticker by symbol only — Desk fills levels on Get signals. */
+  /** Add a ticker by symbol only — caller should run Desk to fill levels. */
   addWatchlistSymbol: (symbol: string) => { id: string; created: boolean };
   /** Write Desk recommendation levels / best setup back onto matching watchlist rows. */
   applyDeskSignals: (recommendations: Recommendation[]) => void;
@@ -64,6 +70,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const [dataSource, setDataSource] = useState<CandleSource | 'mixed'>('demo');
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [quotesLoading, setQuotesLoading] = useState(false);
+  const [quotesUpdatedAt, setQuotesUpdatedAt] = useState<number | null>(null);
+  const [signalsUpdatedAt, setSignalsUpdatedAt] = useState<number | null>(null);
   const [session, setSession] = useState<SessionInfo>(() => getUsEquitySession());
 
   useEffect(() => {
@@ -112,6 +120,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       setEarningsDates(bundle.earningsDates);
       setDataSource(bundle.sourceSummary);
       setDataWarnings(bundle.warnings);
+      setQuotesUpdatedAt(Date.now());
     } finally {
       setQuotesLoading(false);
     }
@@ -222,6 +231,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
         }),
       };
     });
+    setSignalsUpdatedAt(Date.now());
   }, []);
 
   const removeWatchlistItem = useCallback((id: string) => {
@@ -291,6 +301,14 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     [state]
   );
 
+  const signalsStale = useMemo(() => {
+    if (!quotesUpdatedAt) return false;
+    if (!state?.watchlist.some((w) => w.entryHigh > 0)) return false;
+    // Levels exist from a prior session but Desk hasn't run this session yet.
+    if (!signalsUpdatedAt) return true;
+    return quotesUpdatedAt > signalsUpdatedAt;
+  }, [quotesUpdatedAt, signalsUpdatedAt, state?.watchlist]);
+
   const value = useMemo<TradingContextValue>(() => {
     const emptySettings: AppSettings = {
       accountSize: 0,
@@ -316,6 +334,9 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       dataSource,
       dataWarnings,
       quotesLoading,
+      quotesUpdatedAt,
+      signalsUpdatedAt,
+      signalsStale,
       candidates,
       actionable,
       session,
@@ -341,6 +362,9 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     dataSource,
     dataWarnings,
     quotesLoading,
+    quotesUpdatedAt,
+    signalsUpdatedAt,
+    signalsStale,
     candidates,
     actionable,
     session,

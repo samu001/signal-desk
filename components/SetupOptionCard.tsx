@@ -46,28 +46,6 @@ export function SetupOptionCard({ option }: { option: SetupOption }) {
           : ' · edge n/a'}
       </Text>
 
-      {option.exitRules.length ? (
-        <View style={styles.ruleBlock}>
-          <Text style={styles.ruleTitle}>Exit plan</Text>
-          {option.exitRules.slice(0, 3).map((rule) => (
-            <Text key={rule} style={styles.ruleLine}>
-              · {rule}
-            </Text>
-          ))}
-        </View>
-      ) : null}
-
-      {option.entryRules.length ? (
-        <View style={styles.ruleBlock}>
-          <Text style={styles.ruleTitle}>Entry idea</Text>
-          {option.entryRules.slice(0, 3).map((rule) => (
-            <Text key={rule} style={styles.ruleLine}>
-              · {rule}
-            </Text>
-          ))}
-        </View>
-      ) : null}
-
       {option.passedChecks.length || option.failedChecks.length ? (
         <View style={styles.checkRow}>
           {option.passedChecks.slice(0, 3).map((c) => (
@@ -189,21 +167,6 @@ const styles = StyleSheet.create({
   meta: {
     fontSize: 13,
     color: palette.muted,
-  },
-  ruleBlock: {
-    gap: 3,
-  },
-  ruleTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: palette.ink,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  ruleLine: {
-    fontSize: 13,
-    color: palette.muted,
-    lineHeight: 18,
   },
   checkRow: {
     flexDirection: 'row',

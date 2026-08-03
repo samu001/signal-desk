@@ -14,19 +14,15 @@ export default function PlaybookScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         <SectionTitle
           title="Playbook"
-          subtitle="Your rules for what to buy, when to enter, and when to get out — with auto-checks on Today."
+          subtitle="Machine auto-checks that score Dashboard readiness. Lab runs backtests."
         />
 
-        <Link href="/backtest" asChild>
-          <Pressable style={styles.backtestCta}>
-            <Text style={styles.backtestCtaText}>Run setup backtest →</Text>
-          </Pressable>
-        </Link>
-
-        <Link href="/portfolio-backtest" asChild>
-          {/* Link asChild + array style crashes on web (expo#31352); keep it flattened. */}
-          <Pressable style={StyleSheet.flatten([styles.backtestCta, styles.portfolioCta])}>
-            <Text style={styles.backtestCtaText}>Portfolio backtest (with position cap) →</Text>
+        <Link href="/lab" asChild>
+          <Pressable style={styles.labCta}>
+            <Text style={styles.labCtaTitle}>Lab</Text>
+            <Text style={styles.labCtaBody}>
+              Setup, Desk, and portfolio backtests in one place →
+            </Text>
           </Pressable>
         </Link>
 
@@ -40,9 +36,7 @@ export default function PlaybookScreen() {
                 <Text style={styles.name}>{setup.name}</Text>
                 <Text style={styles.summary}>{setup.summary}</Text>
                 <View style={styles.counts}>
-                  <Text style={styles.count}>{setup.entryRules.length} entry rules</Text>
-                  <Text style={styles.count}>{setup.entryChecks.length} auto-checks</Text>
-                  <Text style={styles.count}>{setup.exitRules.length} exit rules</Text>
+                  <Text style={styles.count}>{setup.entryChecks.length} machine checks</Text>
                 </View>
                 <Text style={styles.edge}>
                   {edge && edge.sampleSize > 0
@@ -58,7 +52,6 @@ export default function PlaybookScreen() {
                     </Pressable>
                   </Link>
                   <Link href={{ pathname: '/backtest', params: { setupId: setup.id } }} asChild>
-                    {/* Link asChild + array style crashes on web (expo#31352). */}
                     <Pressable style={StyleSheet.flatten([styles.actionBtn, styles.actionPrimary])}>
                       <Text style={[styles.actionText, styles.actionPrimaryText]}>Backtest</Text>
                     </Pressable>
@@ -78,21 +71,22 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingBottom: 40,
   },
-  backtestCta: {
-    backgroundColor: palette.moss,
-    borderRadius: 12,
-    paddingVertical: 14,
+  labCta: {
+    backgroundColor: palette.ink,
+    borderRadius: 14,
+    paddingVertical: 16,
     paddingHorizontal: 16,
-    marginBottom: spacing.md,
-    alignItems: 'center',
+    marginBottom: spacing.lg,
+    gap: 4,
   },
-  backtestCtaText: {
+  labCtaTitle: {
     color: palette.white,
     fontWeight: '700',
-    fontSize: 15,
+    fontSize: 18,
   },
-  portfolioCta: {
-    backgroundColor: palette.ink,
+  labCtaBody: {
+    color: 'rgba(255,255,255,0.8)',
+    lineHeight: 20,
   },
   card: {
     backgroundColor: palette.white,

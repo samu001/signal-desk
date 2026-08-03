@@ -1,7 +1,8 @@
 import { Link } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatMoney, formatPct, Pill } from '@/components/ui';
+import { hasWatchlistLevels } from '@/constants/watchlist';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { Candidate } from '@/lib/candidates';
@@ -21,17 +22,24 @@ function verdictMark(verdict: 'pass' | 'fail' | 'unknown') {
   return '·';
 }
 
+function explainNoLevels(symbol: string) {
+  const message = `${symbol} needs Desk levels first. Tap Refresh signals on Dashboard.`;
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    window.alert(message);
+    return;
+  }
+  Alert.alert('Levels required', message);
+}
+
 export function CandidateRow({ candidate }: { candidate: Candidate }) {
   const { fundamentals } = useTrading();
   const { item, quote, setup, label, rules, passRate, expectancy } = candidate;
   const topRules = rules.slice(0, 4);
   const flags = fundamentalFlags(fundamentals[item.symbol.toUpperCase()]);
+  const canPlan = hasWatchlistLevels(item);
 
-  return (
-    <Link
-      href={{ pathname: '/trade-plan', params: { watchlistId: item.id } }}
-      asChild>
-      <Pressable style={({ pressed }) => [styles.row, pressed && { opacity: 0.85 }]}>
+  const body = (
+    <>
         <View style={styles.top}>
           <Text style={styles.symbol}>{item.symbol}</Text>
           <Pill label={label} tone={toneFor(candidate.status)} />
@@ -60,13 +68,21 @@ export function CandidateRow({ candidate }: { candidate: Candidate }) {
           <View>
             <Text style={styles.metaLabel}>Buy zone</Text>
             <Text style={styles.metaValue}>
-              {formatMoney(item.entryLow, 0)}–{formatMoney(item.entryHigh, 0)}
+              {canPlan
+                ? `${formatMoney(item.entryLow, 0)}–${formatMoney(item.entryHigh, 0)}`
+                : 'Pending'}
             </Text>
           </View>
           <View>
             <Text style={styles.metaLabel}>Get out</Text>
-            <Text style={styles.metaValue}>Stop {formatMoney(item.stop, 0)}</Text>
-            <Text style={styles.metaSub}>Target {formatMoney(item.target, 0)}</Text>
+            {canPlan ? (
+              <>
+                <Text style={styles.metaValue}>Stop {formatMoney(item.stop, 0)}</Text>
+                <Text style={styles.metaSub}>Target {formatMoney(item.target, 0)}</Text>
+              </>
+            ) : (
+              <Text style={styles.metaValue}>—</Text>
+            )}
           </View>
         </View>
 
@@ -109,6 +125,30 @@ export function CandidateRow({ candidate }: { candidate: Candidate }) {
             <Text style={styles.ruleMore}>+{rules.length - 4} more checks</Text>
           ) : null}
         </View>
+        {!canPlan ? (
+          <Text style={styles.planHint}>Refresh Desk levels before acting</Text>
+        ) : (
+          <Text style={styles.planHintAct}>Tap to act from Desk →</Text>
+        )}
+    </>
+  );
+
+  if (!canPlan) {
+    return (
+      <Pressable
+        style={({ pressed }) => [styles.row, pressed && { opacity: 0.85 }]}
+        onPress={() => explainNoLevels(item.symbol)}>
+        {body}
+      </Pressable>
+    );
+  }
+
+  return (
+    <Link
+      href={{ pathname: '/trade-plan', params: { watchlistId: item.id } }}
+      asChild>
+      <Pressable style={({ pressed }) => [styles.row, pressed && { opacity: 0.85 }]}>
+        {body}
       </Pressable>
     </Link>
   );
@@ -205,5 +245,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: palette.muted,
     fontStyle: 'italic',
+  },
+  planHint: {
+    fontSize: 12,
+    color: palette.warn,
+    fontWeight: '600',
+  },
+  planHintAct: {
+    fontSize: 12,
+    color: palette.moss,
+    fontWeight: '700',
   },
 });

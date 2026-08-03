@@ -85,7 +85,7 @@ export default function JournalScreen() {
 
         <SectionTitle
           title="Setup edge"
-          subtitle="Expectancy from closed trades feeds Today’s ranking."
+          subtitle="Expectancy from closed trades feeds Dashboard ranking."
         />
         {rankedSetups.map((edge) => (
           <View key={edge.setupId} style={styles.edgeRow}>
@@ -103,7 +103,7 @@ export default function JournalScreen() {
         {trades.length === 0 ? (
           <EmptyState
             title="No trades logged"
-            body="Build a trade plan from Today or Watchlist. Closed trades show up here for weekly review."
+            body="Act on a Dashboard candidate from Desk. Closed trades show up here for weekly review."
           />
         ) : (
           trades.map((trade) => {

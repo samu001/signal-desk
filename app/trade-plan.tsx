@@ -1,98 +1,73 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import {
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useMemo } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { Button, Field, formatMoney, Pill, Screen, SectionTitle } from '@/components/ui';
+import { Button, formatMoney, Pill, Screen, SectionTitle } from '@/components/ui';
+import { hasWatchlistLevels } from '@/constants/watchlist';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { calculatePositionSize, rewardToRisk } from '@/lib/positionSize';
+import { ruleCheckLabel } from '@/lib/rules';
 
-export default function TradePlanScreen() {
+/**
+ * Machine-guided action confirm: Desk levels + risk sizing.
+ * No freeform levels, setup chips, or human checklists.
+ */
+export default function ActFromDeskScreen() {
   const router = useRouter();
   const { watchlistId } = useLocalSearchParams<{ watchlistId?: string }>();
-  const { watchlist, setups, settings, quotes, addTrade, getSetup } = useTrading();
+  const { watchlist, settings, quotes, addTrade, getSetup, candidates } = useTrading();
 
-  const seed = watchlist.find((w) => w.id === watchlistId);
+  const item = watchlist.find((w) => w.id === watchlistId);
+  const candidate = candidates.find((c) => c.item.id === watchlistId);
+  const setup = getSetup(item?.setupId);
+  const levelsReady = item ? hasWatchlistLevels(item) : false;
 
-  const [symbol, setSymbol] = useState(seed?.symbol ?? '');
-  const [entry, setEntry] = useState(seed ? String(seed.entryLow) : '');
-  const [stop, setStop] = useState(seed ? String(seed.stop) : '');
-  const [target, setTarget] = useState(seed ? String(seed.target) : '');
-  const [setupId, setSetupId] = useState<string | null>(seed?.setupId ?? setups[0]?.id ?? null);
-  const [notes, setNotes] = useState(seed?.notes ?? '');
-  const [checks, setChecks] = useState<{ label: string; checked: boolean }[]>([]);
-
-  const setup = getSetup(setupId);
-
-  useEffect(() => {
-    if (!setup) {
-      setChecks([]);
-      return;
-    }
-    setChecks(setup.checklist.map((label) => ({ label, checked: false })));
-  }, [setupId]);
-
-  useEffect(() => {
-    if (!seed) return;
-    setSymbol(seed.symbol);
-    setEntry(String(seed.entryLow));
-    setStop(String(seed.stop));
-    setTarget(String(seed.target));
-    setSetupId(seed.setupId);
-    setNotes(seed.notes);
-  }, [seed?.id]);
-
-  const entryN = Number(entry);
-  const stopN = Number(stop);
-  const targetN = Number(target);
-  const quote = quotes[symbol.toUpperCase()];
+  const entry = item ? (item.entryLow + item.entryHigh) / 2 : 0;
+  const stop = item?.stop ?? 0;
+  const target = item?.target ?? 0;
+  const quote = item ? quotes[item.symbol.toUpperCase()] : undefined;
 
   const sizing = useMemo(
     () =>
       calculatePositionSize({
         accountSize: settings.accountSize,
         riskPercent: settings.riskPercent,
-        entry: entryN,
-        stop: stopN,
+        entry,
+        stop,
       }),
-    [settings.accountSize, settings.riskPercent, entryN, stopN]
+    [settings.accountSize, settings.riskPercent, entry, stop]
   );
 
-  const rr = rewardToRisk(entryN, stopN, targetN);
-  const allChecked = checks.length > 0 && checks.every((c) => c.checked);
+  const rr = rewardToRisk(entry, stop, target);
+  const canAct = Boolean(item && levelsReady && sizing.valid);
 
   const save = (status: 'planned' | 'open') => {
-    if (!symbol.trim()) {
-      Alert.alert('Symbol required');
+    if (!item || !levelsReady) {
+      Alert.alert('Desk levels required', 'Refresh signals on Dashboard first.');
       return;
     }
     if (!sizing.valid) {
       Alert.alert('Position size invalid', sizing.reason);
       return;
     }
-    if (checks.length && !allChecked) {
-      Alert.alert('Checklist incomplete', 'Confirm every item before saving a live plan.');
-      return;
-    }
+
+    const machineChecks = (candidate?.rules ?? []).map((r) => ({
+      label: r.label || ruleCheckLabel(r.id),
+      checked: r.verdict === 'pass',
+    }));
 
     const id = addTrade({
-      symbol: symbol.toUpperCase().trim(),
-      setupId,
+      symbol: item.symbol,
+      setupId: item.setupId,
       side: 'long',
-      entry: entryN,
-      stop: stopN,
-      target: targetN,
+      entry,
+      stop,
+      target,
       shares: sizing.shares,
       riskAmount: sizing.riskAmount,
-      checklist: checks,
-      notes,
+      checklist: machineChecks,
+      notes: item.thesis || '',
       status,
       followedPlan: null,
       openedAt: new Date().toISOString(),
@@ -103,94 +78,121 @@ export default function TradePlanScreen() {
     router.replace({ pathname: '/trade-detail', params: { id } });
   };
 
+  if (!watchlistId || !item) {
+    return (
+      <Screen>
+        <Stack.Screen options={{ title: 'Act from Desk', presentation: 'modal' }} />
+        <View style={styles.centered}>
+          <SectionTitle
+            title="Pick a Desk name"
+            subtitle="Open this from Dashboard Act now or Your names — Desk must already have levels."
+          />
+          <Button label="Back to Dashboard" onPress={() => router.replace('/')} />
+        </View>
+      </Screen>
+    );
+  }
+
   return (
     <Screen>
-      <Stack.Screen options={{ title: 'Trade plan', presentation: 'modal' }} />
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <Stack.Screen options={{ title: 'Act from Desk', presentation: 'modal' }} />
+      <ScrollView contentContainerStyle={styles.content}>
         <SectionTitle
-          title="What · when · exit"
-          subtitle="Size the trade from your risk rules, then clear the checklist before you act."
+          title={item.symbol}
+          subtitle="Desk wrote the levels. Confirm size from your risk settings — no manual plan rewrite."
         />
 
-        <Field label="Symbol" autoCapitalize="characters" value={symbol} onChangeText={setSymbol} />
-        {quote ? (
-          <Text style={styles.quoteHint}>
-            Last {formatMoney(quote.price)} ({quote.source === 'finnhub' ? 'Finnhub' : 'demo'})
-          </Text>
+        {!levelsReady ? (
+          <View style={styles.warnBox}>
+            <Text style={styles.warnText}>
+              No Desk levels yet. Return to Dashboard and Refresh signals.
+            </Text>
+          </View>
         ) : null}
 
-        <Field
-          label="Entry"
-          keyboardType="decimal-pad"
-          value={entry}
-          onChangeText={setEntry}
-        />
-        <Field label="Stop (get out)" keyboardType="decimal-pad" value={stop} onChangeText={setStop} />
-        <Field label="Target" keyboardType="decimal-pad" value={target} onChangeText={setTarget} />
-
-        <Text style={styles.fieldLabel}>Setup</Text>
-        <View style={styles.setupRow}>
-          {setups.map((s) => (
-            <Pressable
-              key={s.id}
-              onPress={() => setSetupId(s.id)}
-              style={[styles.setupChip, setupId === s.id && styles.setupChipOn]}>
-              <Text style={[styles.setupChipText, setupId === s.id && styles.setupChipTextOn]}>
-                {s.name}
-              </Text>
-            </Pressable>
-          ))}
+        <View style={styles.card}>
+          <View style={styles.row}>
+            <Text style={styles.symbol}>{item.symbol}</Text>
+            {candidate ? (
+              <Pill
+                label={candidate.label}
+                tone={
+                  candidate.status === 'ready' || candidate.status === 'in_zone'
+                    ? 'good'
+                    : candidate.status === 'near_zone'
+                      ? 'warn'
+                      : 'neutral'
+                }
+              />
+            ) : null}
+          </View>
+          {quote ? (
+            <Text style={styles.meta}>Last {formatMoney(quote.price)}</Text>
+          ) : null}
+          {setup ? <Text style={styles.setup}>Playbook · {setup.name}</Text> : null}
+          {item.thesis ? <Text style={styles.thesis}>{item.thesis}</Text> : null}
         </View>
 
-        <View style={styles.sizeBox}>
-          <Text style={styles.sizeTitle}>Position size</Text>
-          <Text style={styles.sizeLine}>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Desk levels</Text>
+          <Text style={styles.levels}>
+            Buy {formatMoney(item.entryLow)}–{formatMoney(item.entryHigh)}
+          </Text>
+          <Text style={styles.levels}>
+            Sized entry {formatMoney(entry)} · Stop {formatMoney(stop)} · Target{' '}
+            {formatMoney(target)}
+          </Text>
+          <Text style={styles.meta}>
+            R:R {rr == null || Number.isNaN(rr) ? '—' : `${rr.toFixed(2)}R`}
+          </Text>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Machine size</Text>
+          <Text style={styles.levels}>
             Risk {settings.riskPercent}% of {formatMoney(settings.accountSize, 0)} ={' '}
             {formatMoney(sizing.riskAmount)}
           </Text>
-          <Text style={styles.sizeLine}>
+          <Text style={styles.levels}>
             Shares: {sizing.valid ? sizing.shares : '—'} · Position{' '}
             {sizing.valid ? formatMoney(sizing.positionValue, 0) : '—'}
           </Text>
-          <Text style={styles.sizeLine}>R:R {rr == null || Number.isNaN(rr) ? '—' : `${rr.toFixed(2)}R`}</Text>
-          {!sizing.valid && sizing.reason ? <Text style={styles.sizeWarn}>{sizing.reason}</Text> : null}
+          {!sizing.valid && sizing.reason ? (
+            <Text style={styles.sizeWarn}>{sizing.reason}</Text>
+          ) : null}
         </View>
 
-        {checks.length > 0 ? (
-          <View style={styles.checkBox}>
-            <View style={styles.checkHead}>
-              <Text style={styles.sizeTitle}>Pre-trade checklist</Text>
-              <Pill label={allChecked ? 'Ready' : 'Incomplete'} tone={allChecked ? 'good' : 'warn'} />
+        {candidate && candidate.rules.length > 0 ? (
+          <View style={styles.card}>
+            <View style={styles.row}>
+              <Text style={styles.cardTitle}>Machine checks</Text>
+              <Pill
+                label={`${Math.round(candidate.passRate * 100)}% pass`}
+                tone={candidate.passRate >= 0.7 ? 'good' : candidate.passRate >= 0.4 ? 'warn' : 'bad'}
+              />
             </View>
-            {checks.map((item, idx) => (
-              <Pressable
-                key={`${item.label}-${idx}`}
-                style={styles.checkRow}
-                onPress={() =>
-                  setChecks((prev) =>
-                    prev.map((c, i) => (i === idx ? { ...c, checked: !c.checked } : c))
-                  )
-                }>
-                <View style={[styles.box, item.checked && styles.boxOn]}>
-                  {item.checked ? <Text style={styles.tick}>✓</Text> : null}
-                </View>
-                <Text style={styles.checkLabel}>{item.label}</Text>
-              </Pressable>
+            {candidate.rules.map((rule) => (
+              <Text
+                key={rule.id}
+                style={[
+                  styles.checkLine,
+                  rule.verdict === 'pass' && styles.checkPass,
+                  rule.verdict === 'fail' && styles.checkFail,
+                ]}>
+                {rule.verdict === 'pass' ? '✓' : rule.verdict === 'fail' ? '✕' : '·'}{' '}
+                {rule.label || ruleCheckLabel(rule.id)}
+              </Text>
             ))}
           </View>
         ) : null}
 
-        <Field
-          label="Notes"
-          multiline
-          value={notes}
-          onChangeText={setNotes}
-          placeholder="Catalyst, invalidation reminder, session plan…"
+        <Button
+          label="Queue as planned"
+          onPress={() => save('planned')}
+          disabled={!canAct}
         />
-
-        <Button label="Save as planned" onPress={() => save('planned')} />
         <View style={{ height: spacing.sm }} />
-        <Button label="Mark open now" onPress={() => save('open')} />
+        <Button label="Mark open now" onPress={() => save('open')} disabled={!canAct} />
       </ScrollView>
     </Screen>
   );
@@ -201,94 +203,71 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingBottom: 48,
   },
-  quoteHint: {
-    marginTop: -8,
-    marginBottom: spacing.md,
-    color: palette.muted,
-    fontFamily: 'SpaceMono',
-    fontSize: 12,
+  centered: {
+    flex: 1,
+    padding: spacing.lg,
+    justifyContent: 'center',
+    gap: spacing.md,
   },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: palette.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginBottom: 8,
-  },
-  setupRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+  warnBox: {
+    backgroundColor: palette.warnSoft,
+    borderRadius: 12,
+    padding: 12,
     marginBottom: spacing.md,
   },
-  setupChip: {
+  warnText: {
+    color: palette.warn,
+    lineHeight: 20,
+  },
+  card: {
+    backgroundColor: palette.white,
     borderWidth: 1,
     borderColor: palette.line,
-    backgroundColor: palette.white,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  setupChipOn: {
-    backgroundColor: palette.mossSoft,
-    borderColor: palette.moss,
-  },
-  setupChipText: { color: palette.ink, fontWeight: '600', fontSize: 13 },
-  setupChipTextOn: { color: palette.moss },
-  sizeBox: {
-    backgroundColor: palette.sand,
     borderRadius: 16,
     padding: spacing.md,
-    borderWidth: 1,
-    borderColor: palette.line,
     marginBottom: spacing.md,
-    gap: 4,
+    gap: 6,
   },
-  sizeTitle: {
-    fontWeight: '700',
-    color: palette.ink,
-    marginBottom: 4,
-  },
-  sizeLine: {
-    fontFamily: 'SpaceMono',
-    fontSize: 13,
-    color: palette.ink,
-  },
-  sizeWarn: { color: palette.danger, marginTop: 6 },
-  checkBox: {
-    backgroundColor: palette.white,
-    borderRadius: 16,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: palette.line,
-    marginBottom: spacing.md,
-    gap: 10,
-  },
-  checkHead: {
+  row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 8,
   },
-  checkRow: {
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'flex-start',
+  symbol: {
+    fontFamily: 'SpaceMono',
+    fontSize: 24,
+    color: palette.ink,
   },
-  box: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: palette.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 1,
+  cardTitle: {
+    fontWeight: '700',
+    color: palette.ink,
+    marginBottom: 2,
   },
-  boxOn: {
-    backgroundColor: palette.moss,
-    borderColor: palette.moss,
+  meta: {
+    color: palette.muted,
+    fontFamily: 'SpaceMono',
+    fontSize: 13,
   },
-  tick: { color: palette.white, fontWeight: '700', fontSize: 12 },
-  checkLabel: { flex: 1, color: palette.ink, lineHeight: 20 },
+  setup: {
+    color: palette.moss,
+    fontWeight: '600',
+  },
+  thesis: {
+    color: palette.ink,
+    lineHeight: 20,
+  },
+  levels: {
+    fontFamily: 'SpaceMono',
+    fontSize: 13,
+    color: palette.ink,
+  },
+  sizeWarn: { color: palette.danger, marginTop: 4 },
+  checkLine: {
+    fontSize: 13,
+    color: palette.muted,
+    lineHeight: 20,
+  },
+  checkPass: { color: palette.moss },
+  checkFail: { color: palette.danger },
 });

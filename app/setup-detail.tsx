@@ -1,40 +1,25 @@
-import { Link, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Field, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
-
-function linesToText(lines: string[]) {
-  return lines.join('\n');
-}
-
-function textToLines(text: string) {
-  return text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
-}
+import { ruleCheckLabel } from '@/lib/rules';
 
 export default function SetupDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const { setups, updateSetup } = useTrading();
   const setup = setups.find((s) => s.id === id);
 
   const [name, setName] = useState(setup?.name ?? '');
   const [summary, setSummary] = useState(setup?.summary ?? '');
-  const [entryRules, setEntryRules] = useState(linesToText(setup?.entryRules ?? []));
-  const [exitRules, setExitRules] = useState(linesToText(setup?.exitRules ?? []));
-  const [checklist, setChecklist] = useState(linesToText(setup?.checklist ?? []));
 
   useEffect(() => {
     if (!setup) return;
     setName(setup.name);
     setSummary(setup.summary);
-    setEntryRules(linesToText(setup.entryRules));
-    setExitRules(linesToText(setup.exitRules));
-    setChecklist(linesToText(setup.checklist));
   }, [setup?.id]);
 
   if (!setup) {
@@ -42,6 +27,7 @@ export default function SetupDetailScreen() {
       <Screen style={styles.centered}>
         <Stack.Screen options={{ title: 'Setup' }} />
         <Text>Setup not found.</Text>
+        <Button label="Back" onPress={() => router.back()} />
       </Screen>
     );
   }
@@ -51,9 +37,6 @@ export default function SetupDetailScreen() {
       ...setup,
       name: name.trim() || setup.name,
       summary: summary.trim(),
-      entryRules: textToLines(entryRules),
-      exitRules: textToLines(exitRules),
-      checklist: textToLines(checklist),
     });
     Alert.alert('Saved', 'Playbook setup updated on this device.');
   };
@@ -64,43 +47,40 @@ export default function SetupDetailScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Edit setup"
-          subtitle="Human rules stay editable. Auto-checks power Today’s pass/fail scoring."
+          subtitle="Name and summary only. Machine auto-checks drive Dashboard scoring — they are not edited here."
         />
         <Field label="Name" value={name} onChangeText={setName} />
         <Field label="Summary" multiline value={summary} onChangeText={setSummary} />
-        <Field
-          label="When to buy (entry rules)"
-          multiline
-          value={entryRules}
-          onChangeText={setEntryRules}
-        />
-        <View style={styles.checksBox}>
-          <Text style={styles.checksTitle}>Auto-checks on Today</Text>
-          {setup.entryChecks.map((check) => (
-            <Text key={check} style={styles.checkItem}>
-              • {check.replace(/_/g, ' ')}
-            </Text>
-          ))}
+
+        <View style={styles.layerHead}>
+          <Text style={styles.layerTitle}>Machine auto-checks</Text>
+          <Text style={styles.layerHint}>
+            Read-only. Soft/Strong buy and Dashboard pass rates use these checks.
+          </Text>
         </View>
-        <Field
-          label="When to get out (exit rules)"
-          multiline
-          value={exitRules}
-          onChangeText={setExitRules}
-        />
-        <Field
-          label="Checklist items"
-          multiline
-          value={checklist}
-          onChangeText={setChecklist}
-        />
+        <View style={styles.checksBox}>
+          {setup.entryChecks.length === 0 ? (
+            <Text style={styles.checkItem}>No auto-checks configured for this setup.</Text>
+          ) : (
+            setup.entryChecks.map((check) => (
+              <View key={check} style={styles.checkRow}>
+                <Text style={styles.checkItem}>{ruleCheckLabel(check)}</Text>
+                <Text style={styles.checkId}>{check}</Text>
+              </View>
+            ))
+          )}
+        </View>
+
         <Button label="Save setup" onPress={save} />
         <View style={{ height: spacing.sm }} />
-        <Link href={{ pathname: '/backtest', params: { setupId: setup.id } }} asChild>
-          <Pressable style={styles.backtestBtn}>
-            <Text style={styles.backtestBtnText}>Backtest this setup</Text>
-          </Pressable>
-        </Link>
+        <Button
+          label="Backtest this setup"
+          variant="ghost"
+          onPress={() =>
+            router.push({ pathname: '/backtest', params: { setupId: setup.id } })
+          }
+        />
+        <Button label="All Lab tools →" variant="ghost" onPress={() => router.push('/lab')} />
       </ScrollView>
     </Screen>
   );
@@ -111,37 +91,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.lg,
+    gap: spacing.md,
   },
   content: {
     padding: spacing.lg,
     paddingBottom: 40,
+  },
+  layerHead: {
+    marginBottom: spacing.sm,
+    marginTop: spacing.sm,
+    gap: 4,
+  },
+  layerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: palette.ink,
+  },
+  layerHint: {
+    color: palette.muted,
+    lineHeight: 20,
+    fontSize: 13,
   },
   checksBox: {
     backgroundColor: palette.mist,
     borderRadius: 14,
     padding: spacing.md,
     marginBottom: spacing.md,
-    gap: 4,
+    gap: 10,
   },
-  checksTitle: {
-    fontWeight: '700',
-    color: palette.ink,
-    marginBottom: 4,
+  checkRow: {
+    gap: 2,
   },
   checkItem: {
+    color: palette.ink,
+    fontWeight: '600',
+  },
+  checkId: {
     color: palette.muted,
-    textTransform: 'capitalize',
-  },
-  backtestBtn: {
-    borderWidth: 1,
-    borderColor: palette.moss,
-    backgroundColor: palette.mossSoft,
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  backtestBtnText: {
-    color: palette.moss,
-    fontWeight: '700',
+    fontFamily: 'SpaceMono',
+    fontSize: 11,
   },
 });

@@ -12,7 +12,7 @@ function TabBarIcon(props: {
 }
 
 export const unstable_settings = {
-  initialRouteName: 'desk',
+  initialRouteName: 'index',
 };
 
 export default function TabLayout() {
@@ -32,17 +32,10 @@ export default function TabLayout() {
         },
       }}>
       <Tabs.Screen
-        name="desk"
-        options={{
-          title: 'Desk',
-          tabBarIcon: ({ color }) => <TabBarIcon name="line-chart" color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="index"
         options={{
-          title: 'Today',
-          tabBarIcon: ({ color }) => <TabBarIcon name="sun-o" color={color} />,
+          title: 'Dashboard',
+          tabBarIcon: ({ color }) => <TabBarIcon name="th-large" color={color} />,
         }}
       />
       <Tabs.Screen
@@ -53,19 +46,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="watchlist"
-        options={{
-          title: 'Watchlist',
-          tabBarIcon: ({ color }) => <TabBarIcon name="eye" color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="journal"
         options={{
           title: 'Journal',
           tabBarIcon: ({ color }) => <TabBarIcon name="list-alt" color={color} />,
         }}
       />
+      {/* Phase B: Desk + Watchlist folded into Dashboard — keep routes for old links. */}
+      <Tabs.Screen name="desk" options={{ href: null }} />
+      <Tabs.Screen name="watchlist" options={{ href: null }} />
     </Tabs>
   );
 }

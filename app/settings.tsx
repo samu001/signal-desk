@@ -73,7 +73,7 @@ export default function SettingsScreen() {
           onChangeText={setRiskPercent}
         />
         <Field
-          label="Today's market bias"
+          label="Market bias"
           multiline
           value={marketBias}
           onChangeText={setMarketBias}
@@ -118,7 +118,7 @@ export default function SettingsScreen() {
           <Text style={styles.helpTitle}>Where each key helps</Text>
           <Text style={styles.helpBody}>
             Tiingo: long adjusted daily history for Desk signals and backtests. FMP: daily bars fallback plus
-            PE / margins / ROE on Desk and Today. Finnhub: live quotes + catalyst headlines. Alpha Vantage:
+            PE / margins / ROE on Dashboard. Finnhub: live quotes + catalyst headlines. Alpha Vantage:
             last-resort short history. Without keys, demo history / company / news still power Desk offline.
           </Text>
         </View>

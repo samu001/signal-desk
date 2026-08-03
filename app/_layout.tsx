@@ -82,15 +82,16 @@ export default function RootLayout() {
           }}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-          <Stack.Screen name="trade-plan" options={{ title: 'Trade plan', presentation: 'modal' }} />
+          <Stack.Screen name="trade-plan" options={{ title: 'Act from Desk', presentation: 'modal' }} />
           <Stack.Screen name="trade-detail" options={{ title: 'Trade' }} />
           <Stack.Screen name="setup-detail" options={{ title: 'Setup' }} />
-          <Stack.Screen name="backtest" options={{ title: 'Backtest' }} />
+          <Stack.Screen name="lab" options={{ title: 'Lab' }} />
+          <Stack.Screen name="backtest" options={{ title: 'Setup backtest' }} />
           <Stack.Screen name="desk-backtest" options={{ title: 'Desk backtest' }} />
           <Stack.Screen name="portfolio-backtest" options={{ title: 'Portfolio backtest' }} />
           <Stack.Screen
             name="watchlist-form"
-            options={{ title: 'Watchlist', presentation: 'modal' }}
+            options={{ title: 'Edit ticker', presentation: 'modal' }}
           />
         </Stack>
       </ThemeProvider>

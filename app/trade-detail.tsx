@@ -55,8 +55,8 @@ export default function TradeDetailScreen() {
           />
         </View>
         <SectionTitle
-          title="Plan"
-          subtitle={setup ? setup.name : 'Custom plan'}
+          title="Desk position"
+          subtitle={setup ? setup.name : 'Desk levels'}
         />
         <Text style={styles.line}>
           Entry {formatMoney(trade.entry)} · Stop {formatMoney(trade.stop)} · Target{' '}
@@ -67,12 +67,16 @@ export default function TradeDetailScreen() {
         </Text>
         {trade.notes ? <Text style={styles.notes}>{trade.notes}</Text> : null}
 
-        <Text style={styles.section}>Checklist</Text>
-        {trade.checklist.map((c, i) => (
-          <Text key={`${c.label}-${i}`} style={styles.check}>
-            {c.checked ? '☑' : '☐'} {c.label}
-          </Text>
-        ))}
+        {trade.checklist.length > 0 ? (
+          <>
+            <Text style={styles.section}>Machine checks at open</Text>
+            {trade.checklist.map((c, i) => (
+              <Text key={`${c.label}-${i}`} style={styles.check}>
+                {c.checked ? '✓' : '✕'} {c.label}
+              </Text>
+            ))}
+          </>
+        ) : null}
 
         {trade.status !== 'closed' ? (
           <View style={styles.closeBox}>
@@ -90,10 +94,10 @@ export default function TradeDetailScreen() {
               />
             ) : null}
             <View style={{ height: spacing.sm }} />
-            <Button label="Close — followed plan" onPress={() => closeTrade(true)} />
+            <Button label="Close — followed Desk levels" onPress={() => closeTrade(true)} />
             <View style={{ height: spacing.sm }} />
             <Button
-              label="Close — broke plan"
+              label="Close — broke Desk levels"
               variant="danger"
               onPress={() => closeTrade(false)}
             />
@@ -110,7 +114,7 @@ export default function TradeDetailScreen() {
               P&L {formatMoney(pnl ?? 0)}
             </Text>
             <Text style={styles.line}>
-              {trade.followedPlan ? 'Followed the plan' : 'Broke the plan'}
+              {trade.followedPlan ? 'Followed Desk levels' : 'Broke Desk levels'}
             </Text>
           </View>
         )}

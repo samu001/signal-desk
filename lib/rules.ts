@@ -89,6 +89,10 @@ const LABELS: Record<RuleCheckId, string> = {
   first_touch_sma_20: 'First touch of 20-day MA',
 };
 
+export function ruleCheckLabel(id: RuleCheckId | string): string {
+  return LABELS[id as RuleCheckId] ?? id.replace(/_/g, ' ');
+}
+
 export function evaluateCheck(
   id: RuleCheckId,
   ctx: {

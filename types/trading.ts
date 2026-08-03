@@ -42,7 +42,7 @@ export type Setup = {
   name: string;
   summary: string;
   entryRules: string[];
-  /** Machine-evaluated checks that drive Today accuracy scoring. */
+  /** Machine-evaluated checks that drive Dashboard pass/fail scoring (not editable in UI). */
   entryChecks: RuleCheckId[];
   exitRules: string[];
   checklist: string[];
