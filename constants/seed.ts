@@ -46,26 +46,6 @@ export const defaultSetups: Setup[] = [
     ],
   },
   {
-    id: 'setup-ma-cross',
-    name: 'MA Crossover',
-    summary: 'More active: buy when the 10-day average crosses above the 30-day average.',
-    entryRules: [
-      '10-day MA crosses above 30-day MA (within a couple sessions)',
-      'Price is still above the 20-day average',
-      'Avoid if a hard negative catalyst just hit',
-    ],
-    entryChecks: ['sma_cross_up', 'above_sma_20', 'session_tradable'],
-    exitRules: [
-      'Stop under the 30-day average or recent swing low',
-      'Exit if the 10-day crosses back below the 30-day',
-      'Scale out near 2R',
-    ],
-    checklist: [
-      'Cross is fresh, not weeks old',
-      'I am not buying into a vertical spike',
-    ],
-  },
-  {
     id: 'setup-rsi-oversold',
     name: 'RSI Oversold Bounce',
     summary: 'More active: buy short-term washouts when RSI turns up from oversold.',
@@ -131,25 +111,6 @@ export const defaultSetups: Setup[] = [
     ],
   },
   {
-    id: 'setup-ema-stack',
-    name: 'EMA Stack Pullback',
-    summary: 'Buy a touch of the 21 EMA only when 8 > 21 > 50 and the 21 is rising.',
-    entryRules: [
-      'Bullish EMA stack: 8 above 21 above 50',
-      '21 EMA is rising',
-      'Price is within ~1.5% of the 21 EMA (pullback entry)',
-    ],
-    entryChecks: ['ema_stack_bull', 'near_ema_21', 'session_tradable'],
-    exitRules: [
-      'Stop under the 50 EMA or recent swing low',
-      'Target about 2R or trail under the 21 EMA',
-    ],
-    checklist: [
-      'Stack is intact — not fighting a rolling-over 21',
-      'Entry is a pullback, not a chase above the 8',
-    ],
-  },
-  {
     id: 'setup-dryup-thrust',
     name: 'Dry-Up Thrust',
     summary: 'Buy a volume thrust after a quiet multi-day dry-up in an upswing.',
@@ -187,6 +148,132 @@ export const defaultSetups: Setup[] = [
     checklist: [
       'This is a reclaim, not a catch-a-falling-knife far below the mean',
       'Invalidation under the dip is defined',
+    ],
+  },
+  {
+    id: 'setup-atr-expansion',
+    name: 'ATR Expansion Day',
+    summary: 'Buy a 2x ATR range expansion day that closes near the highs.',
+    entryRules: [
+      'Daily range is at least ~2x the 14-day ATR',
+      'Close finishes in the top of the day’s range',
+      'Prefer expanding volume on the thrust',
+    ],
+    entryChecks: ['atr_expansion_day', 'volume_expanding', 'session_tradable'],
+    exitRules: [
+      'Stop under the expansion-day low',
+      'Take first profits near 2R',
+      'Exit if momentum fades back through the midpoint of the signal bar',
+    ],
+    checklist: [
+      'This is a volatility breakout — size for wider stops',
+      'Close quality matters more than the open gap',
+    ],
+  },
+  {
+    id: 'setup-flush-reversal',
+    name: 'Two-Day Flush Reversal',
+    summary: 'Buy the first close above the prior high after a 2–3 day flush into the lows.',
+    entryRules: [
+      'Two or three consecutive down closes, each finishing near the session low',
+      'Signal day closes back above the prior day’s high',
+      'Stop sits under the flush low',
+    ],
+    entryChecks: ['two_day_flush_reversal', 'session_tradable'],
+    exitRules: [
+      'Tight stop under the flush low',
+      'Target about 2R or a snap-back toward the 20-day average',
+      'Time stop if the reclaim fails within a couple sessions',
+    ],
+    checklist: [
+      'This is a trap-fade, not a free-fall catch',
+      'Flush lows are marked before entry',
+    ],
+  },
+  {
+    id: 'setup-inside-day',
+    name: 'Inside-Day Breakout',
+    summary: 'Buy the break of an inside-day high after a strong up impulse bar.',
+    entryRules: [
+      'Strong up day of roughly +1.2% or more',
+      'Next session is an inside day (range inside the impulse bar)',
+      'Close breaks the inside-day high',
+    ],
+    entryChecks: ['inside_day_breakout', 'session_tradable'],
+    exitRules: [
+      'Stop under the inside-day low',
+      'Take first profits near 2R',
+      'Exit if the break fails back into the inside-day range',
+    ],
+    checklist: [
+      'Impulse was real before the coil',
+      'Inside day is a pause, not a rollover',
+    ],
+  },
+  {
+    id: 'setup-52w-pullback',
+    name: '52-Week High Pullback',
+    summary: 'Buy the first touch of the 20-day average only in names near 52-week highs.',
+    entryRules: [
+      'Price is within ~5% of the 52-week high',
+      'Stock recently traded extended above the 20-day average',
+      'Signal is the first pullback touch of the 20-day average',
+    ],
+    entryChecks: ['near_52w_high', 'first_touch_sma_20', 'session_tradable'],
+    exitRules: [
+      'Stop under the pullback low or a bit under the 20-day average',
+      'Target about 2R or a retest of the 52-week high',
+      'Exit if the stock loses the 20-day average on a closing basis',
+    ],
+    checklist: [
+      'Only leaders near highs — skip laggards',
+      'This is a first touch, not a multi-day grind under the average',
+    ],
+  },
+];
+
+/**
+ * Retired for now (weak / flat / negative in Must backtests). Code kept so we can re-enable later.
+ * Not loaded into the live Playbook via `defaultSetups`.
+ */
+export const retiredSetups: Setup[] = [
+  {
+    id: 'setup-ma-cross',
+    name: 'MA Crossover',
+    summary: 'More active: buy when the 10-day average crosses above the 30-day average.',
+    entryRules: [
+      '10-day MA crosses above 30-day MA (within a couple sessions)',
+      'Price is still above the 20-day average',
+      'Avoid if a hard negative catalyst just hit',
+    ],
+    entryChecks: ['sma_cross_up', 'above_sma_20', 'session_tradable'],
+    exitRules: [
+      'Stop under the 30-day average or recent swing low',
+      'Exit if the 10-day crosses back below the 30-day',
+      'Scale out near 2R',
+    ],
+    checklist: [
+      'Cross is fresh, not weeks old',
+      'I am not buying into a vertical spike',
+    ],
+  },
+  {
+    id: 'setup-ema-stack',
+    name: 'EMA Stack Pullback',
+    summary: 'Buy a touch of the 21 EMA only when 8 > 21 > 50 and the 21 is rising.',
+    entryRules: [
+      'Bullish EMA stack: 8 above 21 above 50',
+      '21 EMA is rising',
+      'Price is within ~1.5% of the 21 EMA (pullback entry)',
+    ],
+    entryChecks: ['ema_stack_bull', 'near_ema_21', 'session_tradable'],
+    exitRules: [
+      'Stop under the 50 EMA or recent swing low',
+      'Target about 2R or trail under the 21 EMA',
+    ],
+    checklist: [
+      'Stack is intact — not fighting a rolling-over 21',
+      'Entry is a pullback, not a chase above the 8',
     ],
   },
   {
@@ -234,33 +321,6 @@ export const defaultSetups: Setup[] = [
       'Impulse was real before the coil',
     ],
   },
-  {
-    id: 'setup-atr-expansion',
-    name: 'ATR Expansion Day',
-    summary: 'Buy a 2x ATR range expansion day that closes near the highs.',
-    entryRules: [
-      'Daily range is at least ~2x the 14-day ATR',
-      'Close finishes in the top of the day’s range',
-      'Prefer expanding volume on the thrust',
-    ],
-    entryChecks: ['atr_expansion_day', 'volume_expanding', 'session_tradable'],
-    exitRules: [
-      'Stop under the expansion-day low',
-      'Take first profits near 2R',
-      'Exit if momentum fades back through the midpoint of the signal bar',
-    ],
-    checklist: [
-      'This is a volatility breakout — size for wider stops',
-      'Close quality matters more than the open gap',
-    ],
-  },
-];
-
-/**
- * Retired for now (weak in Must backtests). Code kept so we can re-enable later.
- * Not loaded into the live Playbook via `defaultSetups`.
- */
-export const retiredSetups: Setup[] = [
   {
     id: 'setup-trend-pullback',
     name: 'Trend Pullback',

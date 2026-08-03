@@ -32,6 +32,10 @@ export type RuleCheckId =
   | 'post_earnings_hold'
   | 'bull_flag_break'
   | 'atr_expansion_day'
+  | 'two_day_flush_reversal'
+  | 'inside_day_breakout'
+  | 'near_52w_high'
+  | 'first_touch_sma_20'
 
 export type Setup = {
   id: string;

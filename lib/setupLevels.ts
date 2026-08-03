@@ -21,13 +21,16 @@ export function levelsForSetup(
     setup.id.includes('dryup-thrust') ||
     setup.id.includes('bull-flag') ||
     setup.id.includes('atr-expansion') ||
-    setup.id.includes('earnings-momentum')
+    setup.id.includes('earnings-momentum') ||
+    setup.id.includes('inside-day')
   ) {
     const level = setup.id.includes('momentum-gap')
       ? Math.max(price * 0.995, swingHigh * 0.98)
       : setup.id.includes('prior-day-high') && history.length >= 2
         ? history[history.length - 2].high
-        : swingHigh;
+        : setup.id.includes('inside-day') && history.length >= 2
+          ? history[history.length - 2].high
+          : swingHigh;
     const stop = Math.min(swingLow, level * 0.97);
     const entry = Math.max(price, level * 0.99);
     const risk = Math.max(entry - stop, entry * 0.01);
@@ -42,7 +45,9 @@ export function levelsForSetup(
   if (
     setup.id.includes('mean-reversion') ||
     setup.id.includes('rsi-oversold') ||
-    setup.id.includes('mean-reclaim')
+    setup.id.includes('mean-reclaim') ||
+    setup.id.includes('flush-reversal') ||
+    setup.id.includes('52w-pullback')
   ) {
     const stop = swingLow * 0.99;
     const risk = Math.max(price - stop, price * 0.01);

@@ -83,6 +83,10 @@ const LABELS: Record<RuleCheckId, string> = {
   post_earnings_hold: 'Post-earnings hold',
   bull_flag_break: 'Bull flag break',
   atr_expansion_day: '2x ATR expansion day',
+  two_day_flush_reversal: 'Two-day flush reversal',
+  inside_day_breakout: 'Inside-day breakout',
+  near_52w_high: 'Near 52-week high',
+  first_touch_sma_20: 'First touch of 20-day MA',
 };
 
 export function evaluateCheck(
@@ -625,6 +629,107 @@ export function evaluateCheck(
         detail: ok
           ? `Range ${(range / atr14).toFixed(1)}x ATR, close near highs`
           : `Range ${(range / atr14).toFixed(1)}x ATR · nearHighs ${nearHighs} · up ${up}`,
+      };
+    }
+    case 'two_day_flush_reversal': {
+      if (!last || candles.length < 5) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need flush + reversal bars' };
+      }
+      const prev = candles[candles.length - 2];
+      const isFlushBar = (c: Candle) => {
+        const range = c.high - c.low;
+        const nearLow = range > 0 ? (c.close - c.low) / range <= 0.35 : false;
+        return nearLow && c.close < c.open;
+      };
+      // 2–3 down closes ending at prior bar, each closing near lows.
+      const flush2 = isFlushBar(candles[candles.length - 3]) && isFlushBar(prev);
+      const flush3 =
+        isFlushBar(candles[candles.length - 4]) &&
+        isFlushBar(candles[candles.length - 3]) &&
+        isFlushBar(prev);
+      const flushOk = flush2 || flush3;
+      const reclaim = last.close > prev.high;
+      const ok = flushOk && reclaim;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Flush (${flush3 ? '3' : '2'}d) then close above prior high ${prev.high.toFixed(2)}`
+          : `Flush ${flushOk} · reclaim ${reclaim}`,
+      };
+    }
+    case 'inside_day_breakout': {
+      if (!last || candles.length < 3) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need impulse + inside + break bars' };
+      }
+      const impulse = candles[candles.length - 3];
+      const inside = candles[candles.length - 2];
+      const impulseRet = (impulse.close - impulse.open) / Math.max(impulse.open, 1e-9);
+      const strongUp = impulse.close > impulse.open && impulseRet >= 0.012;
+      const isInside =
+        inside.high <= impulse.high &&
+        inside.low >= impulse.low &&
+        inside.high - inside.low < impulse.high - impulse.low;
+      const broke = last.close > inside.high;
+      const ok = strongUp && isInside && broke;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `Broke inside-day high ${inside.high.toFixed(2)} after ${(impulseRet * 100).toFixed(1)}% up day`
+          : `StrongUp ${strongUp} · inside ${isInside} · break ${broke}`,
+      };
+    }
+    case 'near_52w_high': {
+      if (!last || candles.length < 120) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need ~120+ bars toward 52-week high' };
+      }
+      const lookback = Math.min(252, candles.length - 1);
+      const window = candles.slice(-(lookback + 1), -1);
+      const high52 = Math.max(...window.map((c) => c.high));
+      if (high52 <= 0 || price == null) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: '52-week high unavailable' };
+      }
+      const distPct = ((high52 - price) / high52) * 100;
+      const ok = distPct >= -0.5 && distPct <= 5;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `${distPct.toFixed(1)}% below 52-week high ${high52.toFixed(2)}`
+          : `${distPct.toFixed(1)}% from 52-week high ${high52.toFixed(2)}`,
+      };
+    }
+    case 'first_touch_sma_20': {
+      if (price == null || candles.length < 30) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'Need SMA20 history' };
+      }
+      const maNow = sma(closeSeries, 20);
+      if (maNow == null) {
+        return { id, label: LABELS[id], verdict: 'unknown', detail: 'SMA20 unavailable' };
+      }
+      const dist = Math.abs(percentFrom(price, maNow));
+      const touching = dist <= 1.5 && price >= maNow * 0.985;
+      let wasExtended = false;
+      for (let i = candles.length - 8; i < candles.length - 1; i++) {
+        if (i < 20) continue;
+        const maThen = sma(closeSeries.slice(0, i + 1), 20);
+        if (maThen != null && candles[i].close > maThen * 1.02) {
+          wasExtended = true;
+          break;
+        }
+      }
+      const ok = touching && wasExtended;
+      return {
+        id,
+        label: LABELS[id],
+        verdict: ok ? 'pass' : 'fail',
+        detail: ok
+          ? `First pullback touch of SMA20 (${dist.toFixed(1)}% away)`
+          : `Touch ${touching} · prior extension ${wasExtended}`,
       };
     }
     default:

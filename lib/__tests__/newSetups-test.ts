@@ -4,12 +4,19 @@ import { levelsForSetup } from '@/lib/setupLevels';
 
 const ACTIVE_NEW_IDS = [
   'setup-prior-day-high',
-  'setup-ema-stack',
   'setup-dryup-thrust',
   'setup-mean-reclaim',
+  'setup-atr-expansion',
+  'setup-flush-reversal',
+  'setup-inside-day',
+  'setup-52w-pullback',
+];
+
+const RETIRED_NEGATIVE_FLAT = [
+  'setup-ma-cross',
+  'setup-ema-stack',
   'setup-earnings-momentum',
   'setup-bull-flag',
-  'setup-atr-expansion',
 ];
 
 describe('playbook setup roster', () => {
@@ -17,7 +24,11 @@ describe('playbook setup roster', () => {
     for (const id of ACTIVE_NEW_IDS) {
       expect(defaultSetups.find((s) => s.id === id)).toBeTruthy();
     }
-    expect(retiredSetups.length).toBeGreaterThan(0);
+    for (const id of RETIRED_NEGATIVE_FLAT) {
+      expect(retiredSetupIds.has(id)).toBe(true);
+      expect(defaultSetups.find((s) => s.id === id)).toBeFalsy();
+      expect(retiredSetups.find((s) => s.id === id)).toBeTruthy();
+    }
     expect(retiredSetupIds.has('setup-trend-pullback-active')).toBe(true);
     expect(defaultSetups.find((s) => s.id === 'setup-trend-pullback-active')).toBeFalsy();
   });
