@@ -153,7 +153,8 @@ export default function DeskScreen() {
               </Pressable>
             ))}
             <Link href={`/desk-backtest?symbol=${encodeURIComponent(symbol)}`} asChild>
-              <Pressable style={[styles.quickChip, styles.backtestChip]}>
+              {/* Link asChild + array style crashes on web (expo#31352); keep it flattened. */}
+              <Pressable style={StyleSheet.flatten([styles.quickChip, styles.backtestChip])}>
                 <Text style={[styles.quickChipText, styles.backtestChipText]}>Backtest Desk →</Text>
               </Pressable>
             </Link>

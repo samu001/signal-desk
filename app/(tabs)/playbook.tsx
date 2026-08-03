@@ -23,6 +23,13 @@ export default function PlaybookScreen() {
           </Pressable>
         </Link>
 
+        <Link href="/portfolio-backtest" asChild>
+          {/* Link asChild + array style crashes on web (expo#31352); keep it flattened. */}
+          <Pressable style={StyleSheet.flatten([styles.backtestCta, styles.portfolioCta])}>
+            <Text style={styles.backtestCtaText}>Portfolio backtest (with position cap) →</Text>
+          </Pressable>
+        </Link>
+
         {setups.length === 0 ? (
           <EmptyState title="No setups yet" body="Seed data should load on first launch." />
         ) : (
@@ -51,7 +58,8 @@ export default function PlaybookScreen() {
                     </Pressable>
                   </Link>
                   <Link href={{ pathname: '/backtest', params: { setupId: setup.id } }} asChild>
-                    <Pressable style={[styles.actionBtn, styles.actionPrimary]}>
+                    {/* Link asChild + array style crashes on web (expo#31352). */}
+                    <Pressable style={StyleSheet.flatten([styles.actionBtn, styles.actionPrimary])}>
                       <Text style={[styles.actionText, styles.actionPrimaryText]}>Backtest</Text>
                     </Pressable>
                   </Link>
@@ -82,6 +90,9 @@ const styles = StyleSheet.create({
     color: palette.white,
     fontWeight: '700',
     fontSize: 15,
+  },
+  portfolioCta: {
+    backgroundColor: palette.ink,
   },
   card: {
     backgroundColor: palette.white,
