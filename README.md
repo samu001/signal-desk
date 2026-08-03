@@ -56,10 +56,23 @@ npx tsx scripts/run-deep-backtest.ts
 # ~5y window; BT_REGIME=1 stacks the regime gate globally (experiment override)
 BT_DAYS=1500 npx tsx scripts/run-deep-backtest.ts
 
+# Walk-forward split: score a past era vs a recent era separately
+BT_DAYS=1500 BT_END=2023-12-31 npx tsx scripts/run-deep-backtest.ts
+BT_DAYS=1500 BT_START=2024-01-01 npx tsx scripts/run-deep-backtest.ts
+
 # Short comparisons
 npx tsx scripts/run-short-backtest.ts
 npx tsx scripts/compare-must-vs-all8.ts
 ```
+
+Realism features baked in: entries fill next-bar open; **stops/targets fill at
+the open when a bar gaps through the level** (no perfect-stop fantasy); outlier
+trades are kept, not trimmed; slippage is tiered by liquidity (5/10/20 bps);
+and a portfolio report caps concurrent open positions (`BT_MAX_OPEN`, default 3)
+to approximate a real account's capital limit. Expect the capped portfolio
+number — not the all-signals number — to resemble live results. Remaining known
+optimism: the roster and universe were selected on the same history they are
+scored on (mitigate by re-checking walk-forward windows before trusting a change).
 
 The engine needs ≥ 60 daily bars (55 warmup + 5). With API keys set
 (`TIINGO_API_KEY`, `FMP_API_KEY`, `FINNHUB_API_KEY`), scripts prefer those
