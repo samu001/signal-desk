@@ -49,6 +49,16 @@ per-setup gating instead of a global gate.
 
 ## Backtesting
 
+In the app: **Playbook → "Portfolio backtest (with position cap)"** runs the
+combined Playbook across a symbol list with a configurable max-open-positions
+cap, and converts R to dollars from the account size / risk % you enter there
+(saved back to Settings). It uses your API keys from Settings (FMP allows
+~400 days on the free tier); without keys it falls back to demo data. The
+per-symbol and Desk backtests live on the Playbook and Desk tabs.
+
+For deeper runs (5y history via the Yahoo EOD fallback, walk-forward splits),
+use the scripts:
+
 ```bash
 # Deep Must backtest (~800 calendar days by default; Yahoo EOD fallback when no keys)
 npx tsx scripts/run-deep-backtest.ts
