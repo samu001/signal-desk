@@ -17,7 +17,20 @@ const RETIRED_NEGATIVE_FLAT = [
   'setup-ema-stack',
   'setup-earnings-momentum',
   'setup-bull-flag',
+  'setup-rsi-oversold',
+  'setup-momentum-gap',
 ];
+
+/** Regime gate only where 5y backtests showed it helps. */
+const REGIME_GATED = [
+  'setup-mean-reversion',
+  'setup-prior-day-high',
+  'setup-mean-reclaim',
+  'setup-inside-day',
+  'setup-52w-pullback',
+];
+
+const NOT_REGIME_GATED = ['setup-flush-reversal', 'setup-atr-expansion', 'setup-dryup-thrust'];
 
 describe('playbook setup roster', () => {
   it('keeps stronger setups active and preserves retired code', () => {
@@ -31,6 +44,18 @@ describe('playbook setup roster', () => {
     }
     expect(retiredSetupIds.has('setup-trend-pullback-active')).toBe(true);
     expect(defaultSetups.find((s) => s.id === 'setup-trend-pullback-active')).toBeFalsy();
+  });
+
+  it('applies the regime gate per setup only where it helped', () => {
+    for (const id of REGIME_GATED) {
+      const setup = defaultSetups.find((s) => s.id === id);
+      expect(setup?.entryChecks).toContain('market_regime_ok');
+    }
+    for (const id of NOT_REGIME_GATED) {
+      const setup = defaultSetups.find((s) => s.id === id);
+      expect(setup).toBeTruthy();
+      expect(setup?.entryChecks).not.toContain('market_regime_ok');
+    }
   });
 
   it('evaluates active setups without throwing on demo candles', () => {

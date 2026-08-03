@@ -3,7 +3,7 @@ import { runBacktest } from '@/lib/backtest';
 
 describe('runBacktest', () => {
   it('runs on demo candles and returns stats shape', () => {
-    const setup = defaultSetups.find((s) => s.id === 'setup-momentum-gap')!;
+    const setup = defaultSetups.find((s) => s.id === 'setup-prior-day-high')!;
     const result = runBacktest({
       setup,
       symbol: 'AAPL',

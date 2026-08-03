@@ -25,12 +25,14 @@ export const defaultSetups: Setup[] = [
       'Touches a weekly support / prior demand zone',
       'Selling momentum slows (lower volume or wick rejection)',
       'Enter only with a defined bounce trigger candle',
+      'Only in a healthy SPY/QQQ regime',
     ],
     entryChecks: [
       'extended_below_sma_20',
       'at_support_zone',
       'rejection_wick',
       'no_negative_catalyst',
+      'market_regime_ok',
       'session_tradable',
     ],
     exitRules: [
@@ -46,46 +48,6 @@ export const defaultSetups: Setup[] = [
     ],
   },
   {
-    id: 'setup-rsi-oversold',
-    name: 'RSI Oversold Bounce',
-    summary: 'More active: buy short-term washouts when RSI turns up from oversold.',
-    entryRules: [
-      'RSI(14) recently dipped to ~35 or lower',
-      'RSI is turning up and still below 50',
-      'Use a tight stop under the flush low',
-    ],
-    entryChecks: ['rsi_oversold_recovering', 'session_tradable'],
-    exitRules: [
-      'Tight stop under the recent low',
-      'Take profits into the first bounce / toward the 20-day MA',
-      'Time stop if no bounce within a few sessions',
-    ],
-    checklist: [
-      'This is a bounce trade, size smaller',
-      'I know the invalidation low',
-    ],
-  },
-  {
-    id: 'setup-momentum-gap',
-    name: 'Momentum / Gap-and-Go',
-    summary: 'More active: buy strong up days with expanding volume (momentum continuation).',
-    entryRules: [
-      'Strong up day (about +1.2% or more), preferably with a gap up',
-      'Volume expands vs the 20-day average',
-      'Do not chase already-extended multi-day spikes blindly',
-    ],
-    entryChecks: ['strong_up_day', 'volume_expanding', 'session_tradable'],
-    exitRules: [
-      'Stop under the signal-day low',
-      'Take first profits near 2R',
-      'Exit if momentum fades back into the signal-day range',
-    ],
-    checklist: [
-      'I accept higher whipsaw risk for more activity',
-      'Position size accounts for wider daily ranges',
-    ],
-  },
-  {
     id: 'setup-prior-day-high',
     name: 'Prior-Day High Break',
     summary: 'Buy when price closes above yesterday’s high with expanding volume.',
@@ -93,11 +55,13 @@ export const defaultSetups: Setup[] = [
       'Close breaks above the prior session high',
       'Volume expands vs the 20-day average',
       'Avoid chasing already-extended spikes',
+      'Only in a healthy SPY/QQQ regime',
     ],
     entryChecks: [
       'prior_day_high_break',
       'volume_expanding',
       'not_chasing_extension',
+      'market_regime_ok',
       'session_tradable',
     ],
     exitRules: [
@@ -138,8 +102,9 @@ export const defaultSetups: Setup[] = [
       'Price recently closed below the 20-day average',
       'Latest close is back above the 20-day average',
       'Use the reclaim as confirmation, not anticipation',
+      'Only in a healthy SPY/QQQ regime',
     ],
-    entryChecks: ['mean_reclaim', 'above_sma_20', 'session_tradable'],
+    entryChecks: ['mean_reclaim', 'above_sma_20', 'market_regime_ok', 'session_tradable'],
     exitRules: [
       'Stop under the dip low beneath the average',
       'Target about 2R or the prior swing high',
@@ -198,8 +163,9 @@ export const defaultSetups: Setup[] = [
       'Strong up day of roughly +1.2% or more',
       'Next session is an inside day (range inside the impulse bar)',
       'Close breaks the inside-day high',
+      'Only in a healthy SPY/QQQ regime',
     ],
-    entryChecks: ['inside_day_breakout', 'session_tradable'],
+    entryChecks: ['inside_day_breakout', 'market_regime_ok', 'session_tradable'],
     exitRules: [
       'Stop under the inside-day low',
       'Take first profits near 2R',
@@ -218,8 +184,9 @@ export const defaultSetups: Setup[] = [
       'Price is within ~5% of the 52-week high',
       'Stock recently traded extended above the 20-day average',
       'Signal is the first pullback touch of the 20-day average',
+      'Only in a healthy SPY/QQQ regime',
     ],
-    entryChecks: ['near_52w_high', 'first_touch_sma_20', 'session_tradable'],
+    entryChecks: ['near_52w_high', 'first_touch_sma_20', 'market_regime_ok', 'session_tradable'],
     exitRules: [
       'Stop under the pullback low or a bit under the 20-day average',
       'Target about 2R or a retest of the 52-week high',
@@ -237,6 +204,46 @@ export const defaultSetups: Setup[] = [
  * Not loaded into the live Playbook via `defaultSetups`.
  */
 export const retiredSetups: Setup[] = [
+  {
+    id: 'setup-rsi-oversold',
+    name: 'RSI Oversold Bounce',
+    summary: 'More active: buy short-term washouts when RSI turns up from oversold.',
+    entryRules: [
+      'RSI(14) recently dipped to ~35 or lower',
+      'RSI is turning up and still below 50',
+      'Use a tight stop under the flush low',
+    ],
+    entryChecks: ['rsi_oversold_recovering', 'session_tradable'],
+    exitRules: [
+      'Tight stop under the recent low',
+      'Take profits into the first bounce / toward the 20-day MA',
+      'Time stop if no bounce within a few sessions',
+    ],
+    checklist: [
+      'This is a bounce trade, size smaller',
+      'I know the invalidation low',
+    ],
+  },
+  {
+    id: 'setup-momentum-gap',
+    name: 'Momentum / Gap-and-Go',
+    summary: 'More active: buy strong up days with expanding volume (momentum continuation).',
+    entryRules: [
+      'Strong up day (about +1.2% or more), preferably with a gap up',
+      'Volume expands vs the 20-day average',
+      'Do not chase already-extended multi-day spikes blindly',
+    ],
+    entryChecks: ['strong_up_day', 'volume_expanding', 'session_tradable'],
+    exitRules: [
+      'Stop under the signal-day low',
+      'Take first profits near 2R',
+      'Exit if momentum fades back into the signal-day range',
+    ],
+    checklist: [
+      'I accept higher whipsaw risk for more activity',
+      'Position size accounts for wider daily ranges',
+    ],
+  },
   {
     id: 'setup-ma-cross',
     name: 'MA Crossover',
@@ -467,7 +474,7 @@ export const defaultWatchlist: WatchlistItem[] = [
     entryHigh: 122,
     stop: 112,
     target: 140,
-    setupId: 'setup-momentum-gap',
+    setupId: 'setup-inside-day',
     notes: 'Skip if market bias is defensive.',
     createdAt: new Date().toISOString(),
   },
@@ -479,7 +486,7 @@ export const defaultWatchlist: WatchlistItem[] = [
     entryHigh: 410,
     stop: 392,
     target: 440,
-    setupId: 'setup-trend-pullback',
+    setupId: 'setup-52w-pullback',
     notes: 'Prefer opening range hold confirmation.',
     createdAt: new Date().toISOString(),
   },

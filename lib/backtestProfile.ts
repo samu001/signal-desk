@@ -64,9 +64,13 @@ export function gateChecksFromFlags(flags: PlaybookGateFlags): RuleCheckId[] {
   return out;
 }
 
-/** Live/default: keep regime + earnings; extras off unless a profile enables them. */
+/**
+ * Live/default: earnings blackout only. The market-regime gate is applied
+ * per-setup via `market_regime_ok` in entryChecks — 5y backtests showed it
+ * helps trend/breakout setups but hurts flush/expansion setups.
+ */
 export const DEFAULT_LIVE_GATES: PlaybookGateFlags = {
-  marketRegime: true,
+  marketRegime: false,
   earningsBlackout: true,
   weeklyTrend: false,
   sectorRs: false,

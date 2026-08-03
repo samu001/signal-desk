@@ -30,11 +30,12 @@ const PROFILE: BacktestProfile = REGIME
     }
   : PROFILE_MUST;
 
-// SKX taken private (no Yahoo data) → DECK. Chronic losers PENN → CZR, LYFT → ETSY
-// (similar sector + size replacements).
+// Universe picked by demonstrated combined R, not sector-matching. High-beta
+// consumer/gaming names (PENN, LYFT, CZR, ETSY, DECK) all lost over 5y and
+// were dropped; quality growth mid-caps (DUOL, FIX, IOT) fill the small/mid slots.
 const BIG = ['AAPL', 'AMZN', 'JPM', 'XOM'];
 const MID = ['FANG', 'CFG', 'WSM', 'DDOG'];
-const SMALL = ['CROX', 'DECK', 'CZR', 'ETSY', 'PATH', 'RKLB'];
+const SMALL = ['CROX', 'DUOL', 'FIX', 'IOT', 'PATH', 'RKLB'];
 const SYMBOLS = [...BIG, ...MID, ...SMALL];
 
 const keys = {

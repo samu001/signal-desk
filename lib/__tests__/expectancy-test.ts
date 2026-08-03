@@ -28,14 +28,14 @@ describe('computeSetupExpectancy', () => {
     const trades = [
       closedTrade({
         id: 'a',
-        setupId: 'setup-momentum-gap',
+        setupId: 'setup-flush-reversal',
         entry: 100,
         stop: 95,
         exitPrice: 110, // +2R
       }),
       closedTrade({
         id: 'b',
-        setupId: 'setup-momentum-gap',
+        setupId: 'setup-flush-reversal',
         entry: 100,
         stop: 95,
         exitPrice: 95, // -1R
@@ -43,7 +43,7 @@ describe('computeSetupExpectancy', () => {
     ];
 
     const [edge] = computeSetupExpectancy(defaultSetups, trades).filter(
-      (e) => e.setupId === 'setup-momentum-gap'
+      (e) => e.setupId === 'setup-flush-reversal'
     );
     expect(edge.sampleSize).toBe(2);
     expect(edge.winRate).toBe(0.5);
