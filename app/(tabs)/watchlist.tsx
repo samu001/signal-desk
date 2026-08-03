@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -26,6 +27,20 @@ function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
   if (stance === 'soft_buy') return 'warn';
   if (stance === 'avoid') return 'bad';
   return 'neutral';
+}
+
+function confirmRemove(symbol: string, onConfirm: () => void) {
+  // react-native-web's Alert.alert is a no-op, so web needs window.confirm.
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.confirm(`Remove ${symbol} from watchlist?`)) {
+      onConfirm();
+    }
+    return;
+  }
+  Alert.alert('Remove symbol?', symbol, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Remove', style: 'destructive', onPress: onConfirm },
+  ]);
 }
 
 export default function WatchlistScreen() {
@@ -224,16 +239,7 @@ export default function WatchlistScreen() {
                     </Link>
                     <Pressable
                       hitSlop={8}
-                      onPress={() =>
-                        Alert.alert('Remove symbol?', item.symbol, [
-                          { text: 'Cancel', style: 'cancel' },
-                          {
-                            text: 'Remove',
-                            style: 'destructive',
-                            onPress: () => removeWatchlistItem(item.id),
-                          },
-                        ])
-                      }>
+                      onPress={() => confirmRemove(item.symbol, () => removeWatchlistItem(item.id))}>
                       <FontAwesome name="trash-o" size={18} color={palette.danger} />
                     </Pressable>
                   </View>

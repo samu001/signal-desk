@@ -1,6 +1,6 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Link } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -72,7 +72,7 @@ export default function DeskScreen() {
   const { ready, settings, setups, trades } = useTrading();
   const { width } = useWindowDimensions();
   const wide = width >= 900;
-  const [symbol, setSymbol] = useState('AAPL');
+  const [symbol, setSymbol] = useState('');
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,13 +95,6 @@ export default function DeskScreen() {
       setLoading(false);
     }
   }
-
-  useEffect(() => {
-    if (!ready) return;
-    void run('AAPL');
-    // Initial demo load only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
 
   if (!ready) {
     return (
