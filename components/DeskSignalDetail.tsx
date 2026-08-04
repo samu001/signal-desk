@@ -3,9 +3,9 @@ import { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { SetupOptionCard } from '@/components/SetupOptionCard';
-import { formatMoney, Pill } from '@/components/ui';
+import { Button, formatMoney, Pill } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
-import { Recommendation, Stance } from '@/lib/recommend';
+import { Recommendation, SetupOption, Stance } from '@/lib/recommend';
 
 function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
   if (stance === 'strong_buy') return 'good';
@@ -14,15 +14,23 @@ function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
   return 'neutral';
 }
 
+/**
+ * Consolidated Desk view: overall stance + ranked Playbook signals,
+ * each with its own buy / stop / target.
+ */
 export function DeskSignalDetail({
   recommendation,
+  onUseSetup,
   footer,
 }: {
   recommendation: Recommendation;
+  /** Apply this setup's levels onto the watchlist row (and optionally act). */
+  onUseSetup?: (option: SetupOption) => void;
   footer?: ReactNode;
 }) {
   return (
     <View style={styles.card}>
+      <Text style={styles.sectionEyebrow}>Desk verdict</Text>
       <View style={styles.top}>
         <View>
           <Text style={styles.symbol}>{recommendation.symbol}</Text>
@@ -31,7 +39,13 @@ export function DeskSignalDetail({
         <View style={styles.badges}>
           <Pill label={recommendation.label} tone={stanceTone(recommendation.stance)} />
           <Pill
-            label={recommendation.researchLabel}
+            label={
+              recommendation.tradeable
+                ? 'Tradeable Soft/Strong'
+                : recommendation.researchInteresting
+                  ? 'Research only'
+                  : 'Stand aside'
+            }
             tone={
               recommendation.tradeable
                 ? 'good'
@@ -44,50 +58,68 @@ export function DeskSignalDetail({
       </View>
 
       <Text style={styles.summary}>{recommendation.summary}</Text>
-      <Text style={styles.levels}>
-        Entry {formatMoney(recommendation.levels.entryLow)}–
-        {formatMoney(recommendation.levels.entryHigh)} · Stop {formatMoney(recommendation.levels.stop)}{' '}
-        · Target {formatMoney(recommendation.levels.target)}
-      </Text>
-
-      {recommendation.candleSource === 'demo' ? (
-        <Text style={styles.demoWarn}>
-          {recommendation.warnings.find((w) => /re-anchored/i.test(w)) ??
-            'Demo daily history — levels are approximate until Tiingo/FMP keys are set in Settings.'}
-        </Text>
-      ) : null}
-
-      {recommendation.bestSetupName ? (
-        <Text style={styles.setup}>
-          Top Playbook · {recommendation.bestSetupName}
-          {recommendation.setupOptions.length > 1
-            ? ` (+${recommendation.setupOptions.length - 1} more)`
-            : ''}
-        </Text>
-      ) : (
-        <Text style={styles.setupWarn}>No Playbook setup matched — buys blocked</Text>
-      )}
-
       <Text style={styles.confidence}>
         Confidence {recommendation.confidence}%
         {recommendation.rewardToRisk != null
-          ? ` · ~${recommendation.rewardToRisk.toFixed(1)}R primary`
+          ? ` · ~${recommendation.rewardToRisk.toFixed(1)}R on primary`
           : ''}
       </Text>
 
-      {recommendation.setupOptions.length > 0 ? (
-        <View style={styles.optionsWrap}>
-          <Text style={styles.optionsTitle}>
-            Setup options ({recommendation.setupOptions.length})
-          </Text>
-          {recommendation.setupOptions.map((option) => (
-            <SetupOptionCard
-              key={`${recommendation.symbol}-${option.setupId}`}
-              option={option}
-            />
-          ))}
-        </View>
+      {recommendation.candleSource === 'none' || recommendation.label === 'No data' ? (
+        <Text style={styles.demoWarn}>
+          No data — live daily history unavailable. Desk will not issue Soft/Strong. Check API keys
+          / Yahoo proxy in Settings, then Refresh signals.
+        </Text>
       ) : null}
+
+      {recommendation.candleSource !== 'none' && recommendation.label !== 'No data' ? (
+      <View style={styles.primaryBox}>
+        <Text style={styles.sectionEyebrow}>Primary levels (strongest signal)</Text>
+        <Text style={styles.levels}>
+          Buy {formatMoney(recommendation.levels.entryLow)}–
+          {formatMoney(recommendation.levels.entryHigh)} · Stop{' '}
+          {formatMoney(recommendation.levels.stop)} · Target{' '}
+          {formatMoney(recommendation.levels.target)}
+        </Text>
+        {recommendation.bestSetupName ? (
+          <Text style={styles.setup}>From · {recommendation.bestSetupName}</Text>
+        ) : (
+          <Text style={styles.setupWarn}>No Playbook setup matched — Soft/Strong blocked</Text>
+        )}
+      </View>
+      ) : null}
+
+      {recommendation.candleSource === 'none' || recommendation.label === 'No data' ? null : (
+        <>
+          <Text style={styles.sectionEyebrow}>
+            Playbook signals · strongest first ({recommendation.setupOptions.length})
+          </Text>
+          <Text style={styles.sectionHint}>
+            Each matched setup has its own buy zone, stop, and target. Pick one to size a trade.
+          </Text>
+
+          {recommendation.setupOptions.length === 0 ? (
+            <Text style={styles.setupWarn}>No setups currently pass machine checks.</Text>
+          ) : (
+            recommendation.setupOptions.map((option) => (
+              <View key={`${recommendation.symbol}-${option.setupId}`} style={styles.optionWrap}>
+                <SetupOptionCard option={option} />
+                {onUseSetup ? (
+                  <Button
+                    label={
+                      recommendation.tradeable
+                        ? `Use #${option.rank} levels & act →`
+                        : `Use #${option.rank} levels (research only)`
+                    }
+                    onPress={() => onUseSetup(option)}
+                    variant={option.rank === 1 && recommendation.tradeable ? 'primary' : 'ghost'}
+                  />
+                ) : null}
+              </View>
+            ))
+          )}
+        </>
+      )}
 
       <Link href="/lab" asChild>
         <Pressable style={styles.backtestLink}>
@@ -115,6 +147,20 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 8,
   },
+  sectionEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+  sectionHint: {
+    color: palette.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: -4,
+  },
   top: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -134,10 +180,18 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   summary: { color: palette.ink, lineHeight: 21 },
+  primaryBox: {
+    backgroundColor: palette.white,
+    borderRadius: 10,
+    padding: 12,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: palette.line,
+  },
   levels: {
     fontFamily: 'SpaceMono',
     fontSize: 12,
-    color: palette.muted,
+    color: palette.ink,
   },
   demoWarn: {
     color: palette.warn,
@@ -145,17 +199,12 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontWeight: '600',
   },
-  setup: { color: palette.moss, fontWeight: '600' },
+  setup: { color: palette.moss, fontWeight: '600', fontSize: 13 },
   setupWarn: { color: palette.warn, fontWeight: '600' },
   confidence: { color: palette.muted, fontSize: 13 },
-  optionsWrap: { marginTop: 4, gap: 4 },
-  optionsTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: palette.ink,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginBottom: 2,
+  optionWrap: {
+    gap: 8,
+    marginBottom: 4,
   },
   backtestLink: { marginTop: 4 },
   backtestText: { color: palette.moss, fontWeight: '700', fontSize: 13 },

@@ -11,9 +11,17 @@ function toDate(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
+function isRateLimited(status: number, body: string): boolean {
+  return (
+    status === 429 ||
+    /rate.?limit|too many requests|exceeded|quota/i.test(body)
+  );
+}
+
 /**
  * Tiingo free EOD — best free long-history source for daily backtests.
  * Auth via token query param or Authorization header.
+ * Note: browser/web often fails CORS even with a valid token (use FMP on web, or Expo Go).
  */
 export async function fetchTiingoDailyCandles(
   symbol: string,
@@ -32,18 +40,29 @@ export async function fetchTiingoDailyCandles(
       },
     });
 
+    const body = await res.text();
+
+    if (isRateLimited(res.status, body)) {
+      const retry = res.headers.get('retry-after');
+      return {
+        candles: [],
+        warning: retry
+          ? `Tiingo rate limit (HTTP ${res.status}) — retry after ${retry}s, or use FMP for EOD on web.`
+          : `Tiingo rate limit (HTTP ${res.status}) — wait before refreshing, or use FMP for EOD.`,
+      };
+    }
+
     if (!res.ok) {
-      const body = await res.text();
       return {
         candles: [],
         warning:
           res.status === 401 || res.status === 403
-            ? 'Tiingo auth failed — check your token.'
+            ? 'Tiingo auth failed — check your token in Settings.'
             : `Tiingo HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`,
       };
     }
 
-    const data = (await res.json()) as Array<{
+    let data: Array<{
       date?: string;
       open?: number;
       high?: number;
@@ -55,7 +74,12 @@ export async function fetchTiingoDailyCandles(
       adjLow?: number;
       adjClose?: number;
       adjVolume?: number;
-    }>;
+    }> = [];
+    try {
+      data = JSON.parse(body) as typeof data;
+    } catch {
+      return { candles: [], warning: 'Tiingo returned non-JSON EOD payload.' };
+    }
 
     if (!Array.isArray(data) || data.length === 0) {
       return { candles: [], warning: 'Tiingo returned no EOD rows.' };
@@ -78,12 +102,14 @@ export async function fetchTiingoDailyCandles(
       candles,
       warning: `Tiingo EOD (${candles.length} adjusted daily bars).`,
     };
-  } catch {
-    // Tiingo often omits CORS headers, so browser/web clients fail while native/server calls work.
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const corsLike = /failed to fetch|networkerror|load failed|cors/i.test(msg);
     return {
       candles: [],
-      warning:
-        'Tiingo blocked in this browser (CORS). FMP/Finnhub still work on web; Tiingo works in Expo Go / native.',
+      warning: corsLike
+        ? 'Tiingo blocked in this browser (CORS) — token may be fine. Use FMP for EOD on web, or run in Expo Go / native.'
+        : `Tiingo request failed: ${msg.slice(0, 120)}`,
     };
   }
 }

@@ -1,5 +1,5 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Link } from 'expo-router';
+import { Link, useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -17,11 +17,9 @@ import {
 import { CandidateRow } from '@/components/CandidateRow';
 import { DeskSignalDetail } from '@/components/DeskSignalDetail';
 import {
-  BrandMark,
   Button,
   EmptyState,
   formatMoney,
-  formatPct,
   Pill,
   Screen,
   SectionTitle,
@@ -30,8 +28,8 @@ import { hasWatchlistLevels, isAwaitingDeskSignal } from '@/constants/watchlist'
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { fundamentalFlags } from '@/lib/fmp';
-import { fetchRecommendation, fetchRecommendations } from '@/lib/fetchRecommendation';
-import { Recommendation, Stance } from '@/lib/recommend';
+import { fetchRecommendationsWithBundle } from '@/lib/fetchRecommendation';
+import { Recommendation, SetupOption, Stance } from '@/lib/recommend';
 
 function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
   if (stance === 'strong_buy') return 'good';
@@ -54,6 +52,7 @@ function confirmRemove(symbol: string, onConfirm: () => void) {
 }
 
 export default function DashboardScreen() {
+  const router = useRouter();
   const {
     ready,
     settings,
@@ -63,13 +62,15 @@ export default function DashboardScreen() {
     quotesLoading,
     refreshQuotes,
     trades,
-    session,
-    dataSource,
     watchlist,
     getSetup,
     removeWatchlistItem,
     addWatchlistSymbol,
     applyDeskSignals,
+    upsertWatchlistItem,
+    ingestMarketBundle,
+    marketBundle,
+    quotesUpdatedAt,
     fundamentals,
     setups,
     signalsStale,
@@ -84,7 +85,6 @@ export default function DashboardScreen() {
   const [researchLoadingId, setResearchLoadingId] = useState<string | null>(null);
 
   const openTrades = trades.filter((t) => t.status === 'open' || t.status === 'planned');
-  const spy = quotes.SPY;
   const readyCount = candidates.filter((c) => c.status === 'ready').length;
 
   const signalsBySymbol = useMemo(() => {
@@ -120,16 +120,30 @@ export default function DashboardScreen() {
 
   const signalSymbols = async (symbols: string[]) => {
     const unique = [...new Set(symbols.map((s) => s.toUpperCase().trim()).filter(Boolean))];
-    if (!unique.length) return;
+    if (!unique.length) return [] as Recommendation[];
     setLoadingSignals(true);
     setSignalError(null);
     if (unique.length === 1) setSignalingSymbol(unique[0]);
     try {
-      const recs = await fetchRecommendations(unique, settings, { setups, trades });
+      const { recommendations: recs, bundle, reusedMarket } = await fetchRecommendationsWithBundle(
+        unique,
+        settings,
+        {
+          setups,
+          trades,
+          market: marketBundle,
+          marketFetchedAt: quotesUpdatedAt,
+        }
+      );
+      if (!reusedMarket) {
+        ingestMarketBundle(bundle);
+      }
       mergeSignals(recs);
       applyDeskSignals(recs);
+      return recs;
     } catch (e) {
       setSignalError(e instanceof Error ? e.message : 'Could not build recommendations.');
+      return [] as Recommendation[];
     } finally {
       setLoadingSignals(false);
       setSignalingSymbol(null);
@@ -143,12 +157,14 @@ export default function DashboardScreen() {
       return;
     }
     try {
-      const { created } = addWatchlistSymbol(ticker);
+      const { created, id } = addWatchlistSymbol(ticker);
       setSymbolDraft('');
       if (!created) {
         Alert.alert('Already on list', `${ticker.toUpperCase()} is already saved.`);
+        setExpandedId(id);
         return;
       }
+      setExpandedId(id);
       void signalSymbols([ticker]);
     } catch (e) {
       Alert.alert('Could not add', e instanceof Error ? e.message : 'Unknown error');
@@ -174,13 +190,52 @@ export default function DashboardScreen() {
 
     setResearchLoadingId(itemId);
     try {
-      const rec = await fetchRecommendation(symbol, settings, { setups, trades });
+      const { recommendations, bundle, reusedMarket } = await fetchRecommendationsWithBundle(
+        [symbol],
+        settings,
+        {
+          setups,
+          trades,
+          market: marketBundle,
+          marketFetchedAt: quotesUpdatedAt,
+        }
+      );
+      const rec = recommendations[0];
+      if (!rec) throw new Error('Could not load Desk research.');
+      if (!reusedMarket) {
+        ingestMarketBundle(bundle);
+      }
       mergeSignals([rec]);
       applyDeskSignals([rec]);
     } catch (e) {
       setSignalError(e instanceof Error ? e.message : 'Could not load Desk research.');
     } finally {
       setResearchLoadingId(null);
+    }
+  };
+
+  const useSetupLevels = (itemId: string, option: SetupOption, tradeable: boolean) => {
+    const item = watchlist.find((w) => w.id === itemId);
+    if (!item) return;
+    upsertWatchlistItem({
+      id: item.id,
+      symbol: item.symbol,
+      thesis: item.thesis,
+      entryLow: option.levels.entryLow,
+      entryHigh: option.levels.entryHigh,
+      stop: option.levels.stop,
+      target: option.levels.target,
+      setupId: option.setupId,
+      notes: item.notes,
+      deskTradeable: tradeable,
+    });
+    if (tradeable) {
+      router.push({ pathname: '/trade-plan', params: { watchlistId: item.id } });
+    } else {
+      Alert.alert(
+        'Levels applied',
+        `${option.setupName} buy/stop/target saved. Desk still says research-only — Soft/Strong is blocked.`
+      );
     }
   };
 
@@ -200,69 +255,26 @@ export default function DashboardScreen() {
         refreshControl={
           <RefreshControl refreshing={quotesLoading} onRefresh={refreshQuotes} tintColor={palette.moss} />
         }>
-        <View style={styles.hero}>
-          <View style={styles.heroTop}>
-            <BrandMark />
-            <Link href="/settings" asChild>
-              <Pressable hitSlop={12}>
-                <FontAwesome name="cog" size={22} color={palette.ink} />
-              </Pressable>
-            </Link>
-          </View>
-          <Text style={styles.greeting}>Dashboard</Text>
-          <Text style={styles.bias}>{settings.marketBias}</Text>
-
-          <View style={styles.sessionRow}>
-            <Pill
-              label={session.label}
-              tone={session.tradable ? 'good' : session.phase === 'rth' ? 'warn' : 'neutral'}
+        <View style={styles.toolbar}>
+          <View style={styles.addRow}>
+            <TextInput
+              value={symbolDraft}
+              onChangeText={(t) => setSymbolDraft(t.toUpperCase())}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              placeholder="Add ticker e.g. AAPL"
+              placeholderTextColor={palette.muted}
+              style={styles.addInput}
+              onSubmitEditing={addTicker}
+              returnKeyType="done"
             />
-            <Text style={styles.sessionDetail} numberOfLines={2}>
-              {session.detail}
-            </Text>
+            <Button label="Add" onPress={addTicker} disabled={loadingSignals} />
           </View>
-
-          <View style={styles.spyRow}>
-            <Text style={styles.spyLabel}>SPY</Text>
-            <Text style={styles.spyPrice}>{spy ? formatMoney(spy.price) : '—'}</Text>
-            {spy ? (
-              <Text
-                style={{
-                  color: spy.change >= 0 ? palette.leaf : palette.danger,
-                  fontFamily: 'SpaceMono',
-                }}>
-                {formatPct(spy.percentChange)}
-              </Text>
-            ) : null}
-            <Text style={styles.quoteSource}>
-              {dataSource === 'tiingo'
-                ? 'Tiingo EOD'
-                : dataSource === 'fmp'
-                  ? 'FMP EOD'
-                  : dataSource === 'finnhub'
-                    ? 'Live Finnhub'
-                    : dataSource === 'alphavantage'
-                      ? 'Alpha Vantage bars'
-                      : dataSource === 'mixed'
-                        ? 'Mixed data'
-                        : 'Demo data'}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.addRow}>
-          <TextInput
-            value={symbolDraft}
-            onChangeText={(t) => setSymbolDraft(t.toUpperCase())}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            placeholder="Add ticker e.g. AAPL"
-            placeholderTextColor={palette.muted}
-            style={styles.addInput}
-            onSubmitEditing={addTicker}
-            returnKeyType="done"
-          />
-          <Button label="Add" onPress={addTicker} disabled={loadingSignals} />
+          <Link href="/settings" asChild>
+            <Pressable hitSlop={12} style={styles.settingsBtn} accessibilityLabel="Settings">
+              <FontAwesome name="cog" size={22} color={palette.ink} />
+            </Pressable>
+          </Link>
         </View>
 
         <View style={styles.signalCta}>
@@ -318,13 +330,13 @@ export default function DashboardScreen() {
         <View style={styles.spacer} />
         <SectionTitle
           title="Your names"
-          subtitle="Tap Research for Desk detail. Levels update when you Refresh signals."
+          subtitle="Add a ticker to open Desk: verdict, ranked Playbook signals, each with its own buy/stop/target."
         />
 
         {watchlist.length === 0 ? (
           <EmptyState
             title="No tickers yet"
-            body="Add a ticker above — Desk fills levels automatically."
+            body="Add a ticker above — Desk opens with stance and per-setup levels."
           />
         ) : (
           watchlist.map((item) => {
@@ -347,15 +359,24 @@ export default function DashboardScreen() {
                 <View style={styles.top}>
                   <View style={styles.symbolCol}>
                     <Text style={styles.symbol}>{item.symbol}</Text>
-                    {candidate ? (
-                      <Pill label={candidate.label} tone={candidate.status === 'ready' || candidate.status === 'in_zone' ? 'good' : candidate.status === 'near_zone' ? 'warn' : 'neutral'} />
-                    ) : rec ? (
+                    {rec ? (
                       <Pill label={rec.label} tone={stanceTone(rec.stance)} />
+                    ) : candidate ? (
+                      <Pill
+                        label={candidate.label}
+                        tone={
+                          candidate.status === 'ready' || candidate.status === 'in_zone'
+                            ? 'good'
+                            : candidate.status === 'near_zone'
+                              ? 'warn'
+                              : 'neutral'
+                        }
+                      />
                     ) : null}
                   </View>
                   <View style={styles.actions}>
                     <Pressable hitSlop={8} onPress={() => void toggleResearch(item.id, item.symbol)}>
-                      <Text style={styles.researchBtn}>{expanded ? 'Hide' : 'Research'}</Text>
+                      <Text style={styles.researchBtn}>{expanded ? 'Hide Desk' : 'Desk'}</Text>
                     </Pressable>
                     <Link href={{ pathname: '/watchlist-form', params: { id: item.id } }} asChild>
                       <Pressable hitSlop={8}>
@@ -376,7 +397,7 @@ export default function DashboardScreen() {
 
                 {levelsReady ? (
                   <Text style={styles.levels}>
-                    Buy {formatMoney(item.entryLow)}–{formatMoney(item.entryHigh)} · Stop{' '}
+                    Active · Buy {formatMoney(item.entryLow)}–{formatMoney(item.entryHigh)} · Stop{' '}
                     {formatMoney(item.stop)} · Target {formatMoney(item.target)}
                   </Text>
                 ) : (
@@ -385,8 +406,15 @@ export default function DashboardScreen() {
                   </Text>
                 )}
 
-                {quote ? <Text style={styles.quote}>Last {formatMoney(quote.price)}</Text> : null}
-                {setup ? <Text style={styles.setup}>Setup · {setup.name}</Text> : null}
+                {quote ? (
+                  <Text style={styles.quote}>Last {formatMoney(quote.price)}</Text>
+                ) : (
+                  <Text style={styles.quote}>No quote</Text>
+                )}
+                {rec?.label === 'No data' ? (
+                  <Text style={styles.levels}>No data — open Desk after fixing API keys / Yahoo proxy</Text>
+                ) : null}
+                {setup ? <Text style={styles.setup}>Active setup · {setup.name}</Text> : null}
                 {fund?.sector ? (
                   <Text style={styles.fundMeta}>
                     {fund.sector}
@@ -402,25 +430,33 @@ export default function DashboardScreen() {
                 ) : null}
 
                 {expanded ? (
-                  researching ? (
+                  researching || (signalingThis && !rec) ? (
                     <View style={styles.researchPad}>
                       <ActivityIndicator color={palette.moss} />
+                      <Text style={styles.loadingText}>Building Desk + Playbook signals…</Text>
                     </View>
                   ) : rec ? (
-                    <DeskSignalDetail recommendation={rec} />
+                    <DeskSignalDetail
+                      recommendation={rec}
+                      onUseSetup={(option) => useSetupLevels(item.id, option, rec.tradeable)}
+                    />
                   ) : (
                     <Text style={styles.levels}>Could not load Desk research.</Text>
                   )
                 ) : null}
 
-                {levelsReady ? (
+                {levelsReady && (item.deskTradeable !== false) ? (
                   <Link href={{ pathname: '/trade-plan', params: { watchlistId: item.id } }} asChild>
                     <Pressable style={styles.planLink}>
-                      <Text style={styles.planLinkText}>Act from Desk →</Text>
+                      <Text style={styles.planLinkText}>Act with active levels →</Text>
                     </Pressable>
                   </Link>
+                ) : levelsReady ? (
+                  <Text style={styles.planBlocked}>
+                    Desk research-only — open Desk and review signals
+                  </Text>
                 ) : (
-                  <Text style={styles.planBlocked}>Refresh Desk levels before acting</Text>
+                  <Text style={styles.planBlocked}>Open Desk after signals load</Text>
                 )}
               </View>
             );
@@ -460,67 +496,19 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingBottom: 48,
   },
-  hero: {
-    marginBottom: spacing.md,
-    padding: spacing.lg,
-    borderRadius: 24,
-    backgroundColor: palette.sand,
-    borderWidth: 1,
-    borderColor: palette.line,
-    overflow: 'hidden',
-  },
-  heroTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  greeting: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: palette.ink,
-    marginBottom: 8,
-  },
-  bias: {
-    color: palette.muted,
-    lineHeight: 21,
-    marginBottom: spacing.md,
-  },
-  sessionRow: {
-    gap: 8,
-    marginBottom: spacing.md,
-  },
-  sessionDetail: {
-    color: palette.muted,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  spyRow: {
+  toolbar: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 10,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: palette.line,
-  },
-  spyLabel: {
-    fontFamily: 'SpaceMono',
-    fontWeight: '700',
-    color: palette.moss,
-  },
-  spyPrice: {
-    fontFamily: 'SpaceMono',
-    color: palette.ink,
-  },
-  quoteSource: {
-    marginLeft: 'auto',
-    color: palette.muted,
-    fontSize: 12,
-  },
-  addRow: {
-    flexDirection: 'row',
     gap: 10,
     marginBottom: spacing.sm,
+  },
+  settingsBtn: {
+    padding: 8,
+  },
+  addRow: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
     alignItems: 'center',
   },
   addInput: {

@@ -1,13 +1,22 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
-import { AWAITING_DESK_THESIS, isAwaitingDeskSignal } from '@/constants/watchlist';
+import { AWAITING_DESK_THESIS } from '@/constants/watchlist';
 import { actionableCandidates, buildCandidates, Candidate } from '@/lib/candidates';
 import { computeSetupExpectancy, SetupExpectancy } from '@/lib/expectancy';
-import { fetchMarketBundle } from '@/lib/finnhub';
+import { preferLiveCandleQuotes, clearCandleCache, CandleSource } from '@/lib/candles';
+import { fetchMarketBundle, fetchQuotes, MarketBundle, clearMarketBundleInflight } from '@/lib/finnhub';
+import { clearFundamentalsCache } from '@/lib/fmp';
 import { Recommendation } from '@/lib/recommend';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { createId, loadAppState, saveAppState } from '@/lib/storage';
-import { CandleSource } from '@/lib/candles';
 import {
   AppSettings,
   AppState,
@@ -30,6 +39,8 @@ type TradingContextValue = {
   candles: Record<string, Candle[]>;
   news: Record<string, NewsItem[]>;
   fundamentals: Record<string, FundamentalSnapshot>;
+  /** Last full market snapshot (for Desk reuse). */
+  marketBundle: MarketBundle | null;
   dataSource: CandleSource | 'mixed';
   dataWarnings: string[];
   quotesLoading: boolean;
@@ -44,8 +55,19 @@ type TradingContextValue = {
   session: SessionInfo;
   setupExpectancy: SetupExpectancy[];
   refreshQuotes: () => Promise<void>;
+  /** Full quotes + EOD + news + fundamentals (cold start / API key change). */
+  refreshMarketData: () => Promise<void>;
+  /** Merge a Desk/market pull into context so later Desk calls can reuse it. */
+  ingestMarketBundle: (bundle: MarketBundle) => void;
+  /**
+   * Drop EOD disk + in-memory API caches (candles, fundamentals, cooldowns, bundle).
+   * Does not touch settings, watchlist, or trades.
+   */
+  clearDataCaches: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => void;
-  upsertWatchlistItem: (item: Omit<WatchlistItem, 'id' | 'createdAt'> & { id?: string }) => string;
+  upsertWatchlistItem: (
+    item: Omit<WatchlistItem, 'id' | 'createdAt'> & { id?: string; deskTradeable?: boolean | null }
+  ) => string;
   /** Add a ticker by symbol only — caller should run Desk to fill levels. */
   addWatchlistSymbol: (symbol: string) => { id: string; created: boolean };
   /** Write Desk recommendation levels / best setup back onto matching watchlist rows. */
@@ -67,12 +89,21 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const [news, setNews] = useState<Record<string, NewsItem[]>>({});
   const [fundamentals, setFundamentals] = useState<Record<string, FundamentalSnapshot>>({});
   const [earningsDates, setEarningsDates] = useState<Record<string, string[]>>({});
-  const [dataSource, setDataSource] = useState<CandleSource | 'mixed'>('demo');
+  const [marketBundle, setMarketBundle] = useState<MarketBundle | null>(null);
+  const [dataSource, setDataSource] = useState<CandleSource | 'mixed'>('none');
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [quotesLoading, setQuotesLoading] = useState(false);
   const [quotesUpdatedAt, setQuotesUpdatedAt] = useState<number | null>(null);
   const [signalsUpdatedAt, setSignalsUpdatedAt] = useState<number | null>(null);
   const [session, setSession] = useState<SessionInfo>(() => getUsEquitySession());
+
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const candlesRef = useRef(candles);
+  candlesRef.current = candles;
+  const marketBundleRef = useRef(marketBundle);
+  marketBundleRef.current = marketBundle;
+  const prevApiKeysRef = useRef<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -98,45 +129,166 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(id);
   }, []);
 
+  const watchlistSymbolsKey = useMemo(
+    () =>
+      (state?.watchlist ?? [])
+        .map((w) => w.symbol.toUpperCase())
+        .sort()
+        .join(','),
+    [state?.watchlist]
+  );
+
+  const openTradeSymbolsKey = useMemo(
+    () =>
+      (state?.trades ?? [])
+        .filter((t) => t.status !== 'closed')
+        .map((t) => t.symbol.toUpperCase())
+        .sort()
+        .join(','),
+    [state?.trades]
+  );
+
+  const apiKeysKey = useMemo(() => {
+    const s = state?.settings;
+    if (!s) return '';
+    return [s.finnhubApiKey, s.tiingoApiKey, s.fmpApiKey, s.alphaVantageApiKey, s.yahooProxyUrl, s.yahooProxyToken].join('|');
+  }, [
+    state?.settings.finnhubApiKey,
+    state?.settings.tiingoApiKey,
+    state?.settings.fmpApiKey,
+    state?.settings.alphaVantageApiKey,
+    state?.settings.yahooProxyUrl,
+    state?.settings.yahooProxyToken,
+  ]);
+
+  const symbolList = useCallback(() => {
+    const current = stateRef.current;
+    if (!current) return [] as string[];
+    return [
+      ...current.watchlist.map((w) => w.symbol),
+      ...current.trades.filter((t) => t.status !== 'closed').map((t) => t.symbol),
+    ];
+  }, []);
+
+  /** Pull-to-refresh / light updates — Finnhub quotes, Yahoo backup, keep cached EOD. */
   const refreshQuotes = useCallback(async () => {
-    if (!state) return;
+    const current = stateRef.current;
+    if (!current) return;
     setQuotesLoading(true);
     setSession(getUsEquitySession());
     try {
-      const symbols = [
-        ...state.watchlist.map((w) => w.symbol),
-        ...state.trades.filter((t) => t.status !== 'closed').map((t) => t.symbol),
-      ];
-      const bundle = await fetchMarketBundle(symbols, {
-        finnhubApiKey: state.settings.finnhubApiKey || undefined,
-        tiingoApiKey: state.settings.tiingoApiKey || undefined,
-        fmpApiKey: state.settings.fmpApiKey || undefined,
-        alphaVantageApiKey: state.settings.alphaVantageApiKey || undefined,
+      const symbols = [...symbolList(), 'SPY', 'QQQ'];
+      let nextQuotes = await fetchQuotes(
+        symbols,
+        current.settings.finnhubApiKey || undefined,
+        {
+          yahooProxyUrl: current.settings.yahooProxyUrl || undefined,
+          yahooProxyToken: current.settings.yahooProxyToken || undefined,
+        }
+      );
+      const cachedSources = marketBundleRef.current?.candleSources ?? {};
+      const lifted = preferLiveCandleQuotes(nextQuotes, candlesRef.current, cachedSources);
+      nextQuotes = lifted.quotes;
+      setQuotes((prev) => ({ ...prev, ...nextQuotes }));
+      setMarketBundle((prev) =>
+        prev
+          ? {
+              ...prev,
+              quotes: { ...prev.quotes, ...nextQuotes },
+            }
+          : prev
+      );
+      setQuotesUpdatedAt(Date.now());
+    } finally {
+      setQuotesLoading(false);
+    }
+  }, [symbolList]);
+
+  /** Cold start / API key change — full market bundle (candles, news, fundamentals). */
+  const refreshMarketData = useCallback(async () => {
+    const current = stateRef.current;
+    if (!current) return;
+    setQuotesLoading(true);
+    setSession(getUsEquitySession());
+    try {
+      const bundle = await fetchMarketBundle(symbolList(), {
+        finnhubApiKey: current.settings.finnhubApiKey || undefined,
+        tiingoApiKey: current.settings.tiingoApiKey || undefined,
+        fmpApiKey: current.settings.fmpApiKey || undefined,
+        alphaVantageApiKey: current.settings.alphaVantageApiKey || undefined,
+        yahooProxyUrl: current.settings.yahooProxyUrl || undefined,
+        yahooProxyToken: current.settings.yahooProxyToken || undefined,
       });
       setQuotes(bundle.quotes);
       setCandles(bundle.candles);
       setNews(bundle.news);
       setFundamentals(bundle.fundamentals);
       setEarningsDates(bundle.earningsDates);
+      setMarketBundle(bundle);
       setDataSource(bundle.sourceSummary);
       setDataWarnings(bundle.warnings);
       setQuotesUpdatedAt(Date.now());
     } finally {
       setQuotesLoading(false);
     }
-  }, [state]);
+  }, [symbolList]);
 
   useEffect(() => {
-    if (!ready || !state) return;
-    void refreshQuotes();
-  }, [
-    ready,
-    state?.watchlist,
-    state?.settings.finnhubApiKey,
-    state?.settings.tiingoApiKey,
-    state?.settings.fmpApiKey,
-    state?.settings.alphaVantageApiKey,
-  ]);
+    if (!ready || !stateRef.current) return;
+    const keysChanged =
+      prevApiKeysRef.current !== null && prevApiKeysRef.current !== apiKeysKey;
+    prevApiKeysRef.current = apiKeysKey;
+
+    const spyBars = candlesRef.current.SPY?.length ?? 0;
+    const cold = spyBars < 60;
+
+    // Full bundle only on cold start or API key change. Symbol-list edits use quotes-only;
+    // Desk / Refresh signals fill EOD for new tickers (candle TTL keeps SPY/QQQ warm).
+    if (cold || keysChanged) {
+      void refreshMarketData();
+    } else {
+      void refreshQuotes();
+    }
+  }, [ready, watchlistSymbolsKey, openTradeSymbolsKey, apiKeysKey, refreshMarketData, refreshQuotes]);
+
+  const ingestMarketBundle = useCallback((bundle: MarketBundle) => {
+    setQuotes((prev) => ({ ...prev, ...bundle.quotes }));
+    setCandles((prev) => ({ ...prev, ...bundle.candles }));
+    setNews((prev) => ({ ...prev, ...bundle.news }));
+    setFundamentals((prev) => ({ ...prev, ...bundle.fundamentals }));
+    setEarningsDates((prev) => ({ ...prev, ...bundle.earningsDates }));
+    setMarketBundle((prev) =>
+      prev
+        ? {
+            quotes: { ...prev.quotes, ...bundle.quotes },
+            candles: { ...prev.candles, ...bundle.candles },
+            candleSources: { ...prev.candleSources, ...bundle.candleSources },
+            news: { ...prev.news, ...bundle.news },
+            fundamentals: { ...prev.fundamentals, ...bundle.fundamentals },
+            earningsDates: { ...prev.earningsDates, ...bundle.earningsDates },
+            sourceSummary: bundle.sourceSummary,
+            warnings: [...new Set([...prev.warnings, ...bundle.warnings])],
+          }
+        : bundle
+    );
+    setDataSource(bundle.sourceSummary);
+    setDataWarnings(bundle.warnings);
+    setQuotesUpdatedAt(Date.now());
+  }, []);
+
+  const clearDataCaches = useCallback(async () => {
+    await clearCandleCache();
+    clearFundamentalsCache();
+    clearMarketBundleInflight();
+    setCandles({});
+    setNews({});
+    setFundamentals({});
+    setEarningsDates({});
+    setMarketBundle(null);
+    setDataSource('none');
+    setDataWarnings([]);
+    setQuotesUpdatedAt(null);
+  }, []);
 
   const updateSettings = useCallback((patch: Partial<AppSettings>) => {
     setState((prev) => (prev ? { ...prev, settings: { ...prev.settings, ...patch } } : prev));
@@ -148,6 +300,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       setState((prev) => {
         if (!prev) return prev;
         const exists = prev.watchlist.some((w) => w.id === id);
+        const existingItem = exists ? prev.watchlist.find((w) => w.id === id) : undefined;
         const nextItem: WatchlistItem = {
           id,
           symbol: item.symbol.toUpperCase().trim(),
@@ -158,9 +311,11 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
           target: item.target,
           setupId: item.setupId,
           notes: item.notes,
-          createdAt: exists
-            ? prev.watchlist.find((w) => w.id === id)!.createdAt
-            : new Date().toISOString(),
+          createdAt: existingItem?.createdAt ?? new Date().toISOString(),
+          deskTradeable:
+            item.deskTradeable !== undefined
+              ? item.deskTradeable
+              : existingItem?.deskTradeable ?? null,
         };
         return {
           ...prev,
@@ -200,6 +355,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
         setupId: null,
         notes: '',
         createdAt: new Date().toISOString(),
+        deskTradeable: null,
       };
       return { ...prev, watchlist: [nextItem, ...prev.watchlist] };
     });
@@ -221,12 +377,14 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
           const bestSetupId = rec.matchedSetups[0]?.setupId ?? item.setupId;
           return {
             ...item,
-            thesis: isAwaitingDeskSignal(item.thesis) ? rec.summary : item.thesis,
+            // Keep thesis in sync with the latest Desk stance (machine-authored).
+            thesis: rec.summary,
             entryLow: rec.levels.entryLow,
             entryHigh: rec.levels.entryHigh,
             stop: rec.levels.stop,
             target: rec.levels.target,
             setupId: bestSetupId,
+            deskTradeable: rec.tradeable,
           };
         }),
       };
@@ -317,6 +475,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       tiingoApiKey: '',
       fmpApiKey: '',
       alphaVantageApiKey: '',
+      yahooProxyUrl: '',
+      yahooProxyToken: '',
       marketBias: '',
       displayName: 'Trader',
     };
@@ -331,6 +491,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       candles,
       news,
       fundamentals,
+      marketBundle,
       dataSource,
       dataWarnings,
       quotesLoading,
@@ -342,6 +503,9 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       session,
       setupExpectancy,
       refreshQuotes,
+      refreshMarketData,
+      ingestMarketBundle,
+      clearDataCaches,
       updateSettings,
       upsertWatchlistItem,
       addWatchlistSymbol,
@@ -359,6 +523,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     candles,
     news,
     fundamentals,
+    marketBundle,
     dataSource,
     dataWarnings,
     quotesLoading,
@@ -370,6 +535,9 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     session,
     setupExpectancy,
     refreshQuotes,
+    refreshMarketData,
+    ingestMarketBundle,
+    clearDataCaches,
     updateSettings,
     upsertWatchlistItem,
     addWatchlistSymbol,

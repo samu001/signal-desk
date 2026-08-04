@@ -11,7 +11,7 @@ import {
 import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
-import { fetchDailyCandlesResolved } from '@/lib/candles';
+import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
 import { DeskBacktestResult, runDeskBacktest } from '@/lib/deskBacktest';
 import { fetchEarningsDates } from '@/lib/finnhub';
 import { Stance } from '@/lib/recommend';
@@ -42,7 +42,7 @@ function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
 
 export default function DeskBacktestScreen() {
   const { symbol: symbolParam } = useLocalSearchParams<{ symbol?: string }>();
-  const { settings, candles, setups } = useTrading();
+  const { settings, setups } = useTrading();
   const [symbol, setSymbol] = useState((symbolParam || 'AAPL').toUpperCase());
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DeskBacktestResult | null>(null);
@@ -56,6 +56,8 @@ export default function DeskBacktestScreen() {
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
+        yahooProxyUrl: settings.yahooProxyUrl || undefined,
+        yahooProxyToken: settings.yahooProxyToken || undefined,
         days: 140,
       };
       const [symbolBars, spyBars, qqqBars] = await Promise.all([
@@ -63,9 +65,33 @@ export default function DeskBacktestScreen() {
         fetchDailyCandlesResolved('SPY', keys),
         fetchDailyCandlesResolved('QQQ', keys),
       ]);
-      const useSymbol = symbolBars.candles.length ? symbolBars.candles : candles[upper] ?? [];
-      const useSpy = spyBars.candles.length ? spyBars.candles : candles.SPY ?? [];
-      const useQqq = qqqBars.candles.length ? qqqBars.candles : candles.QQQ ?? [];
+      const useSymbol = symbolBars.candles;
+      const useSpy = spyBars.candles;
+      const useQqq = qqqBars.candles;
+
+      if (!isLiveCandleSource(symbolBars.source) || useSymbol.length < 60) {
+        setResult({
+          symbol: upper,
+          sourceLabel: symbolBars.source,
+          warnings: [
+            ...symbolBars.warnings,
+            'No data — live EOD unavailable. Desk backtest will not run on synthetic bars.',
+          ],
+          notes: ['No data — refused to backtest without live daily history.'],
+          barsUsed: useSymbol.length,
+          warmupBars: 55,
+          evalBars: 30,
+          signals: { strong_buy: 0, soft_buy: 0, wait: 0, avoid: 0 },
+          trades: [],
+          winRate: null,
+          avgR: null,
+          expectancyR: null,
+          maxDrawdownR: null,
+          byStance: [],
+        });
+        return;
+      }
+
       const first = useSymbol[0]?.time;
       const last = useSymbol[useSymbol.length - 1]?.time;
       const from = first
@@ -126,8 +152,25 @@ export default function DeskBacktestScreen() {
           <View style={styles.results}>
             <View style={styles.summaryRow}>
               <Text style={styles.symbol}>{result.symbol}</Text>
-              <Pill label={`Source: ${result.sourceLabel}`} />
+              <Pill
+                label={`Source: ${result.sourceLabel}`}
+                tone={
+                  result.sourceLabel === 'demo' || result.sourceLabel === 'none'
+                    ? 'warn'
+                    : 'neutral'
+                }
+              />
             </View>
+
+            {result.sourceLabel === 'demo' || result.sourceLabel === 'none' ? (
+              <View style={styles.demoBox}>
+                <Text style={styles.demoTitle}>No data — backtest not run</Text>
+                <Text style={styles.demoBody}>
+                  Live EOD was unavailable for this symbol. Synthetic demo bars are disabled.
+                  Fix your data keys / Yahoo proxy in Settings and re-run.
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.statGrid}>
               <Stat label="Trades" value={String(result.trades.length)} />
@@ -338,4 +381,14 @@ const styles = StyleSheet.create({
     color: palette.warn,
     lineHeight: 20,
   },
+  demoBox: {
+    backgroundColor: palette.warnSoft,
+    borderWidth: 1,
+    borderColor: palette.warn,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 4,
+  },
+  demoTitle: { fontWeight: '700', color: palette.warn },
+  demoBody: { color: palette.ink, lineHeight: 18, fontSize: 13 },
 });

@@ -59,6 +59,11 @@ export type WatchlistItem = {
   setupId: string | null;
   notes: string;
   createdAt: string;
+  /**
+   * Last Desk Soft/Strong gate. false = research-only (Wait/Avoid).
+   * null/undefined = not signaled yet (or legacy row).
+   */
+  deskTradeable?: boolean | null;
 };
 
 export type TradeStatus = 'planned' | 'open' | 'closed';
@@ -92,6 +97,13 @@ export type AppSettings = {
   fmpApiKey: string;
   /** Short compact history fallback (~100 bars). */
   alphaVantageApiKey: string;
+  /**
+   * Cloudflare Worker base URL for Yahoo EOD (no trailing slash).
+   * Example: https://signal-desk-bars.xxx.workers.dev
+   */
+  yahooProxyUrl: string;
+  /** Optional Worker auth token (PROXY_TOKEN). */
+  yahooProxyToken: string;
   marketBias: string;
   displayName: string;
 };
@@ -105,7 +117,7 @@ export type Quote = {
   low: number;
   open: number;
   previousClose: number;
-  source: 'finnhub' | 'tiingo' | 'fmp' | 'alphavantage' | 'demo';
+  source: 'finnhub' | 'tiingo' | 'fmp' | 'yahoo' | 'alphavantage' | 'demo' | 'none';
 };
 
 export type FundamentalSnapshot = {

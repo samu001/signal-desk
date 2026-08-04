@@ -1,8 +1,8 @@
 import { defaultSetups, demoCandles, demoQuotes, getDemoFundamentals, getDemoNews } from '@/constants/seed';
-import { buildRecommendation, computeTradeLevels } from '@/lib/recommend';
+import { buildRecommendation, clampLevelsRisk, computeTradeLevels } from '@/lib/recommend';
 
 describe('computeTradeLevels', () => {
-  it('returns ordered entry/stop/target from demo AAPL history', () => {
+  it('returns ordered entry/stop/target from fixture AAPL history', () => {
     const levels = computeTradeLevels(demoCandles.AAPL);
     expect(levels.entryLow).toBeLessThanOrEqual(levels.entryHigh);
     expect(levels.stop).toBeLessThan(levels.entryLow);
@@ -10,17 +10,82 @@ describe('computeTradeLevels', () => {
   });
 });
 
+describe('clampLevelsRisk', () => {
+  it('REGRESSION: MSFT gap-up — stale 12-bar swing low no longer produces a 22% stop / $742 target', () => {
+    // Real numbers from the bug: price ~$487 after a 3-day +25% gap; swing low $377.
+    const clamped = clampLevelsRisk(
+      { entryLow: 486.73, entryHigh: 511.32, stop: 377.39, target: 742.3 },
+      18 // plausible post-gap ATR14
+    );
+    const entryMid = (clamped.entryLow + clamped.entryHigh) / 2;
+    const risk = entryMid - clamped.stop;
+    // Risk capped at min(2.5×ATR = $45, 8% of entry ≈ $40)
+    expect(risk).toBeLessThanOrEqual(entryMid * 0.081);
+    expect(clamped.stop).toBeGreaterThan(440);
+    // Target rebuilt from capped risk (~2R), nowhere near $742
+    expect(clamped.target).toBeLessThan(600);
+    expect(clamped.target).toBeGreaterThan(clamped.entryHigh);
+    expect(clamped.stop).toBeLessThan(clamped.entryLow);
+  });
+
+  it('leaves already-sane levels essentially untouched', () => {
+    // Raw risk $5.5 is inside the cap: min(2.5×ATR $7.5, 8% ≈ $8)
+    const raw = { entryLow: 99, entryHigh: 102, stop: 95, target: 112 };
+    const clamped = clampLevelsRisk(raw, 3);
+    expect(clamped.entryLow).toBeCloseTo(99, 2);
+    expect(clamped.entryHigh).toBeCloseTo(102, 2);
+    expect(clamped.stop).toBeCloseTo(95, 2);
+    expect(clamped.target).toBeCloseTo(112, 2);
+  });
+
+  it('keeps ordering valid when the raw stop is above the entry zone', () => {
+    const clamped = clampLevelsRisk(
+      { entryLow: 100, entryHigh: 104, stop: 103, target: 101 },
+      1.5
+    );
+    expect(clamped.stop).toBeLessThan(clamped.entryLow);
+    expect(clamped.target).toBeGreaterThan(clamped.entryHigh);
+  });
+
+  it('caps by percent when ATR is unavailable', () => {
+    const clamped = clampLevelsRisk(
+      { entryLow: 100, entryHigh: 100, stop: 60, target: 180 },
+      null
+    );
+    expect(100 - clamped.stop).toBeLessThanOrEqual(8.01);
+    expect(clamped.target).toBeLessThanOrEqual(100 + 2.5 * (100 - clamped.stop) + 0.01);
+  });
+});
+
 describe('buildRecommendation', () => {
-  it('can issue a buy only with Playbook confirmation on demo AAPL', () => {
+  const fixture = {
+    quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'yahoo' as const },
+    candles: demoCandles.AAPL,
+    spyCandles: demoCandles.SPY,
+    qqqCandles: demoCandles.QQQ,
+    news: getDemoNews('AAPL'),
+    fundamentals: getDemoFundamentals('AAPL'),
+    candleSource: 'yahoo' as const,
+  };
+
+  it('returns No data when candleSource is demo or missing history', () => {
     const rec = buildRecommendation({
       symbol: 'AAPL',
-      quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
-      candles: demoCandles.AAPL,
-      spyCandles: demoCandles.SPY,
-      qqqCandles: demoCandles.QQQ,
-      news: getDemoNews('AAPL'),
-      fundamentals: getDemoFundamentals('AAPL'),
+      quote: fixture.quote,
+      candles: fixture.candles,
+      spyCandles: fixture.spyCandles,
       candleSource: 'demo',
+      setups: defaultSetups,
+    });
+    expect(rec.label).toBe('No data');
+    expect(rec.tradeable).toBe(false);
+    expect(rec.candleSource).toBe('none');
+  });
+
+  it('can issue a buy only with Playbook confirmation on fixture AAPL', () => {
+    const rec = buildRecommendation({
+      symbol: 'AAPL',
+      ...fixture,
       setups: defaultSetups,
     });
 
@@ -51,13 +116,7 @@ describe('buildRecommendation', () => {
   it('returns at most five setup options when many setups match', () => {
     const rec = buildRecommendation({
       symbol: 'AAPL',
-      quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
-      candles: demoCandles.AAPL,
-      spyCandles: demoCandles.SPY,
-      qqqCandles: demoCandles.QQQ,
-      news: getDemoNews('AAPL'),
-      fundamentals: getDemoFundamentals('AAPL'),
-      candleSource: 'demo',
+      ...fixture,
       setups: defaultSetups,
     });
     expect(rec.setupOptions.length).toBeLessThanOrEqual(5);
@@ -68,13 +127,7 @@ describe('buildRecommendation', () => {
   it('blocks Soft/Strong buy when no setups are provided', () => {
     const rec = buildRecommendation({
       symbol: 'AAPL',
-      quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
-      candles: demoCandles.AAPL,
-      spyCandles: demoCandles.SPY,
-      qqqCandles: demoCandles.QQQ,
-      news: getDemoNews('AAPL'),
-      fundamentals: getDemoFundamentals('AAPL'),
-      candleSource: 'demo',
+      ...fixture,
       setups: [],
     });
     expect(['wait', 'avoid']).toContain(rec.stance);
@@ -84,10 +137,7 @@ describe('buildRecommendation', () => {
   it('returns avoid when negative catalyst headlines appear', () => {
     const rec = buildRecommendation({
       symbol: 'AAPL',
-      quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
-      candles: demoCandles.AAPL,
-      spyCandles: demoCandles.SPY,
-      qqqCandles: demoCandles.QQQ,
+      ...fixture,
       news: [
         {
           id: 'bad',
@@ -96,8 +146,6 @@ describe('buildRecommendation', () => {
           source: 'Test',
         },
       ],
-      fundamentals: getDemoFundamentals('AAPL'),
-      candleSource: 'demo',
       setups: defaultSetups,
     });
 
@@ -108,13 +156,7 @@ describe('buildRecommendation', () => {
   it('waits when earnings are inside the blackout window', () => {
     const rec = buildRecommendation({
       symbol: 'AAPL',
-      quote: { symbol: 'AAPL', ...demoQuotes.AAPL, source: 'demo' },
-      candles: demoCandles.AAPL,
-      spyCandles: demoCandles.SPY,
-      qqqCandles: demoCandles.QQQ,
-      news: getDemoNews('AAPL'),
-      fundamentals: getDemoFundamentals('AAPL'),
-      candleSource: 'demo',
+      ...fixture,
       setups: defaultSetups,
       earnings: {
         date: '2026-08-03',

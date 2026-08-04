@@ -1,107 +1,158 @@
 import {
-  buildSyntheticDemoCandles,
-  demoQuotes,
-  getDemoCandles,
-  getDemoFundamentals,
-  getDemoNews,
-} from '@/constants/seed';
-import {
-  alignDemoBundleToQuotes,
   CandleApiOptions,
   CandleSource,
   fetchCandleBundle,
+  isLiveCandleSource,
+  preferLiveCandleQuotes,
 } from '@/lib/candles';
 import { fetchFmpFundamentalsBundle } from '@/lib/fmp';
+import { createInflightMap } from '@/lib/ttlCache';
+import { fetchYahooDailyCandles } from '@/lib/yahoo';
 import { Candle, FundamentalSnapshot, NewsItem, Quote } from '@/types/trading';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+const marketBundleInflight = createInflightMap<MarketBundle>();
 
-function fromDemoQuote(symbol: string): Quote {
-  const upper = symbol.toUpperCase();
-  if (demoQuotes[upper]) {
-    return {
-      symbol: upper,
-      ...demoQuotes[upper],
-      source: 'demo',
-    };
-  }
-  // Match synthetic demo candle end price so unknown tickers stay consistent offline.
-  const series = buildSyntheticDemoCandles(upper);
-  const price = series[series.length - 1]?.close ?? 100;
+/** Prefer reusing a context bundle when quotes are this fresh (ms). */
+export const MARKET_BUNDLE_REUSE_MAX_AGE_MS = 5 * 60 * 1000;
+
+export type QuoteFetchFallbacks = {
+  yahooProxyUrl?: string;
+  yahooProxyToken?: string;
+  /** Collect human-readable failure / backup notes. */
+  warningsOut?: string[];
+};
+
+function pushWarn(fallbacks: QuoteFetchFallbacks | undefined, note: string) {
+  if (!fallbacks?.warningsOut) return;
+  if (!fallbacks.warningsOut.includes(note)) fallbacks.warningsOut.push(note);
+}
+
+function quoteFromLastClose(
+  symbol: string,
+  close: number,
+  source: Quote['source'],
+  prior?: number
+): Quote {
+  const prev = prior && prior > 0 ? prior : close;
+  const change = close - prev;
+  const percentChange = prev > 0 ? (change / prev) * 100 : 0;
   return {
-    symbol: upper,
-    price,
-    change: 0,
-    percentChange: 0,
-    high: price * 1.01,
-    low: price * 0.99,
-    open: price,
-    previousClose: price,
-    source: 'demo',
+    symbol: symbol.toUpperCase(),
+    price: close,
+    change,
+    percentChange,
+    high: close,
+    low: close,
+    open: close,
+    previousClose: prev,
+    source,
   };
 }
 
-export async function fetchQuote(symbol: string, apiKey?: string): Promise<Quote> {
+async function fetchYahooQuoteFallback(
+  symbol: string,
+  fallbacks?: QuoteFetchFallbacks
+): Promise<Quote | null> {
+  const url = fallbacks?.yahooProxyUrl?.trim();
+  if (!url) return null;
+  const yahoo = await fetchYahooDailyCandles(symbol, url, 35, fallbacks?.yahooProxyToken);
+  if (yahoo.warning) pushWarn(fallbacks, yahoo.warning);
+  const bars = yahoo.candles;
+  if (bars.length < 1) return null;
+  const last = bars[bars.length - 1].close;
+  const prior = bars.length > 1 ? bars[bars.length - 2].close : last;
+  if (!(last > 0)) return null;
+  pushWarn(
+    fallbacks,
+    `${symbol.toUpperCase()}: Finnhub quote unavailable — using Yahoo last close $${last.toFixed(2)}.`
+  );
+  return quoteFromLastClose(symbol, last, 'yahoo', prior);
+}
+
+export async function fetchQuote(
+  symbol: string,
+  apiKey?: string,
+  fallbacks?: QuoteFetchFallbacks
+): Promise<Quote | null> {
   const upper = symbol.toUpperCase().trim();
-  if (!apiKey) {
-    return fromDemoQuote(upper);
+
+  if (apiKey) {
+    try {
+      const url = `${FINNHUB_BASE}/quote?symbol=${encodeURIComponent(upper)}&token=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url);
+      if (res.status === 429) {
+        pushWarn(
+          fallbacks,
+          `Finnhub quote rate limit (HTTP 429) for ${upper} — trying Yahoo/EOD backup.`
+        );
+      } else if (!res.ok) {
+        pushWarn(fallbacks, `Finnhub quote HTTP ${res.status} for ${upper}.`);
+      } else {
+        const data = (await res.json()) as {
+          c?: number;
+          d?: number;
+          dp?: number;
+          h?: number;
+          l?: number;
+          o?: number;
+          pc?: number;
+        };
+
+        if (data.c && data.c > 0) {
+          return {
+            symbol: upper,
+            price: data.c,
+            change: data.d ?? 0,
+            percentChange: data.dp ?? 0,
+            high: data.h ?? data.c,
+            low: data.l ?? data.c,
+            open: data.o ?? data.c,
+            previousClose: data.pc ?? data.c,
+            source: 'finnhub',
+          };
+        }
+        pushWarn(fallbacks, `Finnhub returned no quote for ${upper}.`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'request failed';
+      pushWarn(fallbacks, `Finnhub quote failed for ${upper} (${msg}).`);
+    }
   }
 
-  try {
-    const url = `${FINNHUB_BASE}/quote?symbol=${encodeURIComponent(upper)}&token=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      return fromDemoQuote(upper);
-    }
+  const yahoo = await fetchYahooQuoteFallback(upper, fallbacks);
+  if (yahoo) return yahoo;
 
-    const data = (await res.json()) as {
-      c?: number;
-      d?: number;
-      dp?: number;
-      h?: number;
-      l?: number;
-      o?: number;
-      pc?: number;
-    };
-
-    if (!data.c || data.c <= 0) {
-      return fromDemoQuote(upper);
-    }
-
-    return {
-      symbol: upper,
-      price: data.c,
-      change: data.d ?? 0,
-      percentChange: data.dp ?? 0,
-      high: data.h ?? data.c,
-      low: data.l ?? data.c,
-      open: data.o ?? data.c,
-      previousClose: data.pc ?? data.c,
-      source: 'finnhub',
-    };
-  } catch {
-    return fromDemoQuote(upper);
-  }
+  pushWarn(fallbacks, `${upper}: No data — live quote unavailable.`);
+  return null;
 }
 
-export async function fetchQuotes(symbols: string[], apiKey?: string): Promise<Record<string, Quote>> {
+export async function fetchQuotes(
+  symbols: string[],
+  apiKey?: string,
+  fallbacks?: QuoteFetchFallbacks
+): Promise<Record<string, Quote>> {
   const unique = [...new Set(symbols.map((s) => s.toUpperCase().trim()).filter(Boolean))];
-  const entries = await Promise.all(unique.map(async (symbol) => [symbol, await fetchQuote(symbol, apiKey)] as const));
-  return Object.fromEntries(entries);
-}
-
-function demoCandleSeries(symbol: string): Candle[] {
-  return getDemoCandles(symbol);
+  if (!apiKey) {
+    pushWarn(fallbacks, 'No Finnhub key — quotes use Yahoo/EOD backup when available.');
+  }
+  const entries = await Promise.all(
+    unique.map(async (symbol) => {
+      const quote = await fetchQuote(symbol, apiKey, fallbacks);
+      return quote ? ([symbol, quote] as const) : null;
+    })
+  );
+  return Object.fromEntries(entries.filter((e): e is readonly [string, Quote] => e != null));
 }
 
 export async function fetchDailyCandles(
   symbol: string,
   apiKey?: string,
   days = 120
-): Promise<{ candles: Candle[]; source: 'finnhub' | 'demo' }> {
+): Promise<{ candles: Candle[]; source: 'finnhub' | 'none' }> {
   const upper = symbol.toUpperCase().trim();
   if (!apiKey) {
-    return { candles: demoCandleSeries(upper), source: 'demo' };
+    return { candles: [], source: 'none' };
   }
 
   try {
@@ -110,7 +161,7 @@ export async function fetchDailyCandles(
     const url = `${FINNHUB_BASE}/stock/candle?symbol=${encodeURIComponent(upper)}&resolution=D&from=${from}&to=${to}&token=${encodeURIComponent(apiKey)}`;
     const res = await fetch(url);
     if (!res.ok) {
-      return { candles: demoCandleSeries(upper), source: 'demo' };
+      return { candles: [], source: 'none' };
     }
     const data = (await res.json()) as {
       s?: string;
@@ -122,7 +173,7 @@ export async function fetchDailyCandles(
       t?: number[];
     };
     if (data.s !== 'ok' || !data.c?.length || !data.t?.length) {
-      return { candles: demoCandleSeries(upper), source: 'demo' };
+      return { candles: [], source: 'none' };
     }
 
     const candles: Candle[] = data.t.map((time, i) => ({
@@ -135,7 +186,7 @@ export async function fetchDailyCandles(
     }));
     return { candles, source: 'finnhub' };
   } catch {
-    return { candles: demoCandleSeries(upper), source: 'demo' };
+    return { candles: [], source: 'none' };
   }
 }
 
@@ -211,7 +262,7 @@ export async function fetchCompanyNews(
 ): Promise<{ news: NewsItem[]; demo: boolean }> {
   const upper = symbol.toUpperCase().trim();
   if (!apiKey) {
-    return { news: getDemoNews(upper), demo: true };
+    return { news: [], demo: false };
   }
 
   try {
@@ -220,7 +271,7 @@ export async function fetchCompanyNews(
     const fmt = (d: Date) => d.toISOString().slice(0, 10);
     const url = `${FINNHUB_BASE}/company-news?symbol=${encodeURIComponent(upper)}&from=${fmt(from)}&to=${fmt(to)}&token=${encodeURIComponent(apiKey)}`;
     const res = await fetch(url);
-    if (!res.ok) return { news: getDemoNews(upper), demo: true };
+    if (!res.ok) return { news: [], demo: false };
     const data = (await res.json()) as Array<{
       id?: number;
       headline?: string;
@@ -229,7 +280,7 @@ export async function fetchCompanyNews(
       url?: string;
     }>;
     if (!Array.isArray(data) || !data.length) {
-      return { news: getDemoNews(upper), demo: true };
+      return { news: [], demo: false };
     }
     return {
       news: data.slice(0, 8).map((n, i) => ({
@@ -242,7 +293,7 @@ export async function fetchCompanyNews(
       demo: false,
     };
   } catch {
-    return { news: getDemoNews(upper), demo: true };
+    return { news: [], demo: false };
   }
 }
 
@@ -260,23 +311,75 @@ export type MarketBundle = {
   warnings: string[];
 };
 
-export async function fetchMarketBundle(
+function normalizeSymbols(symbols: string[]): string[] {
+  return [
+    ...new Set([...symbols.map((s) => s.toUpperCase().trim()), 'SPY', 'QQQ'].filter(Boolean)),
+  ].sort();
+}
+
+function marketBundleKey(symbols: string[], options?: CandleApiOptions): string {
+  const days = options?.days ?? 800;
+  // Bucket days so Desk (400) and Dashboard refresh (800) share in-flight/cache work.
+  const daysBucket = days <= 400 ? 400 : 800;
+  return [
+    normalizeSymbols(symbols).join(','),
+    `d${daysBucket}`,
+    options?.finnhubApiKey ? 'fh' : '-',
+    options?.tiingoApiKey ? 'tg' : '-',
+    options?.fmpApiKey ? 'fmp' : '-',
+    options?.yahooProxyUrl ? 'yh' : '-',
+    options?.alphaVantageApiKey ? 'av' : '-',
+  ].join('|');
+}
+
+/** True when a preloaded bundle has quotes + enough bars for every requested equity + benchmarks. */
+export function marketBundleCovers(
+  bundle: MarketBundle | null | undefined,
+  symbols: string[]
+): boolean {
+  if (!bundle) return false;
+  for (const symbol of normalizeSymbols(symbols)) {
+    if (!bundle.quotes[symbol]?.price) return false;
+    if ((bundle.candles[symbol]?.length ?? 0) < 60) return false;
+  }
+  return true;
+}
+
+/**
+ * Prefer a recent context bundle over another network pull.
+ * Quotes can drift; candles/fundamentals are also TTL-cached underneath.
+ */
+export function shouldReuseMarketBundle(
+  bundle: MarketBundle | null | undefined,
+  symbols: string[],
+  fetchedAt: number | null | undefined,
+  maxAgeMs = MARKET_BUNDLE_REUSE_MAX_AGE_MS
+): boolean {
+  if (!fetchedAt || Date.now() - fetchedAt > maxAgeMs) return false;
+  return marketBundleCovers(bundle, symbols);
+}
+
+async function fetchMarketBundleUncached(
   symbols: string[],
   options?: CandleApiOptions
 ): Promise<MarketBundle> {
   const apiKey = options?.finnhubApiKey;
-  const unique = [
-    ...new Set([...symbols.map((s) => s.toUpperCase().trim()), 'SPY', 'QQQ'].filter(Boolean)),
-  ];
-  const quotes = await fetchQuotes(unique, apiKey);
+  const unique = normalizeSymbols(symbols);
+  const quoteWarnings: string[] = [];
+  let quotes = await fetchQuotes(unique, apiKey, {
+    yahooProxyUrl: options?.yahooProxyUrl,
+    yahooProxyToken: options?.yahooProxyToken,
+    warningsOut: quoteWarnings,
+  });
 
   const bundle = await fetchCandleBundle(unique, {
     ...options,
     days: options?.days ?? 800,
   });
 
-  // Live quote + hash-based demo bars caused nonsense levels (e.g. BILI $19 vs ~$167 zone).
-  const aligned = alignDemoBundleToQuotes(bundle.candles, bundle.sources, quotes);
+  // If Finnhub/Yahoo quote failed but live EOD exists, use last close as the quote.
+  const lifted = preferLiveCandleQuotes(quotes, bundle.candles, bundle.sources);
+  quotes = lifted.quotes;
 
   const equitySymbols = unique.filter((s) => !BENCHMARKS.has(s));
 
@@ -287,12 +390,9 @@ export async function fetchMarketBundle(
     })
   );
   const news = Object.fromEntries(newsEntries.map(([symbol, result]) => [symbol, result.news]));
-  const warnings = [...bundle.warnings];
-  for (const w of aligned.warnings) {
+  const warnings = [...quoteWarnings, ...bundle.warnings];
+  for (const w of lifted.warnings) {
     if (!warnings.includes(w)) warnings.push(w);
-  }
-  if (newsEntries.some(([, result]) => result.demo)) {
-    warnings.push('Using demo headlines where live company news was unavailable.');
   }
 
   const earningsEntries = await Promise.all(
@@ -310,24 +410,22 @@ export async function fetchMarketBundle(
     for (const w of fmp.warnings) {
       if (!warnings.includes(w)) warnings.push(w);
     }
-  }
-  for (const symbol of equitySymbols) {
-    if (!fundamentals[symbol]) {
-      fundamentals[symbol] = getDemoFundamentals(symbol);
-    }
-  }
-  if (!options?.fmpApiKey || equitySymbols.some((s) => fundamentals[s]?.source === 'demo')) {
-    warnings.push('Using demo company fundamentals where FMP data was unavailable.');
+  } else {
+    warnings.push('No FMP key — company fundamentals unavailable.');
   }
 
-  const sourceValues = Object.values(bundle.sources);
-  const uniqueSources = [...new Set(sourceValues)];
-  const sourceSummary =
-    uniqueSources.length === 1 ? uniqueSources[0] : sourceValues.length ? 'mixed' : 'demo';
+  const liveSources = Object.values(bundle.sources).filter(isLiveCandleSource);
+  const uniqueSources = [...new Set(liveSources)];
+  const sourceSummary: CandleSource | 'mixed' =
+    uniqueSources.length === 1
+      ? uniqueSources[0]
+      : uniqueSources.length > 1
+        ? 'mixed'
+        : 'none';
 
   return {
     quotes,
-    candles: aligned.candles,
+    candles: bundle.candles,
     candleSources: bundle.sources,
     news,
     fundamentals,
@@ -335,4 +433,17 @@ export async function fetchMarketBundle(
     sourceSummary,
     warnings,
   };
+}
+
+export async function fetchMarketBundle(
+  symbols: string[],
+  options?: CandleApiOptions
+): Promise<MarketBundle> {
+  const key = marketBundleKey(symbols, options);
+  return marketBundleInflight.run(key, () => fetchMarketBundleUncached(symbols, options));
+}
+
+/** Test helper. */
+export function clearMarketBundleInflight() {
+  marketBundleInflight.clear();
 }

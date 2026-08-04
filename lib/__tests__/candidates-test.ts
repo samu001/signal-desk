@@ -126,4 +126,24 @@ describe('buildCandidates', () => {
     });
     expect(candidate.status).toBe('invalidated');
   });
+
+  it('keeps Desk research-only names out of Ready / actionable', () => {
+    const researchOnly: WatchlistItem = {
+      ...item,
+      thesis: 'AAPL is interesting for research, but not tradeable yet.',
+      deskTradeable: false,
+    };
+    const candidates = buildCandidates([researchOnly], defaultSetups, { AAPL: quote(205) }, {
+      candles: demoCandles,
+      session: {
+        phase: 'rth',
+        label: 'RTH open',
+        tradable: true,
+        detail: 'ok',
+      },
+    });
+    const [candidate] = candidates;
+    expect(candidate.status).toBe('watching');
+    expect(candidate.label).toMatch(/research only/i);
+  });
 });

@@ -23,6 +23,12 @@ const LAB_TOOLS = [
     body: 'Multi-symbol Playbook run with a max open-position cap. Best for capacity realism.',
     tone: 'ink' as const,
   },
+  {
+    href: '/parameter-lab' as const,
+    title: 'Parameter lab',
+    body: 'Same signals, different stop/target settings. Answers "is 2R actually better than 1.5R?" across tickers and time.',
+    tone: 'secondary' as const,
+  },
 ];
 
 export default function LabScreen() {
@@ -32,7 +38,7 @@ export default function LabScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         <SectionTitle
           title="Lab"
-          subtitle="Three backtest tools — pick by question, not by habit. All live under Playbook."
+          subtitle="Four backtest tools — pick by question, not by habit. All live under Playbook."
         />
 
         {LAB_TOOLS.map((tool) => (

@@ -13,7 +13,8 @@ import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/compone
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { BacktestResult, runBacktest } from '@/lib/backtest';
-import { fetchDailyCandlesResolved } from '@/lib/candles';
+import { DEFAULT_BACKTEST_COSTS, DEFAULT_STOP_COOLDOWN_BARS } from '@/lib/backtestCosts';
+import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
 import { fetchEarningsDates } from '@/lib/finnhub';
 import { CombinedPlaybookResult, runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
 
@@ -28,7 +29,7 @@ export default function BacktestScreen() {
     setupId?: string;
     symbol?: string;
   }>();
-  const { setups, watchlist, settings, candles } = useTrading();
+  const { setups, watchlist, settings } = useTrading();
 
   const setup = setups.find((s) => s.id === setupId) ?? setups[0];
   const defaultSymbol = symbolParam || watchlist[0]?.symbol || 'AAPL';
@@ -57,6 +58,8 @@ export default function BacktestScreen() {
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
+        yahooProxyUrl: settings.yahooProxyUrl || undefined,
+        yahooProxyToken: settings.yahooProxyToken || undefined,
         days: 140,
       };
       const [symbolBars, spyBars, qqqBars] = await Promise.all([
@@ -65,9 +68,40 @@ export default function BacktestScreen() {
         fetchDailyCandlesResolved('QQQ', keys),
       ]);
 
-      const useSymbol = symbolBars.candles.length ? symbolBars.candles : candles[upper] ?? [];
-      const useSpy = spyBars.candles.length ? spyBars.candles : candles.SPY ?? [];
-      const useQqq = qqqBars.candles.length ? qqqBars.candles : candles.QQQ ?? [];
+      const useSymbol = symbolBars.candles;
+      const useSpy = spyBars.candles;
+      const useQqq = qqqBars.candles;
+
+      const warnings = [
+        ...symbolBars.warnings,
+        ...spyBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha')),
+        ...qqqBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha')),
+      ];
+
+      if (!isLiveCandleSource(symbolBars.source) || useSymbol.length < 60) {
+        setCombined(null);
+        setResult({
+          symbol: upper,
+          setupId: activeSetup?.id ?? '',
+          setupName: activeSetup?.name ?? '—',
+          sourceLabel: symbolBars.source,
+          warnings: [
+            ...warnings,
+            'No data — live EOD unavailable. Backtest will not run on synthetic bars.',
+          ],
+          barsUsed: useSymbol.length,
+          warmupBars: 55,
+          trades: [],
+          winRate: null,
+          avgR: null,
+          expectancyR: null,
+          maxDrawdownR: null,
+          notes: ['No data — refused to backtest without live daily history.'],
+          costs: DEFAULT_BACKTEST_COSTS,
+          stopCooldownBars: DEFAULT_STOP_COOLDOWN_BARS,
+        });
+        return;
+      }
 
       const first = useSymbol[0]?.time;
       const last = useSymbol[useSymbol.length - 1]?.time;
@@ -84,11 +118,6 @@ export default function BacktestScreen() {
         to
       );
 
-      const warnings = [
-        ...symbolBars.warnings,
-        ...spyBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha')),
-        ...qqqBars.warnings.filter((w) => w.includes('Finnhub') || w.includes('Alpha')),
-      ];
       if (!earningsDates.length && settings.finnhubApiKey) {
         warnings.push('No earnings dates returned for this window (blackout unchecked).');
       } else if (!settings.finnhubApiKey) {
@@ -216,11 +245,23 @@ export default function BacktestScreen() {
               <Text style={styles.resultTitle}>{displayTitle}</Text>
               <Pill
                 label={displaySource}
-                tone={displaySource === 'demo' ? 'warn' : 'good'}
+                tone={
+                  displaySource === 'demo' || displaySource === 'none' ? 'warn' : 'good'
+                }
               />
             </View>
 
             <Text style={styles.meta}>{displayMeta}</Text>
+
+            {displaySource === 'none' || displaySource === 'demo' ? (
+              <View style={styles.demoBox}>
+                <Text style={styles.warnTitle}>No data — backtest not run</Text>
+                <Text style={styles.warnItem}>
+                  Live EOD was unavailable for this symbol. Synthetic demo bars are disabled.
+                  Fix your data keys / Yahoo proxy in Settings and re-run.
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.stats}>
               <View style={styles.stat}>
@@ -382,6 +423,14 @@ const styles = StyleSheet.create({
   statValue: { fontFamily: 'SpaceMono', fontSize: 18, color: palette.ink },
   warnBox: {
     backgroundColor: palette.warnSoft,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 4,
+  },
+  demoBox: {
+    backgroundColor: palette.warnSoft,
+    borderWidth: 1,
+    borderColor: palette.warn,
     borderRadius: 12,
     padding: spacing.md,
     gap: 4,

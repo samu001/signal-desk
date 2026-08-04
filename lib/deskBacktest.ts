@@ -1,4 +1,6 @@
 import { defaultSetups } from '@/constants/seed';
+import { CandleSource, isLiveCandleSource } from '@/lib/candles';
+import { barsUpTo } from '@/lib/indicators';
 import { buildRecommendation, Stance } from '@/lib/recommend';
 import { Candle, Quote, Setup } from '@/types/trading';
 
@@ -53,7 +55,7 @@ function quoteFromCandle(symbol: string, candle: Candle, prev?: Candle): Quote {
     low: candle.low,
     open: candle.open,
     previousClose: prev?.close ?? candle.open,
-    source: 'demo',
+    source: 'yahoo',
   };
 }
 
@@ -160,10 +162,9 @@ export function runDeskBacktest(input: {
 
   for (let i = loopStart; i < candles.length - 1; i++) {
     const history = candles.slice(0, i + 1);
-    const spyHistory =
-      spyCandles.length >= history.length ? spyCandles.slice(0, i + 1) : spyCandles;
-    const qqqFull = input.qqqCandles ?? [];
-    const qqqHistory = qqqFull.length >= history.length ? qqqFull.slice(0, i + 1) : qqqFull;
+    // Date-based truncation — index slicing could leak future SPY/QQQ bars.
+    const spyHistory = barsUpTo(spyCandles, candles[i].time);
+    const qqqHistory = barsUpTo(input.qqqCandles ?? [], candles[i].time);
     const candle = history[history.length - 1];
     const prev = history[history.length - 2];
 
@@ -211,7 +212,7 @@ export function runDeskBacktest(input: {
       candles: history,
       spyCandles: spyHistory,
       qqqCandles: qqqHistory,
-      candleSource: 'demo',
+      candleSource: isLiveCandleSource(sourceLabel) ? (sourceLabel as CandleSource) : 'yahoo',
       historicalMode: true,
       setups,
       earningsDates: input.earningsDates,

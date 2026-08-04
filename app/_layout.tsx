@@ -89,6 +89,7 @@ export default function RootLayout() {
           <Stack.Screen name="backtest" options={{ title: 'Setup backtest' }} />
           <Stack.Screen name="desk-backtest" options={{ title: 'Desk backtest' }} />
           <Stack.Screen name="portfolio-backtest" options={{ title: 'Portfolio backtest' }} />
+          <Stack.Screen name="parameter-lab" options={{ title: 'Parameter lab' }} />
           <Stack.Screen
             name="watchlist-form"
             options={{ title: 'Edit ticker', presentation: 'modal' }}

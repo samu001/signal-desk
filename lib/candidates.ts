@@ -178,10 +178,17 @@ export function buildCandidates(
     const scored = scoreRuleResults(rules);
     const expectancy = setup ? expectancies[setup.id] ?? null : null;
 
-    // Promote to ready when in/near zone and rules mostly pass.
+    // Promote to ready when in/near zone and rules mostly pass — but only if Desk
+    // marked Soft/Strong (tradeable). Research-only names stay out of Act now.
     let status = zone.status;
     let label = zone.label;
-    if (
+    const deskBlocked =
+      item.deskTradeable === false ||
+      (item.deskTradeable == null && /not tradeable yet/i.test(item.thesis));
+    if (deskBlocked && (status === 'in_zone' || status === 'near_zone' || status === 'watching')) {
+      status = 'watching';
+      label = 'Research only — Desk not Soft/Strong';
+    } else if (
       (status === 'in_zone' || status === 'near_zone') &&
       scored.passRate >= 0.7 &&
       scored.failed === 0
@@ -251,5 +258,11 @@ export function buildCandidates(
 }
 
 export function actionableCandidates(candidates: Candidate[]): Candidate[] {
-  return candidates.filter((c) => c.status === 'ready' || c.status === 'in_zone' || c.status === 'near_zone');
+  return candidates.filter((c) => {
+    const researchOnly =
+      c.item.deskTradeable === false ||
+      (c.item.deskTradeable == null && /not tradeable yet/i.test(c.item.thesis));
+    if (researchOnly) return false;
+    return c.status === 'ready' || c.status === 'in_zone' || c.status === 'near_zone';
+  });
 }

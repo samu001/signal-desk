@@ -1,4 +1,5 @@
 import { SetupExpectancy } from '@/lib/expectancy';
+import { barsUpTo } from '@/lib/indicators';
 import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { Candle, Quote, Setup, WatchlistItem } from '@/types/trading';
@@ -26,7 +27,7 @@ function quoteFrom(symbol: string, candle: Candle, prev?: Candle): Quote {
     low: candle.low,
     open: candle.open,
     previousClose: prev?.close ?? candle.open,
-    source: 'demo',
+    source: 'yahoo',
   };
 }
 
@@ -50,8 +51,8 @@ function setupPasses(
   };
   const candle = history[history.length - 1];
   const prev = history[history.length - 2];
-  const qqqFull = options?.qqqCandles ?? [];
-  const qqqHistory = qqqFull.length >= history.length ? qqqFull.slice(0, history.length) : qqqFull;
+  // Date-based truncation — index slicing could leak future QQQ bars.
+  const qqqHistory = barsUpTo(options?.qqqCandles ?? [], candle.time);
   const results = evaluateSetupRules(setup, {
     item,
     quote: quoteFrom(symbol, candle, prev),
@@ -97,8 +98,7 @@ export function scoreRecentSetupPerformance(input: {
 
     for (let i = start; i <= end; i++) {
       const history = candles.slice(0, i + 1);
-      const spyHistory =
-        spyCandles.length >= history.length ? spyCandles.slice(0, i + 1) : spyCandles;
+      const spyHistory = barsUpTo(spyCandles, candles[i].time);
       if (
         !setupPasses(setup, symbol, history, spyHistory, {
           qqqCandles: input.qqqCandles,

@@ -7,6 +7,8 @@ export const defaultSettings: AppSettings = {
   tiingoApiKey: '',
   fmpApiKey: '',
   alphaVantageApiKey: '',
+  yahooProxyUrl: 'https://signal-desk-bars.samss01one.workers.dev',
+  yahooProxyToken: '',
   marketBias: 'Neutral — wait for clean setups only.',
   displayName: 'Trader',
 };

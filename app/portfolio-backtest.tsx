@@ -1,15 +1,38 @@
 import { Stack } from 'expo-router';
-import { useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { PROFILE_MUST } from '@/lib/backtestProfile';
-import { fetchDailyCandlesResolved } from '@/lib/candles';
+import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
+import {
+  applyPickerRule,
+  bestSelectablePicker,
+  comparePickerRules,
+  interpretPickerLab,
+  pickerLabel,
+  PickerRuleResult,
+  PickerTrade,
+  PickerVerdictTone,
+  relativeStrength20,
+  SelectablePickerRuleId,
+} from '@/lib/pickerLab';
 import { runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
+import { CapacityTrade } from '@/lib/portfolioCapacity';
 
 const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
+
+/** How complete this ticker's EOD was for the backtest window. */
+type CoverageStatus = 'ok' | 'short' | 'none' | 'skipped';
 
 type SymbolRow = {
   symbol: string;
@@ -18,44 +41,191 @@ type SymbolRow = {
   trades: number;
   winRate: number | null;
   totalR: number;
+  coverage: CoverageStatus;
+  /** Provider failures / backups that applied to this symbol. */
+  notes: string[];
+  /** Only set on cappedRows — how many signals were skipped by max-open. */
+  skipped?: number;
 };
 
-type PortfolioTrade = { symbol: string; entryTime: number; exitTime: number; r: number };
+/** SPY/QQQ used for market-regime gates (not traded as portfolio rows). */
+type BenchmarkRow = {
+  symbol: 'SPY' | 'QQQ';
+  source: string;
+  bars: number;
+  coverage: CoverageStatus;
+  notes: string[];
+};
 
 type PortfolioSummary = {
   rows: SymbolRow[];
+  benchmarks: BenchmarkRow[];
   all: { trades: number; winRate: number | null; totalR: number };
-  capped: { trades: number; skipped: number; winRate: number | null; totalR: number };
   concurrency: { max: number; median: number; avg: number; overCapPct: number };
+  /** Same capped sim under alternative ranking rules (picker lab). */
+  pickers: PickerRuleResult[];
+  /** Usable trades kept so picker switches recompute without re-fetching. */
+  usableTrades: PickerTrade[];
   maxOpen: number;
+  requestedDays: number;
+  /** Tickers included in All / Max-open totals (coverage === ok). */
+  usableSymbols: number;
+  /** Tickers left out of totals (no data / short / skipped). */
+  excludedSymbols: number;
   warnings: string[];
 };
+
+type PerSymbolMode = 'all' | 'capped';
+
+type CoverageFilter = 'all' | 'ok' | 'issues';
+type ResultFilter = 'all' | 'winners' | 'losers' | 'flat';
+type SymbolSort =
+  | 'totalR_desc'
+  | 'totalR_asc'
+  | 'winRate_desc'
+  | 'trades_desc'
+  | 'skipped_desc'
+  | 'symbol_asc';
+
+function chipLabel(sort: SymbolSort): string {
+  if (sort === 'totalR_desc') return 'R ↓';
+  if (sort === 'totalR_asc') return 'R ↑';
+  if (sort === 'winRate_desc') return 'Win % ↓';
+  if (sort === 'trades_desc') return 'Trades ↓';
+  if (sort === 'skipped_desc') return 'Skipped ↓';
+  return 'A–Z';
+}
+
+function filterAndSortSymbolRows(
+  rows: SymbolRow[],
+  coverageFilter: CoverageFilter,
+  resultFilter: ResultFilter,
+  sort: SymbolSort
+): SymbolRow[] {
+  let list = rows;
+  if (coverageFilter === 'ok') {
+    list = list.filter((r) => r.coverage === 'ok');
+  } else if (coverageFilter === 'issues') {
+    list = list.filter((r) => r.coverage !== 'ok');
+  }
+  if (resultFilter === 'winners') {
+    list = list.filter((r) => r.totalR > 0);
+  } else if (resultFilter === 'losers') {
+    list = list.filter((r) => r.totalR < 0);
+  } else if (resultFilter === 'flat') {
+    list = list.filter((r) => r.totalR === 0 || r.trades === 0);
+  }
+
+  const sorted = [...list];
+  sorted.sort((a, b) => {
+    if (sort === 'symbol_asc') return a.symbol.localeCompare(b.symbol);
+    if (sort === 'totalR_asc') {
+      if (a.totalR !== b.totalR) return a.totalR - b.totalR;
+      return a.symbol.localeCompare(b.symbol);
+    }
+    if (sort === 'totalR_desc') {
+      if (a.totalR !== b.totalR) return b.totalR - a.totalR;
+      return a.symbol.localeCompare(b.symbol);
+    }
+    if (sort === 'winRate_desc') {
+      const aw = a.winRate ?? -1;
+      const bw = b.winRate ?? -1;
+      if (aw !== bw) return bw - aw;
+      return b.totalR - a.totalR;
+    }
+    if (sort === 'trades_desc') {
+      if (a.trades !== b.trades) return b.trades - a.trades;
+      return b.totalR - a.totalR;
+    }
+    // skipped_desc
+    const as = a.skipped ?? 0;
+    const bs = b.skipped ?? 0;
+    if (as !== bs) return bs - as;
+    return b.totalR - a.totalR;
+  });
+  return sorted;
+}
+
+function classifyCoverage(
+  source: string,
+  barCount: number,
+  requestedDays: number
+): CoverageStatus {
+  if (!isLiveCandleSource(source) || source === 'demo' || source === 'none') return 'none';
+  if (barCount < 60) return 'skipped';
+  // ~252 trading days/year; allow some slack vs calendar-day request.
+  const expected = Math.min(500, Math.max(60, Math.round(requestedDays * 0.55)));
+  if (barCount < expected * 0.7) return 'short';
+  return 'ok';
+}
+
+/** Keep actionable provider notes; drop pure cache-hit noise. */
+function usefulNotes(warnings: string[]): string[] {
+  return warnings.filter(
+    (w) =>
+      !/^Cached .+ EOD/i.test(w) &&
+      /rate limit|429|cooldown|demo|No data|HTTP|cors|skipped|failed|auth|proxy|fallback|insufficient|only returned|No Tiingo|No FMP|No Yahoo|using built-in/i.test(
+        w
+      )
+  );
+}
+
+function coverageLabel(status: CoverageStatus): string {
+  if (status === 'ok') return 'Full';
+  if (status === 'short') return 'Short history';
+  if (status === 'none') return 'No data';
+  return 'Skipped';
+}
+
+function coverageTone(status: CoverageStatus): 'good' | 'warn' | 'bad' | 'neutral' {
+  if (status === 'ok') return 'good';
+  if (status === 'short') return 'warn';
+  if (status === 'none') return 'bad';
+  return 'bad';
+}
+
+/** Portfolio totals only count full live EOD — no-data / short / skipped stay in the table. */
+function isUsableForTotals(coverage: CoverageStatus): boolean {
+  return coverage === 'ok';
+}
+
+function aggregateCappedRows(
+  baseRows: SymbolRow[],
+  taken: CapacityTrade[],
+  skippedTrades: CapacityTrade[]
+): SymbolRow[] {
+  const takenBy = new Map<string, CapacityTrade[]>();
+  const skippedBy = new Map<string, number>();
+  for (const t of taken) {
+    const list = takenBy.get(t.symbol) ?? [];
+    list.push(t);
+    takenBy.set(t.symbol, list);
+  }
+  for (const t of skippedTrades) {
+    skippedBy.set(t.symbol, (skippedBy.get(t.symbol) ?? 0) + 1);
+  }
+  return baseRows.map((row) => {
+    if (!isUsableForTotals(row.coverage)) {
+      return { ...row, trades: 0, winRate: null, totalR: 0, skipped: 0 };
+    }
+    const list = takenBy.get(row.symbol) ?? [];
+    const wins = list.filter((t) => t.r > 0).length;
+    return {
+      ...row,
+      trades: list.length,
+      winRate: list.length ? wins / list.length : null,
+      totalR: list.reduce((a, t) => a + t.r, 0),
+      skipped: skippedBy.get(row.symbol) ?? 0,
+    };
+  });
+}
+
+type PortfolioTrade = CapacityTrade;
 
 function median(values: number[]): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)];
-}
-
-function simulate(allTrades: PortfolioTrade[], maxOpen: number) {
-  const sorted = [...allTrades].sort((a, b) => a.entryTime - b.entryTime);
-  const taken: PortfolioTrade[] = [];
-  let skipped = 0;
-  for (const t of sorted) {
-    const openNow = taken.filter((o) => o.exitTime > t.entryTime).length;
-    if (openNow >= maxOpen) {
-      skipped += 1;
-      continue;
-    }
-    taken.push(t);
-  }
-  const wins = taken.filter((t) => t.r > 0).length;
-  return {
-    trades: taken.length,
-    skipped,
-    winRate: taken.length ? wins / taken.length : null,
-    totalR: taken.reduce((a, t) => a + t.r, 0),
-  };
 }
 
 function concurrencyStats(allTrades: PortfolioTrade[], maxOpen: number) {
@@ -76,6 +246,25 @@ function concurrencyStats(allTrades: PortfolioTrade[], maxOpen: number) {
   };
 }
 
+function verdictBannerStyles(tone: PickerVerdictTone) {
+  if (tone === 'losing') {
+    return {
+      box: { backgroundColor: palette.dangerSoft, borderColor: palette.danger },
+      headline: { color: palette.danger },
+    };
+  }
+  if (tone === 'noise' || tone === 'caution') {
+    return {
+      box: { backgroundColor: palette.warnSoft, borderColor: palette.warn },
+      headline: { color: palette.warn },
+    };
+  }
+  return {
+    box: { backgroundColor: palette.mossSoft, borderColor: palette.moss },
+    headline: { color: palette.leaf },
+  };
+}
+
 export default function PortfolioBacktestScreen() {
   const { settings, setups, updateSettings } = useTrading();
   const [symbolsText, setSymbolsText] = useState(DEFAULT_SYMBOLS);
@@ -86,6 +275,35 @@ export default function PortfolioBacktestScreen() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState('');
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
+  const [perSymbolMode, setPerSymbolMode] = useState<PerSymbolMode>('capped');
+  const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>('all');
+  const [resultFilter, setResultFilter] = useState<ResultFilter>('all');
+  const [symbolSort, setSymbolSort] = useState<SymbolSort>('totalR_desc');
+  /** Drives Max-open totals + capped per-symbol after a run (no re-fetch). */
+  const [activePicker, setActivePicker] = useState<SelectablePickerRuleId>('rs20');
+
+  const cappedView = useMemo(() => {
+    if (!summary) return null;
+    const sim = applyPickerRule(summary.usableTrades, activePicker, summary.maxOpen);
+    return {
+      capped: {
+        trades: sim.trades,
+        skipped: sim.skipped,
+        winRate: sim.winRate,
+        totalR: sim.totalR,
+        avgPriorityTaken: sim.avgPriorityTaken,
+        avgPrioritySkipped: sim.avgPrioritySkipped,
+      },
+      cappedRows: aggregateCappedRows(summary.rows, sim.taken, sim.skippedTrades),
+      pickerName: pickerLabel(activePicker),
+    };
+  }, [summary, activePicker]);
+
+  const perSymbolRows = useMemo(() => {
+    if (!summary || !cappedView) return [] as SymbolRow[];
+    const base = perSymbolMode === 'capped' ? cappedView.cappedRows : summary.rows;
+    return filterAndSortSymbolRows(base, coverageFilter, resultFilter, symbolSort);
+  }, [summary, cappedView, perSymbolMode, coverageFilter, resultFilter, symbolSort]);
 
   const run = async () => {
     setLoading(true);
@@ -110,29 +328,65 @@ export default function PortfolioBacktestScreen() {
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
+        yahooProxyUrl: settings.yahooProxyUrl || undefined,
+        yahooProxyToken: settings.yahooProxyToken || undefined,
         days: Math.max(140, Math.min(Number(days) || 400, 800)),
       };
+      const requestedDays = keys.days;
       const warnings: string[] = [];
 
       setProgress('Fetching SPY / QQQ…');
       const spy = await fetchDailyCandlesResolved('SPY', keys);
       const qqq = await fetchDailyCandlesResolved('QQQ', keys);
-      for (const w of [...spy.warnings, ...qqq.warnings]) {
-        if (!warnings.includes(w)) warnings.push(w);
+      const spyNotes = usefulNotes(spy.warnings);
+      const qqqNotes = usefulNotes(qqq.warnings);
+      for (const w of spyNotes) {
+        if (!warnings.includes(w)) warnings.push(`SPY: ${w}`);
+      }
+      for (const w of qqqNotes) {
+        if (!warnings.includes(w)) warnings.push(`QQQ: ${w}`);
+      }
+      const benchmarks: BenchmarkRow[] = [
+        {
+          symbol: 'SPY',
+          source: spy.source,
+          bars: spy.candles.length,
+          coverage: classifyCoverage(spy.source, spy.candles.length, requestedDays),
+          notes: spyNotes,
+        },
+        {
+          symbol: 'QQQ',
+          source: qqq.source,
+          bars: qqq.candles.length,
+          coverage: classifyCoverage(qqq.source, qqq.candles.length, requestedDays),
+          notes: qqqNotes,
+        },
+      ];
+      for (const b of benchmarks) {
+        if (b.coverage === 'none' || b.coverage === 'skipped') {
+          const msg = `${b.symbol}: No data for regime gate (${b.source}, ${b.bars} bars).`;
+          if (!warnings.includes(msg)) warnings.push(msg);
+        } else if (b.coverage === 'short') {
+          const msg = `${b.symbol}: Thin history for regime (${b.bars} bars via ${b.source}).`;
+          if (!warnings.includes(msg)) warnings.push(msg);
+        }
       }
 
       const rows: SymbolRow[] = [];
-      const allTrades: PortfolioTrade[] = [];
+      const usableTrades: PickerTrade[] = [];
       // 10 bps flat slippage: between megacap (5) and small-cap (20) script tiers.
       const costs = { slippagePct: 0.001, commissionPct: 0 };
 
       for (const symbol of symbols) {
         setProgress(`Backtesting ${symbol} (${rows.length + 1}/${symbols.length})…`);
         const bars = await fetchDailyCandlesResolved(symbol, keys);
-        for (const w of bars.warnings) {
-          if (!warnings.includes(w)) warnings.push(w);
+        const notes = usefulNotes(bars.warnings);
+        for (const w of notes) {
+          const tagged = w.includes(symbol) ? w : `${symbol}: ${w}`;
+          if (!warnings.includes(tagged)) warnings.push(tagged);
         }
-        if (bars.candles.length < 60) {
+        const coverage = classifyCoverage(bars.source, bars.candles.length, requestedDays);
+        if (coverage === 'none' || coverage === 'skipped' || bars.candles.length < 60) {
           rows.push({
             symbol,
             source: bars.source,
@@ -140,6 +394,12 @@ export default function PortfolioBacktestScreen() {
             trades: 0,
             winRate: null,
             totalR: 0,
+            coverage,
+            notes: notes.length
+              ? notes
+              : coverage === 'none'
+                ? ['No data — live EOD unavailable. Synthetic demo bars are disabled.']
+                : [`Only ${bars.candles.length} bars from ${bars.source} — need ≥60 to backtest.`],
           });
           continue;
         }
@@ -153,7 +413,22 @@ export default function PortfolioBacktestScreen() {
           profile: { ...PROFILE_MUST, costs },
         });
         for (const t of combined.trades) {
-          allTrades.push({ symbol, entryTime: t.entryTime, exitTime: t.exitTime, r: t.rMultiple });
+          const trade: PickerTrade = {
+            symbol,
+            entryTime: t.entryTime,
+            exitTime: t.exitTime,
+            r: t.rMultiple,
+            priorityScore: t.priorityScore,
+            setupId: t.setupId,
+            rs20: relativeStrength20(bars.candles, spy.candles, t.entryTime),
+          };
+          if (isUsableForTotals(coverage)) usableTrades.push(trade);
+        }
+        const rowNotes = [...notes];
+        if (coverage === 'short') {
+          rowNotes.unshift(
+            `Thin history: ${bars.candles.length} bars via ${bars.source} (requested ~${requestedDays} calendar days).`
+          );
         }
         rows.push({
           symbol,
@@ -162,20 +437,32 @@ export default function PortfolioBacktestScreen() {
           trades: combined.trades.length,
           winRate: combined.winRate,
           totalR: combined.totalR ?? 0,
+          coverage,
+          notes: rowNotes,
         });
       }
 
-      const wins = allTrades.filter((t) => t.r > 0).length;
+      const usableSymbolCount = rows.filter((r) => isUsableForTotals(r.coverage)).length;
+      const excludedSymbolCount = rows.length - usableSymbolCount;
+      const wins = usableTrades.filter((t) => t.r > 0).length;
+      setProgress('Comparing picker rules…');
+      const pickers = comparePickerRules(usableTrades, cap);
+      setActivePicker(bestSelectablePicker(pickers));
       setSummary({
         rows,
+        benchmarks,
         all: {
-          trades: allTrades.length,
-          winRate: allTrades.length ? wins / allTrades.length : null,
-          totalR: allTrades.reduce((a, t) => a + t.r, 0),
+          trades: usableTrades.length,
+          winRate: usableTrades.length ? wins / usableTrades.length : null,
+          totalR: usableTrades.reduce((a, t) => a + t.r, 0),
         },
-        capped: simulate(allTrades, cap),
-        concurrency: concurrencyStats(allTrades, cap),
+        concurrency: concurrencyStats(usableTrades, cap),
+        pickers,
+        usableTrades,
         maxOpen: cap,
+        requestedDays,
+        usableSymbols: usableSymbolCount,
+        excludedSymbols: excludedSymbolCount,
         warnings,
       });
     } finally {
@@ -253,12 +540,19 @@ export default function PortfolioBacktestScreen() {
           </View>
         ) : null}
 
-        {summary ? (
+        {summary && cappedView ? (
           <View style={styles.results}>
-            <SectionTitle title="Portfolio" />
+            <SectionTitle
+              title="Portfolio"
+              subtitle={
+                summary.excludedSymbols
+                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped left out.`
+                  : `Totals use all ${summary.usableSymbols} tickers (full live EOD).`
+              }
+            />
             <View style={styles.stats}>
               <View style={styles.stat}>
-                <Text style={styles.statLabel}>All signals</Text>
+                <Text style={styles.statLabel}>All signals (usable)</Text>
                 <Text style={styles.statValue}>
                   {summary.all.totalR >= 0 ? '+' : ''}
                   {summary.all.totalR.toFixed(1)}R
@@ -269,57 +563,389 @@ export default function PortfolioBacktestScreen() {
                 </Text>
               </View>
               <View style={[styles.stat, styles.statPrimary]}>
-                <Text style={styles.statLabel}>Max {summary.maxOpen} open (realistic)</Text>
+                <Text style={styles.statLabel}>
+                  Max {summary.maxOpen} open · {cappedView.pickerName}
+                </Text>
                 <Text style={styles.statValue}>
-                  {summary.capped.totalR >= 0 ? '+' : ''}
-                  {summary.capped.totalR.toFixed(1)}R
+                  {cappedView.capped.totalR >= 0 ? '+' : ''}
+                  {cappedView.capped.totalR.toFixed(1)}R
                 </Text>
                 <Text style={styles.statSub}>
-                  ≈ ${(summary.capped.totalR * riskPerTrade).toFixed(0)} · {summary.capped.trades} taken ·{' '}
-                  {summary.capped.skipped} skipped
+                  ≈ ${(cappedView.capped.totalR * riskPerTrade).toFixed(0)} ·{' '}
+                  {cappedView.capped.trades} taken ·{' '}
+                  {cappedView.capped.winRate == null
+                    ? '—'
+                    : `${Math.round(cappedView.capped.winRate * 100)}%`}{' '}
+                  win · {cappedView.capped.skipped} skipped
                 </Text>
               </View>
             </View>
+            {summary.all.totalR < 0 ? (
+              <View style={styles.losingBanner}>
+                <Text style={styles.losingBannerText}>
+                  All signals is negative ({summary.all.totalR.toFixed(1)}R) — do not treat the capped
+                  total as strategy edge. Read the honesty check in Picker lab.
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.noteBox}>
+              <Text style={styles.noteItem}>
+                • Totals omit No data, short history, and skipped tickers (see Coverage). Use the Per
+                symbol toggle for uncapped vs max-open breakdowns.
+              </Text>
+              <Text style={styles.noteItem}>
+                • Max-open currently uses {cappedView.pickerName}. Tap any Picker lab row to switch —
+                no re-run needed. Random Active uses one seed; the lab row still shows the seed
+                average.
+              </Text>
+              {cappedView.capped.skipped > 0 &&
+              cappedView.capped.avgPriorityTaken != null &&
+              cappedView.capped.avgPrioritySkipped != null ? (
+                <Text style={styles.noteItem}>
+                  • Active picker score avg · taken {cappedView.capped.avgPriorityTaken.toFixed(2)} vs
+                  skipped {cappedView.capped.avgPrioritySkipped.toFixed(2)}.
+                </Text>
+              ) : null}
               <Text style={styles.noteItem}>
                 • Concurrency without the cap: median {summary.concurrency.median} open, peak{' '}
                 {summary.concurrency.max}, above your cap on{' '}
                 {Math.round(summary.concurrency.overCapPct * 100)}% of active days.
               </Text>
               <Text style={styles.noteItem}>
-                • Dollar figures assume 1R = ${riskPerTrade.toFixed(0)} (account ×  risk %). The capped
+                • Dollar figures assume 1R = ${riskPerTrade.toFixed(0)} (account × risk %). The capped
                 number is the realistic one.
               </Text>
             </View>
 
+            <SectionTitle
+              title="Picker lab"
+              subtitle={`Same trades, same max-${summary.maxOpen} cap. Tap a rule to drive the realistic total. Read the honesty check before trusting any "Best" number.`}
+            />
+            {(() => {
+              const bestSelectableId = bestSelectablePicker(summary.pickers);
+              const best = summary.pickers.find((p) => p.id === bestSelectableId) ?? summary.pickers[0];
+              const verdict = interpretPickerLab({
+                pickers: summary.pickers,
+                allSignalsTotalR: summary.all.totalR,
+                allSignalsTrades: summary.all.trades,
+              });
+              const toneStyles = verdictBannerStyles(verdict.tone);
+              return (
+                <View style={styles.pickerStack}>
+                  <View style={[styles.honestyBox, toneStyles.box]}>
+                    <Text style={[styles.honestyHeadline, toneStyles.headline]}>
+                      {verdict.headline}
+                    </Text>
+                    {verdict.bullets.map((b) => (
+                      <Text key={b} style={styles.honestyBullet}>
+                        • {b}
+                      </Text>
+                    ))}
+                  </View>
+
+                  <View style={styles.readGuide}>
+                    <Text style={styles.readGuideTitle}>How not to fool yourself</Text>
+                    <Text style={styles.readGuideItem}>
+                      1. Check All signals first. If that total is negative, ignore capped "wins."
+                    </Text>
+                    <Text style={styles.readGuideItem}>
+                      2. Compare Best to the Random seeds range — inside that band = noise.
+                    </Text>
+                    <Text style={styles.readGuideItem}>
+                      3. Auto-activating Best on this window is in-sample. Confirm on 800d or another
+                      basket before promoting a picker.
+                    </Text>
+                    <Text style={styles.readGuideItem}>
+                      4. On thin / volatile names, 10 bps model costs understate real friction.
+                    </Text>
+                  </View>
+
+                  <View style={styles.pickerBox}>
+                    {summary.pickers.map((p) => {
+                      const active = p.id === activePicker;
+                      return (
+                        <Pressable
+                          key={p.id}
+                          onPress={() => setActivePicker(p.id)}
+                          style={[
+                            styles.pickerRow,
+                            styles.pickerSelectable,
+                            active && styles.pickerActive,
+                          ]}>
+                          <View style={styles.symbolHead}>
+                            <Text style={styles.symbolName}>{p.label}</Text>
+                            <View style={styles.pillRow}>
+                              {active ? <Pill label="Active" tone="good" /> : null}
+                              {p.id === best.id && summary.pickers.length > 1 ? (
+                                <Pill
+                                  label="Best (this window)"
+                                  tone={
+                                    verdict.tone === 'edge'
+                                      ? active
+                                        ? 'neutral'
+                                        : 'good'
+                                      : 'warn'
+                                  }
+                                />
+                              ) : null}
+                              <Text
+                                style={{
+                                  fontFamily: 'SpaceMono',
+                                  fontSize: 15,
+                                  color: p.totalR >= 0 ? palette.leaf : palette.danger,
+                                }}>
+                                {p.totalR >= 0 ? '+' : ''}
+                                {p.totalR.toFixed(1)}R
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={styles.symbolMeta}>
+                            {p.trades} taken · {p.skipped} skipped ·{' '}
+                            {p.winRate == null ? '—' : `${Math.round(p.winRate * 100)}%`} win
+                            {p.randomSpread
+                              ? ` · seeds range ${p.randomSpread.minR >= 0 ? '+' : ''}${p.randomSpread.minR.toFixed(1)}R to ${p.randomSpread.maxR >= 0 ? '+' : ''}${p.randomSpread.maxR.toFixed(1)}R`
+                              : ''}
+                          </Text>
+                          <Text style={styles.pickerDesc}>{p.description} Tap to apply.</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              );
+            })()}
+
             {summary.warnings.length ? (
               <View style={styles.warnBox}>
-                <Text style={styles.warnTitle}>Data / API notes</Text>
-                {summary.warnings.slice(0, 6).map((w) => (
+                <Text style={styles.warnTitle}>Data / API notes (run-wide)</Text>
+                {summary.warnings.slice(0, 12).map((w) => (
                   <Text key={w} style={styles.warnItem}>
                     • {w}
                   </Text>
                 ))}
+                {summary.warnings.length > 12 ? (
+                  <Text style={styles.warnItem}>
+                    • …and {summary.warnings.length - 12} more (see per-symbol notes below).
+                  </Text>
+                ) : null}
               </View>
             ) : null}
 
-            <SectionTitle title="Per symbol" />
-            {summary.rows.length === 0 ? (
-              <EmptyState title="No symbols" body="Add tickers above and run again." />
-            ) : (
-              summary.rows.map((row) => (
-                <View key={row.symbol} style={styles.symbolRow}>
+            <View style={styles.coverageBox}>
+              <Text style={styles.coverageTitle}>Benchmarks · SPY / QQQ (regime gate)</Text>
+              <Text style={styles.coverageOk}>
+                Not traded — used only for market regime. Same Full / source pills as names below.
+              </Text>
+              {summary.benchmarks.map((row) => (
+                <View key={row.symbol} style={styles.coverageItem}>
                   <View style={styles.symbolHead}>
                     <Text style={styles.symbolName}>{row.symbol}</Text>
-                    <Pill label={row.source} tone={row.source === 'demo' ? 'warn' : 'good'} />
+                    <View style={styles.pillRow}>
+                      <Pill label={coverageLabel(row.coverage)} tone={coverageTone(row.coverage)} />
+                      <Pill
+                        label={row.source}
+                        tone={row.source === 'demo' || row.source === 'none' ? 'warn' : 'good'}
+                      />
+                    </View>
                   </View>
-                  {row.bars < 60 ? (
-                    <Text style={styles.symbolMeta}>Insufficient history ({row.bars} bars) — skipped.</Text>
+                  <Text style={styles.symbolMeta}>
+                    {row.bars} bars
+                    {row.coverage === 'ok'
+                      ? ' · live EOD OK for regime'
+                      : row.coverage === 'short'
+                        ? ' · thinner than requested window'
+                        : row.coverage === 'none'
+                          ? ' · no live EOD — regime unreliable'
+                          : ' · not enough bars for regime'}
+                  </Text>
+                  {row.notes.slice(0, 3).map((n) => (
+                    <Text key={n} style={styles.noteLine}>
+                      → {n}
+                    </Text>
+                  ))}
+                </View>
+              ))}
+            </View>
+
+            {(() => {
+              const issues = summary.rows.filter((r) => r.coverage !== 'ok');
+              const okCount = summary.rows.length - issues.length;
+              return (
+                <View style={styles.coverageBox}>
+                  <Text style={styles.coverageTitle}>
+                    Coverage · {okCount}/{summary.rows.length} full live EOD (~{summary.requestedDays}d
+                    request)
+                  </Text>
+                  {issues.length === 0 ? (
+                    <Text style={styles.coverageOk}>All tickers used live bars (Yahoo/FMP/etc).</Text>
+                  ) : (
+                    issues.map((row) => (
+                      <View key={`cov-${row.symbol}`} style={styles.coverageItem}>
+                        <View style={styles.symbolHead}>
+                          <Text style={styles.symbolName}>{row.symbol}</Text>
+                          <View style={styles.pillRow}>
+                            <Pill label={coverageLabel(row.coverage)} tone={coverageTone(row.coverage)} />
+                            <Pill
+                              label={row.source}
+                              tone={
+                                row.source === 'demo' || row.source === 'none' ? 'warn' : 'neutral'
+                              }
+                            />
+                          </View>
+                        </View>
+                        <Text style={styles.symbolMeta}>
+                          {row.bars} bars
+                          {row.coverage === 'none'
+                            ? ' · no live EOD (backtest refused)'
+                            : row.coverage === 'short'
+                              ? ' · live source but thinner than requested window'
+                              : ' · not enough history to score'}
+                        </Text>
+                        {row.notes.slice(0, 4).map((n) => (
+                          <Text key={n} style={styles.noteLine}>
+                            → {n}
+                          </Text>
+                        ))}
+                      </View>
+                    ))
+                  )}
+                </View>
+              );
+            })()}
+
+            <SectionTitle
+              title="Per symbol"
+              subtitle={
+                perSymbolMode === 'capped'
+                  ? `Only trades that filled a max-${summary.maxOpen} open slot under ${cappedView.pickerName}. Matches the realistic total.`
+                  : 'Every signal per ticker with no portfolio capacity limit — same as All signals (usable).'
+              }
+            />
+            <View style={styles.chipRow}>
+              <Pressable
+                onPress={() => setPerSymbolMode('capped')}
+                style={[styles.chip, perSymbolMode === 'capped' && styles.chipOn]}>
+                <Text style={[styles.chipText, perSymbolMode === 'capped' && styles.chipTextOn]}>
+                  Max {summary.maxOpen} open
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setPerSymbolMode('all');
+                  if (symbolSort === 'skipped_desc') setSymbolSort('totalR_desc');
+                }}
+                style={[styles.chip, perSymbolMode === 'all' && styles.chipOn]}>
+                <Text style={[styles.chipText, perSymbolMode === 'all' && styles.chipTextOn]}>
+                  All signals
+                </Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.filterLabel}>Coverage</Text>
+            <View style={styles.chipRow}>
+              {(
+                [
+                  ['all', 'All'],
+                  ['ok', 'Full only'],
+                  ['issues', 'Issues only'],
+                ] as const
+              ).map(([id, label]) => (
+                <Pressable
+                  key={id}
+                  onPress={() => setCoverageFilter(id)}
+                  style={[styles.chip, coverageFilter === id && styles.chipOn]}>
+                  <Text style={[styles.chipText, coverageFilter === id && styles.chipTextOn]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.filterLabel}>Result</Text>
+            <View style={styles.chipRow}>
+              {(
+                [
+                  ['all', 'All'],
+                  ['winners', 'Winners'],
+                  ['losers', 'Losers'],
+                  ['flat', 'Flat / no trades'],
+                ] as const
+              ).map(([id, label]) => (
+                <Pressable
+                  key={id}
+                  onPress={() => setResultFilter(id)}
+                  style={[styles.chip, resultFilter === id && styles.chipOn]}>
+                  <Text style={[styles.chipText, resultFilter === id && styles.chipTextOn]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.filterLabel}>Sort</Text>
+            <View style={styles.chipRow}>
+              {(
+                [
+                  'totalR_desc',
+                  'totalR_asc',
+                  'winRate_desc',
+                  'trades_desc',
+                  ...(perSymbolMode === 'capped' ? (['skipped_desc'] as const) : []),
+                  'symbol_asc',
+                ] as SymbolSort[]
+              ).map((id) => (
+                <Pressable
+                  key={id}
+                  onPress={() => setSymbolSort(id)}
+                  style={[styles.chip, symbolSort === id && styles.chipOn]}>
+                  <Text style={[styles.chipText, symbolSort === id && styles.chipTextOn]}>
+                    {chipLabel(id)}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.filterMeta}>
+              Showing {perSymbolRows.length} of{' '}
+              {(perSymbolMode === 'capped' ? cappedView.cappedRows : summary.rows).length} tickers
+              {coverageFilter !== 'all' || resultFilter !== 'all'
+                ? ' (filters applied)'
+                : ''}
+              .
+            </Text>
+
+            {perSymbolRows.length === 0 ? (
+              <EmptyState
+                title="No tickers match"
+                body="Loosen Coverage / Result filters, or switch Max-open ↔ All signals."
+              />
+            ) : (
+              perSymbolRows.map((row) => (
+                <View key={`${perSymbolMode}-${row.symbol}`} style={styles.symbolRow}>
+                  <View style={styles.symbolHead}>
+                    <Text style={styles.symbolName}>{row.symbol}</Text>
+                    <View style={styles.pillRow}>
+                      <Pill label={coverageLabel(row.coverage)} tone={coverageTone(row.coverage)} />
+                      <Pill
+                        label={row.source}
+                        tone={row.source === 'demo' || row.source === 'none' ? 'warn' : 'good'}
+                      />
+                    </View>
+                  </View>
+                  {row.coverage === 'none' ? (
+                    <Text style={styles.symbolMeta}>No data — backtest not run.</Text>
+                  ) : row.bars < 60 ? (
+                    <Text style={styles.symbolMeta}>
+                      Insufficient history ({row.bars} bars) — skipped.
+                    </Text>
                   ) : (
                     <Text style={styles.symbolMeta}>
-                      {row.bars} bars · {row.trades} trades ·{' '}
-                      {row.winRate == null ? '—' : `${Math.round(row.winRate * 100)}%`} win ·{' '}
+                      {row.bars} bars · {row.trades} trades
+                      {perSymbolMode === 'capped' && (row.skipped ?? 0) > 0
+                        ? ` · ${row.skipped} capacity-skipped`
+                        : ''}{' '}
+                      · {row.winRate == null ? '—' : `${Math.round(row.winRate * 100)}%`} win ·{' '}
                       <Text
                         style={{
                           color: row.totalR >= 0 ? palette.leaf : palette.danger,
@@ -330,6 +956,15 @@ export default function PortfolioBacktestScreen() {
                       </Text>
                     </Text>
                   )}
+                  {row.notes.length && row.coverage !== 'ok' ? (
+                    <View style={styles.rowNotes}>
+                      {row.notes.slice(0, 3).map((n) => (
+                        <Text key={n} style={styles.noteLine}>
+                          → {n}
+                        </Text>
+                      ))}
+                    </View>
+                  ) : null}
                 </View>
               ))
             )}
@@ -351,6 +986,43 @@ const styles = StyleSheet.create({
     color: palette.muted,
     fontSize: 12,
     marginBottom: spacing.md,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: spacing.sm,
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.mist,
+  },
+  chipOn: {
+    backgroundColor: palette.moss,
+    borderColor: palette.moss,
+  },
+  chipText: {
+    color: palette.ink,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  chipTextOn: {
+    color: '#fff',
+  },
+  filterLabel: {
+    color: palette.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  filterMeta: {
+    color: palette.muted,
+    fontSize: 12,
+    marginBottom: spacing.sm,
   },
   loading: {
     marginTop: spacing.md,
@@ -408,4 +1080,87 @@ const styles = StyleSheet.create({
   },
   symbolName: { fontWeight: '700', color: palette.ink, fontSize: 15 },
   symbolMeta: { color: palette.muted, fontSize: 13 },
+  pillRow: { flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' },
+  coverageBox: {
+    backgroundColor: palette.mist,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: palette.line,
+  },
+  coverageTitle: { fontWeight: '700', color: palette.ink },
+  coverageOk: { color: palette.muted, fontSize: 13 },
+  pickerBox: {
+    backgroundColor: palette.white,
+    borderWidth: 1,
+    borderColor: palette.line,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 10,
+  },
+  pickerStack: { gap: 10 },
+  losingBanner: {
+    backgroundColor: palette.dangerSoft,
+    borderWidth: 1,
+    borderColor: palette.danger,
+    borderRadius: 12,
+    padding: spacing.md,
+  },
+  losingBannerText: {
+    color: palette.danger,
+    fontWeight: '600',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  honestyBox: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 6,
+  },
+  honestyHeadline: {
+    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  honestyBullet: {
+    color: palette.ink,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  readGuide: {
+    backgroundColor: palette.mist,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: palette.line,
+  },
+  readGuideTitle: {
+    fontWeight: '700',
+    color: palette.ink,
+    marginBottom: 2,
+  },
+  readGuideItem: {
+    color: palette.muted,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  pickerRow: { gap: 3 },
+  pickerSelectable: {
+    padding: spacing.sm,
+    marginHorizontal: -spacing.sm,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  pickerActive: {
+    backgroundColor: palette.mossSoft,
+    borderColor: palette.moss,
+  },
+  pickerDesc: { color: palette.muted, fontSize: 12, lineHeight: 16 },
+  coverageItem: { gap: 4, paddingTop: 6, borderTopWidth: 1, borderTopColor: palette.line },
+  rowNotes: { gap: 2, marginTop: 4 },
+  noteLine: { color: palette.warn, fontSize: 12, lineHeight: 16 },
 });

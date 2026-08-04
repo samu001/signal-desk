@@ -5,7 +5,7 @@ import { Alert, ScrollView, StyleSheet, Text } from 'react-native';
 import { Button, Field, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
-import { fetchRecommendation } from '@/lib/fetchRecommendation';
+import { fetchRecommendationsWithBundle } from '@/lib/fetchRecommendation';
 
 export default function WatchlistFormScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -18,6 +18,9 @@ export default function WatchlistFormScreen() {
     upsertWatchlistItem,
     addWatchlistSymbol,
     applyDeskSignals,
+    ingestMarketBundle,
+    marketBundle,
+    quotesUpdatedAt,
   } = useTrading();
   const existing = watchlist.find((w) => w.id === id);
   const editing = Boolean(existing);
@@ -47,7 +50,21 @@ export default function WatchlistFormScreen() {
       }
       setSaving(true);
       try {
-        const rec = await fetchRecommendation(ticker, settings, { setups, trades });
+        const { recommendations, bundle, reusedMarket } = await fetchRecommendationsWithBundle(
+          [ticker],
+          settings,
+          {
+            setups,
+            trades,
+            market: marketBundle,
+            marketFetchedAt: quotesUpdatedAt,
+          }
+        );
+        const rec = recommendations[0];
+        if (!rec) throw new Error('Could not get Desk signal.');
+        if (!reusedMarket) {
+          ingestMarketBundle(bundle);
+        }
         applyDeskSignals([rec]);
       } catch (e) {
         Alert.alert(

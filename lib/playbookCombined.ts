@@ -6,6 +6,7 @@ import {
   describeCostModel,
 } from '@/lib/backtestCosts';
 import { BacktestProfile, DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
+import { tradePriorityScore } from '@/lib/tradePriority';
 import { Candle, Setup } from '@/types/trading';
 
 export type CombinedPlaybookTrade = BacktestTrade & {
@@ -36,9 +37,72 @@ function dayKey(ts: number) {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
 
+/** Same-day winner by entry-time priority (exported for tests). */
+export function selectBestTradesPerDay(
+  candidates: CombinedPlaybookTrade[]
+): { winners: CombinedPlaybookTrade[]; skippedOverlaps: number } {
+  const ranked = [...candidates].sort((a, b) => {
+    const byDay = dayKey(a.entryTime).localeCompare(dayKey(b.entryTime));
+    if (byDay !== 0) return byDay;
+    const aScore = a.priorityScore ?? tradePriorityScore(a.plannedRR ?? 0, a.passRate ?? 0);
+    const bScore = b.priorityScore ?? tradePriorityScore(b.plannedRR ?? 0, b.passRate ?? 0);
+    if (bScore !== aScore) return bScore - aScore;
+    if (b.plannedRR !== a.plannedRR) return b.plannedRR - a.plannedRR;
+    return a.setupName.localeCompare(b.setupName);
+  });
+
+  const winners: CombinedPlaybookTrade[] = [];
+  const seenDays = new Set<string>();
+  let skippedOverlaps = 0;
+  for (const c of ranked) {
+    const key = dayKey(c.entryTime);
+    if (seenDays.has(key)) {
+      skippedOverlaps += 1;
+      continue;
+    }
+    seenDays.add(key);
+    winners.push(c);
+  }
+  winners.sort((a, b) => a.entryTime - b.entryTime);
+  return { winners, skippedOverlaps };
+}
+
+/**
+ * Post-stop cooldown without lookahead (exported for tests).
+ * Each cooldown window starts at the stop-out EXIT. An entry taken while that
+ * trade was still open must not be skipped — at entry time nobody knows the
+ * open trade will stop out (skipping it would peek at the future).
+ */
+export function applyStopCooldown(
+  dayWinners: CombinedPlaybookTrade[],
+  stopCooldownBars: number
+): { taken: CombinedPlaybookTrade[]; skippedCooldown: number } {
+  const taken: CombinedPlaybookTrade[] = [];
+  let skippedCooldown = 0;
+  const windows: Array<{ from: number; until: number }> = [];
+  for (const trade of dayWinners) {
+    const inCooldown =
+      stopCooldownBars > 0 &&
+      windows.some((w) => trade.entryTime >= w.from && trade.entryTime < w.until);
+    if (inCooldown) {
+      skippedCooldown += 1;
+      continue;
+    }
+    taken.push(trade);
+    if (trade.reason === 'stop' && stopCooldownBars > 0) {
+      windows.push({
+        from: trade.exitTime,
+        until: trade.exitTime + stopCooldownBars * 86400,
+      });
+    }
+  }
+  return { taken, skippedCooldown };
+}
+
 /**
  * Run all setups, then keep only the best trade per entry day for a ticker.
  * Also applies a ticker-level stop-out cooldown across setups when enabled.
+ * Same-day winner uses entry-time priority (planned R:R + pass rate) — never realized R.
  */
 export function runCombinedPlaybookBacktest(input: {
   symbol: string;
@@ -83,58 +147,22 @@ export function runCombinedPlaybookBacktest(input: {
     })
   );
 
-  type Candidate = CombinedPlaybookTrade & { score: number };
-  const candidates: Candidate[] = [];
+  const candidates: CombinedPlaybookTrade[] = [];
   for (const result of setupResults) {
     for (const trade of result.trades) {
-      const score =
-        trade.rMultiple +
-        (result.winRate ?? 0) * 0.25 +
-        (result.avgR ?? 0) * 0.15;
       candidates.push({
         ...trade,
         setupId: result.setupId,
         setupName: result.setupName,
-        passRate: result.winRate ?? 0,
-        score,
+        passRate: trade.passRate,
+        priorityScore:
+          trade.priorityScore ?? tradePriorityScore(trade.plannedRR ?? 0, trade.passRate ?? 0),
       });
     }
   }
 
-  candidates.sort((a, b) => {
-    const byDay = dayKey(a.entryTime).localeCompare(dayKey(b.entryTime));
-    if (byDay !== 0) return byDay;
-    return b.score - a.score;
-  });
-
-  const dayWinners: CombinedPlaybookTrade[] = [];
-  const seenDays = new Set<string>();
-  let skippedOverlaps = 0;
-  for (const c of candidates) {
-    const key = dayKey(c.entryTime);
-    if (seenDays.has(key)) {
-      skippedOverlaps += 1;
-      continue;
-    }
-    seenDays.add(key);
-    const { score: _score, ...trade } = c;
-    dayWinners.push(trade);
-  }
-
-  dayWinners.sort((a, b) => a.entryTime - b.entryTime);
-  const trades: CombinedPlaybookTrade[] = [];
-  let skippedCooldown = 0;
-  let cooldownUntil = 0;
-  for (const trade of dayWinners) {
-    if (stopCooldownBars > 0 && trade.entryTime < cooldownUntil) {
-      skippedCooldown += 1;
-      continue;
-    }
-    trades.push(trade);
-    if (trade.reason === 'stop' && stopCooldownBars > 0) {
-      cooldownUntil = trade.exitTime + stopCooldownBars * 86400;
-    }
-  }
+  const { winners: dayWinners, skippedOverlaps } = selectBestTradesPerDay(candidates);
+  const { taken: trades, skippedCooldown } = applyStopCooldown(dayWinners, stopCooldownBars);
 
   const rs = trades.map((t) => t.rMultiple);
   const wins = rs.filter((r) => r > 0);
@@ -155,8 +183,8 @@ export function runCombinedPlaybookBacktest(input: {
     notes: [
       profile
         ? `Profile: ${profile.label} — ${profile.description}`
-        : 'Combined playbook: at most one entry per day (highest-scoring setup wins).',
-      'Combined playbook: at most one entry per day (highest-scoring setup wins).',
+        : 'Combined playbook: at most one entry per day (highest entry-time priority wins).',
+      'Same-day setup pick uses planned R:R + rule pass rate (not realized R).',
       describeCostModel(costs),
       `Ticker cooldown after stop-out: ${stopCooldownBars} trading day${
         stopCooldownBars === 1 ? '' : 's'

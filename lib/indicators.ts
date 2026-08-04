@@ -62,6 +62,18 @@ export function closes(candles: Candle[]): number[] {
   return candles.map((c) => c.close);
 }
 
+/**
+ * Bars with time <= asOf (input must be sorted ascending by time).
+ * Use for point-in-time benchmark history in backtests — index-based slicing
+ * misaligns dates and can leak future bars when series lengths differ.
+ */
+export function barsUpTo(series: Candle[], asOf: number): Candle[] {
+  if (!series.length) return series;
+  let end = series.length;
+  while (end > 0 && series[end - 1].time > asOf) end -= 1;
+  return end === series.length ? series : series.slice(0, end);
+}
+
 export function volumes(candles: Candle[]): number[] {
   return candles.map((c) => c.volume);
 }

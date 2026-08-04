@@ -1,13 +1,21 @@
 import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Field, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 
+function notify(title: string, message?: string) {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    window.alert(message ? `${title}\n\n${message}` : title);
+    return;
+  }
+  Alert.alert(title, message);
+}
+
 export default function SettingsScreen() {
-  const { settings, updateSettings, refreshQuotes } = useTrading();
+  const { settings, updateSettings, refreshQuotes, clearDataCaches } = useTrading();
   const [displayName, setDisplayName] = useState(settings.displayName);
   const [accountSize, setAccountSize] = useState(String(settings.accountSize));
   const [riskPercent, setRiskPercent] = useState(String(settings.riskPercent));
@@ -16,6 +24,9 @@ export default function SettingsScreen() {
   const [tiingoKey, setTiingoKey] = useState(settings.tiingoApiKey);
   const [fmpKey, setFmpKey] = useState(settings.fmpApiKey);
   const [alphaKey, setAlphaKey] = useState(settings.alphaVantageApiKey);
+  const [yahooProxyUrl, setYahooProxyUrl] = useState(settings.yahooProxyUrl);
+  const [yahooProxyToken, setYahooProxyToken] = useState(settings.yahooProxyToken);
+  const [clearingCache, setClearingCache] = useState(false);
 
   useEffect(() => {
     setDisplayName(settings.displayName);
@@ -26,6 +37,8 @@ export default function SettingsScreen() {
     setTiingoKey(settings.tiingoApiKey);
     setFmpKey(settings.fmpApiKey);
     setAlphaKey(settings.alphaVantageApiKey);
+    setYahooProxyUrl(settings.yahooProxyUrl);
+    setYahooProxyToken(settings.yahooProxyToken);
   }, [settings]);
 
   const save = async () => {
@@ -45,12 +58,47 @@ export default function SettingsScreen() {
       tiingoApiKey: tiingoKey.trim(),
       fmpApiKey: fmpKey.trim(),
       alphaVantageApiKey: alphaKey.trim(),
+      yahooProxyUrl: yahooProxyUrl.trim().replace(/\/+$/, ''),
+      yahooProxyToken: yahooProxyToken.trim(),
     });
     await refreshQuotes();
     Alert.alert(
       'Saved',
-      'Keys stored on device. Candle order: Tiingo → FMP → Finnhub → Alpha Vantage → demo.'
+      'Keys stored on device. Web EOD: FMP → Yahoo proxy → Finnhub → AV (Tiingo CORS-blocked). Native: Tiingo → FMP → Yahoo → …. No live history → No data (no synthetic bars). Pull-to-refresh updates quotes only; Desk / Refresh signals load history.'
     );
+  };
+
+  const runClearCaches = async () => {
+    setClearingCache(true);
+    try {
+      await clearDataCaches();
+      notify('Caches cleared', 'Refetch with Desk or Refresh signals / re-run backtests.');
+    } catch (e) {
+      notify('Could not clear', e instanceof Error ? e.message : 'Unknown error clearing caches.');
+    } finally {
+      setClearingCache(false);
+    }
+  };
+
+  const confirmClearCaches = () => {
+    const detail =
+      'Removes cached EOD bars, fundamentals, provider cooldowns, and in-app market snapshots. Next Desk / backtest run will refetch live APIs. Settings, watchlist, and trades are kept.';
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(`Clear data caches?\n\n${detail}`)) {
+        void runClearCaches();
+      }
+      return;
+    }
+    Alert.alert('Clear data caches?', detail, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => {
+          void runClearCaches();
+        },
+      },
+    ]);
   };
 
   return (
@@ -98,6 +146,22 @@ export default function SettingsScreen() {
           placeholder="EOD fallback + fundamentals context"
         />
         <Field
+          label="Yahoo proxy URL"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={yahooProxyUrl}
+          onChangeText={setYahooProxyUrl}
+          placeholder="https://signal-desk-bars.xxx.workers.dev"
+        />
+        <Field
+          label="Yahoo proxy token (optional)"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={yahooProxyToken}
+          onChangeText={setYahooProxyToken}
+          placeholder="Only if Worker PROXY_TOKEN is set"
+        />
+        <Field
           label="Finnhub API key"
           autoCapitalize="none"
           autoCorrect={false}
@@ -117,13 +181,29 @@ export default function SettingsScreen() {
         <View style={styles.help}>
           <Text style={styles.helpTitle}>Where each key helps</Text>
           <Text style={styles.helpBody}>
-            Tiingo: long adjusted daily history for Desk signals and backtests. FMP: daily bars fallback plus
-            PE / margins / ROE on Dashboard. Finnhub: live quotes + catalyst headlines. Alpha Vantage:
-            last-resort short history. Without keys, demo history / company / news still power Desk offline.
+            Tiingo: long adjusted daily history (CORS-blocked in the browser — works in Expo Go /
+            native). FMP: daily bars + fundamentals on web. Yahoo proxy: Cloudflare Worker that
+            fetches Yahoo chart EOD (no Yahoo key; works on web after FMP). Finnhub: live quotes +
+            headlines. Alpha Vantage: last-resort short history (~25 calls/day). Without working EOD,
+            Desk and backtests show No data — they will not invent Soft/Strong or levels.
           </Text>
         </View>
 
         <Button label="Save settings" onPress={save} />
+
+        <View style={styles.cacheBlock}>
+          <Text style={styles.section}>Data caches</Text>
+          <Text style={styles.helpBody}>
+            Backtests and Desk reuse cached EOD (12–24h) plus rate-limit cooldowns. Clear when you
+            change keys or want a forced live refetch.
+          </Text>
+          <Button
+            label={clearingCache ? 'Clearing…' : 'Clear EOD + API caches'}
+            variant="danger"
+            onPress={confirmClearCaches}
+            disabled={clearingCache}
+          />
+        </View>
       </ScrollView>
     </Screen>
   );
@@ -155,5 +235,9 @@ const styles = StyleSheet.create({
   helpBody: {
     color: palette.muted,
     lineHeight: 20,
+  },
+  cacheBlock: {
+    marginTop: spacing.lg,
+    gap: 10,
   },
 });

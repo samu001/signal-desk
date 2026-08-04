@@ -516,6 +516,58 @@ function assessMarketRelative(candles: Candle[], spyCandles: Candle[]): {
   };
 }
 
+/** Widest stop allowed, as ATR multiple and as % of entry (whichever is tighter). */
+const MAX_RISK_ATR_MULT = 2.5;
+const MAX_RISK_PCT = 0.08;
+
+/**
+ * Keep stop/target anchored to current price action. After a violent gap-up the
+ * 12-bar swing low can sit 20%+ below price; without this cap that stale low
+ * becomes the stop and the 2R target lands at fantasy prices (MSFT gap: stop
+ * $377 / target $742 on a $487 stock). Risk is capped at min(2.5×ATR, 8% of
+ * entry), and the target is rebuilt from the capped risk when the raw target
+ * runs past 2.5R. When the buy zone itself is wider than the risk budget
+ * (mean-reversion zones span sma20*0.96 up to price), the zone is narrowed
+ * from the bottom so the capped stop still clears it — never the other way
+ * around (a stop pushed below a too-wide zone used to plan 10%+ risk).
+ */
+export function clampLevelsRisk(raw: TradeLevels, atr14: number | null): TradeLevels {
+  let entryLow = Math.min(raw.entryLow, raw.entryHigh);
+  const entryHigh = Math.max(raw.entryLow, raw.entryHigh);
+  let entryMid = (entryLow + entryHigh) / 2;
+  const atrCap =
+    atr14 != null && atr14 > 0 ? MAX_RISK_ATR_MULT * atr14 : Number.POSITIVE_INFINITY;
+  const maxRisk = Math.min(atrCap, entryMid * MAX_RISK_PCT);
+  let stop = Math.max(raw.stop, entryMid - maxRisk);
+  if (!(stop < entryLow)) {
+    // Zone too wide for the cap (or raw stop inside the zone). Raise the zone
+    // floor to entryHigh - 1.9*maxRisk: from there the capped stop measured
+    // off the new mid always lands below the zone. maxRisk stays anchored to
+    // the original mid, which is the conservative (tighter) choice.
+    entryLow = Math.max(entryLow, entryHigh - 1.9 * maxRisk);
+    entryMid = (entryLow + entryHigh) / 2;
+    stop = entryMid - maxRisk;
+    // Prefer a tighter structural stop when it still clears the zone.
+    if (raw.stop > stop && raw.stop < entryLow) {
+      stop = raw.stop;
+    }
+  }
+  const risk = Math.max(entryMid - stop, entryMid * 0.01);
+  let target = raw.target;
+  if (!(target > entryHigh) || target > entryMid + 2.5 * risk) {
+    target = entryMid + 2 * risk;
+  }
+  if (!(target > entryHigh)) {
+    target = entryHigh + risk;
+  }
+  return {
+    entryLow: roundPrice(entryLow),
+    entryHigh: roundPrice(entryHigh),
+    stop: roundPrice(stop),
+    target: roundPrice(target),
+  };
+}
+
 function mergeLevelsWithSetup(
   deskLevels: TradeLevels,
   setup: Setup | undefined,
@@ -529,17 +581,10 @@ function mergeLevelsWithSetup(
   const stop = Math.min(setupLevels.stop, deskLevels.stop, atrFloor);
   const entryLow = Math.min(setupLevels.entryLow, deskLevels.entryLow);
   const entryHigh = Math.max(setupLevels.entryHigh, deskLevels.entryHigh);
-  const entryMid = (entryLow + entryHigh) / 2;
-  const risk = Math.max(entryMid - stop, entryMid * 0.01);
-  const target = Math.max(setupLevels.target, deskLevels.target, entryMid + 2 * risk);
+  const target = Math.max(setupLevels.target, deskLevels.target);
   return {
     source: 'playbook',
-    levels: {
-      entryLow: roundPrice(entryLow),
-      entryHigh: roundPrice(entryHigh),
-      stop: roundPrice(stop),
-      target: roundPrice(target),
-    },
+    levels: clampLevelsRisk({ entryLow, entryHigh, stop, target }, atr14),
   };
 }
 
@@ -568,19 +613,11 @@ function levelsForSetupOption(setup: Setup, candles: Candle[]): TradeLevels {
   const atr14 = atr(candles, 14);
   const price = latestCandle(candles)?.close ?? raw.entryHigh;
   const atrFloor = atr14 != null ? price - 1.8 * atr14 : raw.stop;
-  let entryLow = roundPrice(Math.min(raw.entryLow, raw.entryHigh));
-  let entryHigh = roundPrice(Math.max(raw.entryLow, raw.entryHigh));
-  let stop = roundPrice(Math.min(raw.stop, atrFloor));
-  if (!(stop < entryLow)) {
-    stop = roundPrice(entryLow * 0.97);
-  }
-  const entryMid = (entryLow + entryHigh) / 2;
-  const risk = Math.max(entryMid - stop, entryMid * 0.01);
-  let target = roundPrice(Math.max(raw.target, entryMid + 2 * risk));
-  if (!(target > entryHigh)) {
-    target = roundPrice(entryHigh + risk);
-  }
-  return { entryLow, entryHigh, stop, target };
+  const stop = Math.min(raw.stop, atrFloor);
+  return clampLevelsRisk(
+    { entryLow: raw.entryLow, entryHigh: raw.entryHigh, stop, target: raw.target },
+    atr14
+  );
 }
 
 function buildSetupOptions(input: {
@@ -705,6 +742,67 @@ function buildSummary(input: {
   return `${input.symbol} is not clean enough yet. Keep it on watch.`;
 }
 
+/** Empty levels when live history is missing. */
+const EMPTY_LEVELS: TradeLevels = {
+  entryLow: 0,
+  entryHigh: 0,
+  stop: 0,
+  target: 0,
+};
+
+/** Explicit No data Desk result — never invent Soft/Strong from missing/synthetic history. */
+export function buildNoDataRecommendation(
+  symbol: string,
+  warnings: string[] = [],
+  quote: Quote | null = null
+): Recommendation {
+  const upper = symbol.toUpperCase().trim();
+  const price = quote?.price ?? 0;
+  const note =
+    warnings.find((w) => /No data/i.test(w)) ??
+    'No data — live daily history unavailable. Check API keys / Yahoo proxy in Settings.';
+  return {
+    symbol: upper,
+    stance: 'wait',
+    label: 'No data',
+    summary: `${upper}: No data. Desk will not score Soft/Strong without live EOD bars.`,
+    confidence: 0,
+    price,
+    levels: EMPTY_LEVELS,
+    rewardToRisk: null,
+    nearEntry: false,
+    inEntry: false,
+    technicalScore: 0,
+    fundamentalScore: 0,
+    newsScore: 0,
+    overallScore: 0,
+    factors: [
+      {
+        name: 'Live EOD history',
+        pillar: 'technical',
+        verdict: 'fail',
+        detail: note,
+      },
+    ],
+    reasons: [{ tone: 'bad', text: note }],
+    news: [],
+    fundamentals: null,
+    matchedSetups: [],
+    setupOptions: [],
+    bestSetupName: null,
+    earnings: null,
+    researchInteresting: false,
+    researchLabel: 'No data',
+    tradeable: false,
+    levelsSource: 'desk',
+    relativeStrength20d: null,
+    dollarVolume20d: null,
+    candleSource: 'none',
+    quoteSource: quote?.source ?? 'none',
+    warnings: warnings.length ? warnings : [note],
+  };
+}
+
 export function buildRecommendation(input: {
   symbol: string;
   quote: Quote | null;
@@ -727,8 +825,38 @@ export function buildRecommendation(input: {
   historicalMode?: boolean;
 }): Recommendation {
   const symbol = input.symbol.toUpperCase().trim();
+  const candleSource = input.candleSource ?? 'none';
+  // Refuse demo / empty history — no inventing levels or Soft/Strong from filler data.
+  if (!input.candles.length || candleSource === 'none' || candleSource === 'demo') {
+    return buildNoDataRecommendation(symbol, input.warnings ?? [], input.quote ?? null);
+  }
   const candles = input.candles;
-  const price = input.quote?.price ?? latestCandle(candles)?.close ?? 0;
+  const candleLast = latestCandle(candles)?.close ?? 0;
+  const quote = input.quote;
+  // Demo Finnhub fallback can disagree wildly with live EOD (IOVA $273 vs ~$4).
+  const quoteUnreliable =
+    quote?.source === 'demo' &&
+    candleLast > 0 &&
+    input.candleSource &&
+    input.candleSource !== 'demo' &&
+    Math.abs(quote.price - candleLast) / candleLast > 0.15;
+  const price = quoteUnreliable
+    ? candleLast
+    : quote?.price ?? candleLast ?? 0;
+  const effectiveQuote: Quote | null =
+    quoteUnreliable && quote && input.candleSource
+      ? {
+          ...quote,
+          price,
+          change: 0,
+          percentChange: 0,
+          high: price,
+          low: price,
+          open: price,
+          previousClose: price,
+          source: input.candleSource as Quote['source'],
+        }
+      : quote;
   const deskLevels = computeTradeLevels(candles);
   const historical = Boolean(input.historicalMode);
   const setups = input.setups ?? [];
@@ -737,7 +865,7 @@ export function buildRecommendation(input: {
       ? matchPlaybookSetups({
           symbol,
           setups,
-          quote: input.quote,
+          quote: effectiveQuote,
           candles,
           spyCandles: input.spyCandles,
           qqqCandles: input.qqqCandles,
@@ -933,7 +1061,7 @@ export function buildRecommendation(input: {
       94,
       Math.round(
         overallScore * 0.8 +
-          (input.candleSource === 'demo' ? -8 : 4) +
+          (candleSource === 'none' ? -8 : 4) +
           (technical.nearEntry ? 4 : 0) +
           (playbookMatched ? 8 : -10) +
           (earningsBlocked ? -12 : 0) +
@@ -944,14 +1072,14 @@ export function buildRecommendation(input: {
   );
 
   const warnings = [...(input.warnings ?? [])];
+  if (quoteUnreliable) {
+    warnings.push(
+      `${symbol}: unreliable quote ignored — using last ${candleSource} close $${candleLast.toFixed(2)}.`
+    );
+  }
   if (historical) {
     warnings.push(
       'Historical Desk mode: company/news neutralized; buys still require Playbook confirmation.'
-    );
-  }
-  if ((input.candleSource ?? 'demo') === 'demo') {
-    warnings.push(
-      'Levels use demo daily history — add Tiingo or FMP API keys in Settings for real bars.'
     );
   }
   if (!playbookMatched && setups.length) {
@@ -1005,8 +1133,8 @@ export function buildRecommendation(input: {
     levelsSource: merged.source,
     relativeStrength20d: market.rs,
     dollarVolume20d: liquidity.dollarVolume,
-    candleSource: input.candleSource ?? 'demo',
-    quoteSource: input.quote?.source ?? 'demo',
+    candleSource,
+    quoteSource: effectiveQuote?.source ?? 'finnhub',
     warnings,
   };
 }
