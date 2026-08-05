@@ -227,9 +227,10 @@ export function runParameterSweep(input: {
 }
 
 /**
- * Like bestSelectablePicker: after a run, auto-activate the highest-totalR
- * exit variant across every knob. Returns null when production wins (or the
- * sweep is empty) so the UI keeps Active on the Production row.
+ * Highest-totalR exit variant across every knob (for the "Best (this window)"
+ * badge / lab comparisons). Returns null when production wins or the sweep is
+ * empty. The portfolio screen no longer auto-activates this — Active stays on
+ * Production after a run; callers tap a row to compare.
  */
 export function bestParamVariantId(sweep: ParameterSweepResult): string | null {
   let best: { id: string; totalR: number; isProduction: boolean } | null = null;

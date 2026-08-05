@@ -125,11 +125,13 @@ plan, ranked by how much each distorts results.
    them from the run instead of scoring fake trades. Yahoo-proxy bars remain
    unverified (`adj?`) — covered by the gap guard.
 2. **Headline defaults to the in-sample maximum.** After each run the screen
-   auto-activates the best-R picker (`bestSelectablePicker`) *and* the best-R
+   auto-activated the best-R picker (`bestSelectablePicker`) *and* the best-R
    exit variant (`bestParamVariantId`) chosen on the same window — a double
-   in-sample selection presented as the default number. Fix: default Active
-   picker and exit variant to **Production** after a run; keep "Best (this
-   window)" as a tappable comparison with the existing honesty banner.
+   in-sample selection presented as the default number.
+   **Status: fixed.** Active picker and exit variant now default to
+   **Production** after every run. "Best (this window)" remains a tappable
+   comparison row with the existing honesty banner; promoting it is an
+   explicit choice, not the headline.
 3. **Max-open cap leaks on transition days.** `simulateMaxOpenByPriority`
    counts a position as open only while `exitTime > dayStart`, so a trade
    exiting on day X frees its slot for a day-X entry — but entries fill at the
@@ -176,17 +178,16 @@ plan, ranked by how much each distorts results.
 10. Post-stop cooldown windows use calendar days while labeled trading days
     (inactive on the portfolio screen — Must sets cooldown to 0).
 
-### Until these land — the defensible read
+### Until the remaining items land — the defensible read
 
-Run with Tiingo data (adjusted), read the **Production** exit row under the
-**Production (priority) picker** on a basket *you* chose, and treat everything
-the auto-selected "Best" combo adds as optimism until it survives a different
-window. The capped total remains the number to trust over All signals.
+Items 1–2 are fixed: FMP/Tiingo now serve adjusted bars with a split-gap guard,
+and the headline defaults to Production. Still treat "Best (this window)" as
+optimism until it survives a different window, prefer a basket *you* chose
+over the curated default, and trust the capped total over All signals.
 
-Acceptance checks for the fixes: the same basket produces near-identical totals
-on web (FMP) and native (Tiingo); the default headline drops versus today;
-capped trade counts fall slightly (slot + per-symbol fixes); regression tests
-cover same-day slot handoff and same-symbol overlap.
+Acceptance checks for the remaining fixes: capped trade counts fall slightly
+(slot + per-symbol fixes); regression tests cover same-day slot handoff and
+same-symbol overlap.
 
 ## Tests
 
