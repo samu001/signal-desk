@@ -33,6 +33,8 @@ function trade(overrides: Partial<PickerTrade> & { entryDay: number; r: number }
     priorityScore: 1,
     setupId: 'setup-1',
     rs20: null,
+    entry: 100,
+    stop: 95,
     ...overrides,
   };
 }

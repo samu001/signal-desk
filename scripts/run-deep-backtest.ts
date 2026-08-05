@@ -9,6 +9,7 @@
  */
 import { defaultSetups } from '../constants/seed';
 import { BacktestProfile, PROFILE_MUST } from '../lib/backtestProfile';
+import { costsForSymbol } from '../lib/backtestCosts';
 import { fetchDailyCandlesResolved } from '../lib/candles';
 import { runBacktest } from '../lib/backtest';
 import { runCombinedPlaybookBacktest } from '../lib/playbookCombined';
@@ -44,13 +45,7 @@ const BIG = ['AAPL', 'AMZN', 'JPM', 'XOM'];
 const MID = ['FANG', 'CFG', 'WSM', 'DDOG'];
 const SMALL = ['CROX', 'DUOL', 'FIX', 'IOT', 'PATH', 'RKLB'];
 const SYMBOLS = [...BIG, ...MID, ...SMALL];
-
-/** Wider slippage for less liquid tiers (5 bps is only realistic for megacaps). */
-function costsForSymbol(symbol: string) {
-  if (BIG.includes(symbol)) return { slippagePct: 0.0005, commissionPct: 0 };
-  if (MID.includes(symbol)) return { slippagePct: 0.001, commissionPct: 0 };
-  return { slippagePct: 0.002, commissionPct: 0 };
-}
+// costsForSymbol lives in lib/backtestCosts.ts (shared with the portfolio UI).
 
 function clipWindow(candles: Candle[]): Candle[] {
   let out = candles;

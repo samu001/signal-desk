@@ -21,7 +21,7 @@
  */
 
 import { runBacktestVariants } from '@/lib/backtest';
-import { BacktestCostModel } from '@/lib/backtestCosts';
+import { BacktestCostModel, DEFAULT_BACKTEST_COSTS } from '@/lib/backtestCosts';
 import { PlaybookGateFlags } from '@/lib/backtestProfile';
 import { LevelTuning } from '@/lib/levelTuning';
 import {
@@ -48,6 +48,8 @@ export type SweepTicker = {
   candles: Candle[];
   /** YYYY-MM-DD earnings dates for ±1 day blackout (same as portfolio run). */
   earningsDates?: string[];
+  /** Per-ticker costs (tiered slippage); falls back to input.costs. */
+  costs?: BacktestCostModel;
 };
 
 /** A combined-playbook trade tagged with its symbol for the pooled cap. */
@@ -143,7 +145,7 @@ export function runParameterSweep(input: {
           spyCandles: input.spyCandles,
           qqqCandles: input.qqqCandles,
           earningsDates: ticker.earningsDates,
-          costs: input.costs,
+          costs: ticker.costs ?? input.costs ?? DEFAULT_BACKTEST_COSTS,
           gates: input.gates,
           stopCooldownBars: input.stopCooldownBars,
           sourceLabel: 'parameter-sweep',
@@ -181,6 +183,8 @@ export function runParameterSweep(input: {
           priorityScore: t.priorityScore,
           setupId: t.setupId,
           rs20: relativeStrength20(ticker.candles, input.spyCandles, t.entryTime),
+          entry: t.entry,
+          stop: t.stop,
         });
       }
     });
