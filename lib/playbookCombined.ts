@@ -22,9 +22,11 @@ export type CombinedPlaybookResult = {
   warnings: string[];
   notes: string[];
   setupResults: BacktestResult[];
-  /** De-duplicated: at most one entry per day (best setup wins). */
+  /** De-duplicated: at most one entry per day, and at most one open at a time. */
   trades: CombinedPlaybookTrade[];
   skippedOverlaps: number;
+  /** Entries skipped because an earlier trade in this ticker was still open. */
+  skippedOpen: number;
   skippedCooldown: number;
   winRate: number | null;
   avgR: number | null;
@@ -69,10 +71,43 @@ export function selectBestTradesPerDay(
 }
 
 /**
+ * At most one open position per ticker (exported for tests).
+ * Walks chronologically; skips an entry when an earlier taken trade still
+ * occupies its exit calendar day. Entry-time information only — knowing a
+ * prior trade is still open is not lookahead. Same-day exit→re-entry is
+ * blocked (entries fill at the open; exits are later that day).
+ */
+export function enforceOneOpenPosition(
+  dayWinners: CombinedPlaybookTrade[]
+): { taken: CombinedPlaybookTrade[]; skippedOpen: number } {
+  const sorted = [...dayWinners].sort((a, b) => {
+    if (a.entryTime !== b.entryTime) return a.entryTime - b.entryTime;
+    const aScore = a.priorityScore ?? tradePriorityScore(a.plannedRR ?? 0, a.passRate ?? 0);
+    const bScore = b.priorityScore ?? tradePriorityScore(b.plannedRR ?? 0, b.passRate ?? 0);
+    if (bScore !== aScore) return bScore - aScore;
+    return a.setupName.localeCompare(b.setupName);
+  });
+  const taken: CombinedPlaybookTrade[] = [];
+  let skippedOpen = 0;
+  for (const trade of sorted) {
+    const entryDay = dayKey(trade.entryTime);
+    const blocked = taken.some((o) => dayKey(o.exitTime) >= entryDay);
+    if (blocked) {
+      skippedOpen += 1;
+      continue;
+    }
+    taken.push(trade);
+  }
+  return { taken, skippedOpen };
+}
+
+/**
  * Post-stop cooldown without lookahead (exported for tests).
- * Each cooldown window starts at the stop-out EXIT. An entry taken while that
- * trade was still open must not be skipped — at entry time nobody knows the
- * open trade will stop out (skipping it would peek at the future).
+ * Each cooldown window starts at the stop-out EXIT. Call this AFTER
+ * enforceOneOpenPosition — overlapping opens are already removed, so an
+ * entry that used to land while a later-stopping trade was still open is
+ * no longer a candidate. Remaining cooldown checks only use the stop exit
+ * (known by the time a later entry is considered).
  */
 export function applyStopCooldown(
   dayWinners: CombinedPlaybookTrade[],
@@ -101,9 +136,10 @@ export function applyStopCooldown(
 }
 
 /**
- * Run all setups, then keep only the best trade per entry day for a ticker.
- * Also applies a ticker-level stop-out cooldown across setups when enabled.
- * Same-day winner uses entry-time priority (planned R:R + pass rate) — never realized R.
+ * Run all setups, then keep only the best trade per entry day for a ticker,
+ * enforce at most one open position at a time, and apply stop-out cooldown
+ * when enabled. Same-day winner uses entry-time priority (planned R:R + pass
+ * rate) — never realized R.
  */
 export function runCombinedPlaybookBacktest(input: {
   symbol: string;
@@ -170,7 +206,8 @@ export function runCombinedPlaybookBacktest(input: {
   }
 
   const { winners: dayWinners, skippedOverlaps } = selectBestTradesPerDay(candidates);
-  const { taken: trades, skippedCooldown } = applyStopCooldown(dayWinners, stopCooldownBars);
+  const { taken: nonOverlapping, skippedOpen } = enforceOneOpenPosition(dayWinners);
+  const { taken: trades, skippedCooldown } = applyStopCooldown(nonOverlapping, stopCooldownBars);
 
   const rs = trades.map((t) => t.rMultiple);
   const wins = rs.filter((r) => r > 0);
@@ -193,11 +230,13 @@ export function runCombinedPlaybookBacktest(input: {
         ? `Profile: ${profile.label} — ${profile.description}`
         : 'Combined playbook: at most one entry per day (highest entry-time priority wins).',
       'Same-day setup pick uses planned R:R + rule pass rate (not realized R).',
+      'At most one open position per ticker — no pyramiding while a prior trade is still open.',
       describeCostModel(costs),
       `Ticker cooldown after stop-out: ${stopCooldownBars} trading day${
         stopCooldownBars === 1 ? '' : 's'
       }.`,
       `Overlapping same-day signals skipped: ${skippedOverlaps}.`,
+      `Still-open position skips: ${skippedOpen}.`,
       `Post-stop cooldown skips: ${skippedCooldown}.`,
       ...(isProductionTuning(input.levelTuning)
         ? []
@@ -208,6 +247,7 @@ export function runCombinedPlaybookBacktest(input: {
     setupResults,
     trades,
     skippedOverlaps,
+    skippedOpen,
     skippedCooldown,
     winRate: rs.length ? wins.length / rs.length : null,
     avgR,

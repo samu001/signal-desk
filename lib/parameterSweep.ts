@@ -5,13 +5,15 @@
  *
  * Unlike lib/parameterLab.ts (which pools raw per-setup signals for statistical
  * power), this runs each exit variant through the full portfolio pipeline —
- * same-day dedup, stop cooldown, and the max-open capacity cap — so the numbers
- * are directly comparable to the Portfolio backtest's own capped total.
+ * same-day dedup, one-open-per-ticker, stop cooldown, and the max-open capacity
+ * cap — so the numbers are directly comparable to the Portfolio backtest's own
+ * capped total.
  *
  * Small exit grid: production plus a few stop-policy × target combos. Each row
  * is a complete exit package run through the full portfolio pipeline — same-day
- * dedup, stop cooldown, and the max-open capacity cap — so the numbers are
- * directly comparable to the Portfolio backtest's own capped total.
+ * dedup, one-open-per-ticker, stop cooldown, and the max-open capacity cap — so
+ * the numbers are directly comparable to the Portfolio backtest's own capped
+ * total.
  *
  * Ranking under the cap uses entry-time priority (planned R:R + pass rate) —
  * production behavior — never realized R, so this stays a what-if, not a
@@ -32,7 +34,12 @@ import {
 } from '@/lib/parameterLab';
 import { PickerTrade, relativeStrength20 } from '@/lib/pickerLab';
 import { simulateMaxOpenByPriority } from '@/lib/portfolioCapacity';
-import { applyStopCooldown, selectBestTradesPerDay, CombinedPlaybookTrade } from '@/lib/playbookCombined';
+import {
+  applyStopCooldown,
+  enforceOneOpenPosition,
+  selectBestTradesPerDay,
+  CombinedPlaybookTrade,
+} from '@/lib/playbookCombined';
 import { tradePriorityScore } from '@/lib/tradePriority';
 import { Candle, Setup } from '@/types/trading';
 
@@ -152,10 +159,12 @@ export function runParameterSweep(input: {
       });
     }
 
-    // Same pipeline as the portfolio run: dedup per day, then stop cooldown.
+    // Same pipeline as the portfolio run: dedup per day, one open at a time,
+    // then stop cooldown.
     byVariant.forEach((candidates, vi) => {
       const { winners } = selectBestTradesPerDay(candidates);
-      const { taken } = applyStopCooldown(winners, input.stopCooldownBars ?? 0);
+      const { taken: nonOverlapping } = enforceOneOpenPosition(winners);
+      const { taken } = applyStopCooldown(nonOverlapping, input.stopCooldownBars ?? 0);
       for (const t of taken) {
         pooledByVariant[vi].push({ ...t, symbol: ticker.symbol });
         uncappedByVariant[vi].trades.push({

@@ -171,7 +171,7 @@ export default function BacktestScreen() {
       : '';
   const displaySource = combined?.sourceLabel ?? result?.sourceLabel ?? '';
   const displayMeta = combined
-    ? `${combined.trades.length} trades · ${combined.skippedOverlaps} overlaps · ${combined.skippedCooldown} cooldown skips`
+    ? `${combined.trades.length} trades · ${combined.skippedOverlaps} overlaps · ${combined.skippedOpen} still-open · ${combined.skippedCooldown} cooldown skips`
     : result
       ? `${result.barsUsed} bars · warmup ${result.warmupBars} · ${result.trades.length} trades`
       : '';
@@ -182,7 +182,7 @@ export default function BacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Setup backtest (last ~30 trading days)"
-          subtitle="Last ~30 trading days with regime + earnings gates, fill costs, and post-stop cooldown. Combined mode keeps one best setup per day."
+          subtitle="Last ~30 trading days with regime + earnings gates, fill costs, and post-stop cooldown. Combined mode keeps one best setup per day and at most one open position at a time."
         />
 
         <Text style={styles.fieldLabel}>Mode</Text>

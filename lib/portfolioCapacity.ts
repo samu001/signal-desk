@@ -31,6 +31,11 @@ function dayKey(ts: number) {
  * Walk calendar days in order. On each day, among candidates that want to enter,
  * take the highest priorityScore up to free slots (maxOpen − still-open positions).
  * Never ranks on realized R.
+ *
+ * A position occupies its slot through its exit calendar day (not just until
+ * exitTime). Entries fill at the open; exits are intraday or at the close, so
+ * freeing the slot on the exit day would let the sim briefly hold more than
+ * maxOpen. The slot frees the next calendar day.
  */
 export function simulateMaxOpenByPriority(
   allTrades: CapacityTrade[],
@@ -64,8 +69,8 @@ export function simulateMaxOpenByPriority(
 
   for (const day of days) {
     const dayEntries = byDay.get(day)!;
-    const dayStart = Math.min(...dayEntries.map((t) => t.entryTime));
-    const openNow = taken.filter((o) => o.exitTime > dayStart).length;
+    // Occupy through exit day: exit on day D still blocks day-D entries.
+    const openNow = taken.filter((o) => dayKey(o.exitTime) >= day).length;
     const free = Math.max(0, cap - openNow);
     const ranked = [...dayEntries].sort((a, b) => {
       if (b.priorityScore !== a.priorityScore) return b.priorityScore - a.priorityScore;
