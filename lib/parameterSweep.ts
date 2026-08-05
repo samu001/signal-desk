@@ -43,7 +43,12 @@ import {
 import { tradePriorityScore } from '@/lib/tradePriority';
 import { Candle, Setup } from '@/types/trading';
 
-export type SweepTicker = { symbol: string; candles: Candle[] };
+export type SweepTicker = {
+  symbol: string;
+  candles: Candle[];
+  /** YYYY-MM-DD earnings dates for ±1 day blackout (same as portfolio run). */
+  earningsDates?: string[];
+};
 
 /** A combined-playbook trade tagged with its symbol for the pooled cap. */
 type SymbolTrade = CombinedPlaybookTrade & { symbol: string };
@@ -137,6 +142,7 @@ export function runParameterSweep(input: {
           candles: ticker.candles,
           spyCandles: input.spyCandles,
           qqqCandles: input.qqqCandles,
+          earningsDates: ticker.earningsDates,
           costs: input.costs,
           gates: input.gates,
           stopCooldownBars: input.stopCooldownBars,

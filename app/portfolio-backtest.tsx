@@ -18,6 +18,7 @@ import {
   fetchDailyCandlesResolved,
   isLiveCandleSource,
 } from '@/lib/candles';
+import { fetchEarningsDates } from '@/lib/finnhub';
 import { ParamVerdictTone } from '@/lib/parameterLab';
 import {
   ParameterSweepResult,
@@ -479,8 +480,21 @@ export default function PortfolioBacktestScreen() {
       const rows: SymbolRow[] = [];
       const usableTrades: PickerTrade[] = [];
       const candlesBySymbol = new Map<string, typeof spy.candles>();
+      const earningsBySymbol = new Map<string, string[]>();
       // 10 bps flat slippage: between megacap (5) and small-cap (20) script tiers.
       const costs = { slippagePct: 0.001, commissionPct: 0 };
+      // Must realism + live earnings blackout (parity with Desk / DEFAULT_LIVE_GATES).
+      const portfolioProfile = {
+        ...PROFILE_MUST,
+        costs,
+        gates: { ...PROFILE_MUST.gates, earningsBlackout: true },
+        description: `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity).`,
+      };
+      if (!settings.finnhubApiKey) {
+        warnings.push(
+          'Add a Finnhub key in Settings to load earnings calendars — without it the blackout gate fails closed and blocks new entries.'
+        );
+      }
 
       for (const symbol of symbols) {
         setProgress(`Backtesting ${symbol} (${rows.length + 1}/${symbols.length})…`);
@@ -539,14 +553,37 @@ export default function PortfolioBacktestScreen() {
           continue;
         }
         candlesBySymbol.set(symbol, bars.candles);
+        const firstBar = bars.candles[0]?.time;
+        const lastBar = bars.candles[bars.candles.length - 1]?.time;
+        const earnFrom = firstBar
+          ? new Date(firstBar * 1000).toISOString().slice(0, 10)
+          : new Date(Date.now() - requestedDays * 86400000).toISOString().slice(0, 10);
+        const earnTo = lastBar
+          ? new Date(lastBar * 1000 + 2 * 86400000).toISOString().slice(0, 10)
+          : new Date().toISOString().slice(0, 10);
+        setProgress(`Earnings ${symbol} (${rows.length + 1}/${symbols.length})…`);
+        const earningsDates = await fetchEarningsDates(
+          symbol,
+          settings.finnhubApiKey || undefined,
+          earnFrom,
+          earnTo
+        );
+        earningsBySymbol.set(symbol, earningsDates);
+        if (!earningsDates.length && settings.finnhubApiKey) {
+          notes.push(
+            'No earnings dates returned for this window — blackout gate fails closed (no new entries).'
+          );
+        }
+
         const combined = runCombinedPlaybookBacktest({
           symbol,
           setups,
           candles: bars.candles,
           spyCandles: spy.candles,
           qqqCandles: qqq.candles,
+          earningsDates,
           sourceLabel: bars.source,
-          profile: { ...PROFILE_MUST, costs },
+          profile: portfolioProfile,
         });
         for (const t of combined.trades) {
           const trade: PickerTrade = {
@@ -572,6 +609,9 @@ export default function PortfolioBacktestScreen() {
               ? `Bars from ${bars.source} are RAW (dividends/splits not adjusted) — no split-sized gaps detected, but dividend drops slightly distort long backtests.`
               : `Adjustment of ${bars.source} bars is unverified — no split-sized gaps detected.`
           );
+        }
+        if (earningsDates.length) {
+          rowNotes.push(`Earnings calendar: ${earningsDates.length} dates in window.`);
         }
         rows.push({
           symbol,
@@ -600,7 +640,11 @@ export default function PortfolioBacktestScreen() {
       let paramSweep: ParameterSweepResult | null = null;
       const sweepTickers = rows
         .filter((r) => isUsableForTotals(r.coverage))
-        .map((r) => ({ symbol: r.symbol, candles: candlesBySymbol.get(r.symbol)! }))
+        .map((r) => ({
+          symbol: r.symbol,
+          candles: candlesBySymbol.get(r.symbol)!,
+          earningsDates: earningsBySymbol.get(r.symbol) ?? [],
+        }))
         .filter((t) => t.candles);
       if (sweepTickers.length) {
         setProgress('Sweeping exit parameters…');
@@ -609,9 +653,9 @@ export default function PortfolioBacktestScreen() {
           tickers: sweepTickers,
           spyCandles: spy.candles,
           qqqCandles: qqq.candles,
-          gates: PROFILE_MUST.gates,
+          gates: portfolioProfile.gates,
           costs,
-          stopCooldownBars: PROFILE_MUST.stopCooldownBars,
+          stopCooldownBars: portfolioProfile.stopCooldownBars,
           maxOpen: cap,
         });
       }
@@ -650,7 +694,7 @@ export default function PortfolioBacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Portfolio backtest"
-          subtitle="Runs the combined Playbook across a symbol list with gap-aware fills, then simulates a max-open-positions capital cap. R is converted to dollars using your account settings."
+          subtitle="Runs the combined Playbook across a symbol list with gap-aware fills, earnings blackout (live Desk parity), then a max-open-positions capital cap. R is converted to dollars using your account settings."
         />
 
         <Field

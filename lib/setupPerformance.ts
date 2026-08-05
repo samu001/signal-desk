@@ -1,6 +1,6 @@
 import { SetupExpectancy } from '@/lib/expectancy';
 import { barsUpTo } from '@/lib/indicators';
-import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
+import { evaluateSetupRules, MIN_SETUP_PASS_RATE, setupSignalPasses } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { Candle, Quote, Setup, WatchlistItem } from '@/types/trading';
 
@@ -13,7 +13,6 @@ export type RecentSetupPerf = {
   score: number;
 };
 
-const MIN_PASS = 0.7;
 const LOOKBACK = 28;
 const FORWARD = 5;
 
@@ -69,10 +68,10 @@ function setupPasses(
       detail: 'perf',
     },
   });
-  const usable = results.filter((r) => r.id !== 'session_tradable' && r.id !== 'no_negative_catalyst');
-  const scored = scoreRuleResults(usable.length ? usable : results);
-  const hardFails = usable.filter((r) => r.verdict === 'fail').length;
-  return scored.passRate >= MIN_PASS && hardFails === 0;
+  return setupSignalPasses(setup, results, {
+    minPassRate: MIN_SETUP_PASS_RATE,
+    skipCheckIds: ['session_tradable', 'no_negative_catalyst'],
+  }).pass;
 }
 
 /**

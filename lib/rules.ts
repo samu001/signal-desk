@@ -372,12 +372,23 @@ export function evaluateCheck(
       };
     }
     case 'earnings_clear': {
-      if (!ctx.earningsDates?.length) {
+      // undefined = caller did not supply a calendar (soft unknown for legacy
+      // call sites). [] = fetch ran and returned nothing → fail closed so a
+      // missing Finnhub key / empty window cannot silently allow entries.
+      if (ctx.earningsDates == null) {
         return {
           id,
           label: LABELS[id],
           verdict: 'unknown',
           detail: 'No earnings calendar loaded',
+        };
+      }
+      if (!ctx.earningsDates.length) {
+        return {
+          id,
+          label: LABELS[id],
+          verdict: 'fail',
+          detail: 'Earnings calendar empty — treating as blocked (fail closed)',
         };
       }
       const asOf =
@@ -782,7 +793,38 @@ export function scoreRuleResults(results: RuleResult[]): {
     failed,
     unknown,
     total: results.length,
-    // Unknown checks should not tank readiness (e.g. missing earnings calendar).
+    // Unknown soft checks (volume history, etc.) do not tank the rate.
+    // Core-check unknown and earnings_clear are handled in setupSignalPasses /
+    // evaluateCheck (fail closed) — do not rely on this rate alone.
     passRate: known > 0 ? passed / known : 0,
+  };
+}
+
+export const MIN_SETUP_PASS_RATE = 0.7;
+
+/**
+ * Whether evaluated rules count as a tradeable signal.
+ * - passRate ≥ 0.7 on known (pass/fail) checks
+ * - no hard fails
+ * - core check = setup.entryChecks[0] must not be unknown (fail closed — a
+ *   setup whose defining rule cannot be evaluated is not a signal)
+ */
+export function setupSignalPasses(
+  setup: Setup | null | undefined,
+  results: RuleResult[],
+  options?: { minPassRate?: number; skipCheckIds?: Iterable<string> }
+): { pass: boolean; passRate: number } {
+  const skip = new Set(options?.skipCheckIds ?? []);
+  const usable = results.filter((r) => !skip.has(r.id));
+  const pool = usable.length ? usable : results;
+  const scored = scoreRuleResults(pool);
+  const hardFails = pool.filter((r) => r.verdict === 'fail').length;
+  const coreId = setup?.entryChecks?.[0];
+  const core = coreId ? pool.find((r) => r.id === coreId) : undefined;
+  const coreUnknown = core?.verdict === 'unknown';
+  const min = options?.minPassRate ?? MIN_SETUP_PASS_RATE;
+  return {
+    pass: scored.passRate >= min && hardFails === 0 && !coreUnknown,
+    passRate: scored.passRate,
   };
 }
