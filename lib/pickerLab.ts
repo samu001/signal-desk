@@ -20,6 +20,9 @@ export type PickerTrade = CapacityTrade & {
   setupId: string;
   /** 20-bar RS vs SPY at the close before entry; null when history lacked. */
   rs20: number | null;
+  /** Fill entry / structural stop — for implied buying-power checks. */
+  entry: number;
+  stop: number;
 };
 
 export type PickerRuleId = 'priority' | 'rs20' | 'expectancy' | 'random';

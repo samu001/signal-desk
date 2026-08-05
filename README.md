@@ -166,14 +166,16 @@ plan, ranked by how much each distorts results.
 
 ### Next tier
 
-6. **Tiered slippage.** The app screen uses flat 10 bps for every symbol; the
-   deep script already tiers 5/10/20 bps by liquidity, and half the default
-   basket is the 20 bps tier. Reuse the script's tiering in the app run.
-7. **Dollar math ignores buying power.** `$ ≈ totalR × account × risk%` never
-   checks implied notional: tight stops mean big positions, and three open can
-   silently exceed the account (the tight-stop exit variants look best partly
-   because nobody pays their notional cost). Fix: compute implied notional per
-   trade and warn (or cap) when open exposure would need leverage.
+6. **Tiered slippage.** — **Status: fixed.** Portfolio (and the deep script)
+   share `costsForSymbol` in `lib/backtestCosts.ts`: megacap **5 bps**, mid
+   **10 bps**, everything else **20 bps**, commission $0. Per-symbol notes show
+   which tier applied. (Previously the app used a flat slippage for every name.)
+7. **Dollar math ignores buying power.** — **Status: fixed.** After a capped
+   run, `analyzeBuyingPower` (`lib/buyingPower.ts`) sizes each taken trade with
+   Desk-style risk (`account × risk% / (entry−stop)`), tracks peak open notional
+   through the exit calendar day, and warns when peak > account or any single
+   trade notionals above the account. Does **not** rewrite R totals — flags the
+   dollar path as optimistic when leverage would have been required.
 8. **Curated defaults.** The default symbol list and the active roster were
    both selected on the history they are scored on (see `run-deep-backtest.ts`
    universe comment above). Fix: label the default basket as
@@ -187,15 +189,16 @@ plan, ranked by how much each distorts results.
 10. Post-stop cooldown windows use calendar days while labeled trading days
     (inactive on the portfolio screen — Must sets cooldown to 0).
 
-### Defensible read (fix-now items 1–5)
+### Defensible read (items 1–7)
 
-All five fix-now items are done: adjusted EOD + split-gap guard, Production
-headline default, max-open slots held through the exit day, no same-ticker
-pyramiding, and earnings blackout + fail-closed core checks. Still treat
-"Best (this window)" as optimism until it survives a different window, prefer
-a basket *you* chose over the curated default, and trust the capped total over
-All signals. Next-tier items (tiered slippage, buying-power checks, curated
-defaults labeling) remain open.
+Fix-now items 1–5 and next-tier 6–7 are done: adjusted EOD + split-gap guard,
+Production headline default, max-open slots held through the exit day, no
+same-ticker pyramiding, earnings blackout + fail-closed core checks, tiered
+5/10/20 bps slippage, and buying-power / peak-notional warnings on the dollar
+path. Still treat "Best (this window)" as optimism until it survives a
+different window, prefer a basket *you* chose over the curated default, and
+trust the capped total over All signals. Item 8 (curated-defaults labeling)
+remains open.
 
 ## Tests
 

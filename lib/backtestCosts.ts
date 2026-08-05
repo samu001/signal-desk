@@ -14,6 +14,36 @@ export const DEFAULT_BACKTEST_COSTS: BacktestCostModel = {
 /** Trading days to wait after a stop-out before re-entering the same ticker/setup. */
 export const DEFAULT_STOP_COOLDOWN_BARS = 3;
 
+/**
+ * Liquidity tiers for portfolio / deep-script slippage.
+ * Megacaps get 5 bps; liquid mid-caps 10; everything else 20 (small/illiquid).
+ * Keep in sync with the deep-backtest universe defaults.
+ */
+export const SLIPPAGE_TIER_BIG = ['AAPL', 'AMZN', 'JPM', 'XOM', 'MSFT', 'GOOGL', 'META', 'NVDA'] as const;
+export const SLIPPAGE_TIER_MID = ['FANG', 'CFG', 'WSM', 'DDOG', 'CRWD', 'NET', 'SNOW', 'MDB'] as const;
+
+export type SlippageTier = 'big' | 'mid' | 'small';
+
+export function slippageTierForSymbol(symbol: string): SlippageTier {
+  const upper = symbol.toUpperCase().trim();
+  if ((SLIPPAGE_TIER_BIG as readonly string[]).includes(upper)) return 'big';
+  if ((SLIPPAGE_TIER_MID as readonly string[]).includes(upper)) return 'mid';
+  return 'small';
+}
+
+/** Tiered slippage, $0 commission (Robinhood-style) — used by portfolio + deep script. */
+export function costsForSymbol(symbol: string): BacktestCostModel {
+  const tier = slippageTierForSymbol(symbol);
+  if (tier === 'big') return { slippagePct: 0.0005, commissionPct: 0 };
+  if (tier === 'mid') return { slippagePct: 0.001, commissionPct: 0 };
+  return { slippagePct: 0.002, commissionPct: 0 };
+}
+
+export function slippageBpsLabel(symbol: string): string {
+  const bps = Math.round(costsForSymbol(symbol).slippagePct * 10_000);
+  return `${bps} bps`;
+}
+
 export function applyLongEntryFill(rawOpen: number, costs: BacktestCostModel): number {
   return rawOpen * (1 + costs.slippagePct + costs.commissionPct);
 }

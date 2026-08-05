@@ -13,6 +13,12 @@ import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/compone
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { PROFILE_MUST } from '@/lib/backtestProfile';
+import { costsForSymbol, slippageBpsLabel } from '@/lib/backtestCosts';
+import {
+  analyzeBuyingPower,
+  buyingPowerNeedsWarning,
+  BuyingPowerReport,
+} from '@/lib/buyingPower';
 import {
   AdjustmentStatus,
   fetchDailyCandlesResolved,
@@ -396,10 +402,38 @@ export default function PortfolioBacktestScreen() {
         avgPriorityTaken: sim.avgPriorityTaken,
         avgPrioritySkipped: sim.avgPrioritySkipped,
       },
+      taken: sim.taken,
       cappedRows: aggregateCappedRows(effectiveRows, sim.taken, sim.skippedTrades),
       pickerName: pickerLabel(activePicker),
     };
   }, [summary, effectiveTrades, effectiveRows, activePicker]);
+
+  const buyingPower = useMemo<BuyingPowerReport | null>(() => {
+    if (!cappedView?.taken.length) return null;
+    const byKey = new Map(
+      effectiveTrades.map((t) => [`${t.symbol}|${t.entryTime}`, t] as const)
+    );
+    const sized = cappedView.taken
+      .map((t) => {
+        const full = byKey.get(`${t.symbol}|${t.entryTime}`);
+        if (!full || !(full.entry > 0) || !(full.stop > 0)) return null;
+        return {
+          entryTime: t.entryTime,
+          exitTime: t.exitTime,
+          entry: full.entry,
+          stop: full.stop,
+          symbol: t.symbol,
+        };
+      })
+      .filter((t): t is NonNullable<typeof t> => Boolean(t));
+    const acct = Number(accountSize) > 0 ? Number(accountSize) : settings.accountSize;
+    const riskPct = Number(riskPercent) > 0 ? Number(riskPercent) : settings.riskPercent;
+    return analyzeBuyingPower({
+      trades: sized,
+      accountSize: acct,
+      riskPercent: riskPct,
+    });
+  }, [cappedView, effectiveTrades, accountSize, riskPercent, settings.accountSize, settings.riskPercent]);
 
   const perSymbolRows = useMemo(() => {
     if (!summary || !cappedView) return [] as SymbolRow[];
@@ -481,14 +515,13 @@ export default function PortfolioBacktestScreen() {
       const usableTrades: PickerTrade[] = [];
       const candlesBySymbol = new Map<string, typeof spy.candles>();
       const earningsBySymbol = new Map<string, string[]>();
-      // 10 bps flat slippage: between megacap (5) and small-cap (20) script tiers.
-      const costs = { slippagePct: 0.001, commissionPct: 0 };
       // Must realism + live earnings blackout (parity with Desk / DEFAULT_LIVE_GATES).
+      // Per-symbol tiered slippage (5/10/20 bps) is applied at each ticker run —
+      // not a flat profile cost — matching the deep-backtest script.
       const portfolioProfile = {
         ...PROFILE_MUST,
-        costs,
         gates: { ...PROFILE_MUST.gates, earningsBlackout: true },
-        description: `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity).`,
+        description: `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity). Tiered slippage 5/10/20 bps by liquidity.`,
       };
       if (!settings.finnhubApiKey) {
         warnings.push(
@@ -575,6 +608,7 @@ export default function PortfolioBacktestScreen() {
           );
         }
 
+        const symbolCosts = costsForSymbol(symbol);
         const combined = runCombinedPlaybookBacktest({
           symbol,
           setups,
@@ -583,7 +617,7 @@ export default function PortfolioBacktestScreen() {
           qqqCandles: qqq.candles,
           earningsDates,
           sourceLabel: bars.source,
-          profile: portfolioProfile,
+          profile: { ...portfolioProfile, costs: symbolCosts },
         });
         for (const t of combined.trades) {
           const trade: PickerTrade = {
@@ -594,6 +628,8 @@ export default function PortfolioBacktestScreen() {
             priorityScore: t.priorityScore,
             setupId: t.setupId,
             rs20: relativeStrength20(bars.candles, spy.candles, t.entryTime),
+            entry: t.entry,
+            stop: t.stop,
           };
           if (isUsableForTotals(coverage)) usableTrades.push(trade);
         }
@@ -603,6 +639,7 @@ export default function PortfolioBacktestScreen() {
             `Thin history: ${bars.candles.length} bars via ${bars.source} (requested ~${requestedDays} calendar days).`
           );
         }
+        rowNotes.push(`Slippage tier: ${slippageBpsLabel(symbol)} (liquidity).`);
         if (adjusted !== 'adjusted') {
           rowNotes.push(
             adjusted === 'raw'
@@ -644,6 +681,7 @@ export default function PortfolioBacktestScreen() {
           symbol: r.symbol,
           candles: candlesBySymbol.get(r.symbol)!,
           earningsDates: earningsBySymbol.get(r.symbol) ?? [],
+          costs: costsForSymbol(r.symbol),
         }))
         .filter((t) => t.candles);
       if (sweepTickers.length) {
@@ -654,7 +692,6 @@ export default function PortfolioBacktestScreen() {
           spyCandles: spy.candles,
           qqqCandles: qqq.candles,
           gates: portfolioProfile.gates,
-          costs,
           stopCooldownBars: portfolioProfile.stopCooldownBars,
           maxOpen: cap,
         });
@@ -694,7 +731,7 @@ export default function PortfolioBacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Portfolio backtest"
-          subtitle="Runs the combined Playbook across a symbol list with gap-aware fills, earnings blackout (live Desk parity), then a max-open-positions capital cap. R is converted to dollars using your account settings."
+          subtitle="Runs the combined Playbook across a symbol list with gap-aware fills, tiered slippage (5/10/20 bps), earnings blackout (live Desk parity), then a max-open-positions capital cap. R is converted to dollars using your account settings — with a buying-power check on the capped book."
         />
 
         <Field
@@ -805,6 +842,29 @@ export default function PortfolioBacktestScreen() {
               </View>
             ) : null}
 
+            {buyingPower && buyingPowerNeedsWarning(buyingPower) ? (
+              <View style={styles.losingBanner}>
+                <Text style={styles.losingBannerText}>
+                  Buying power: peak open notional ≈ ${buyingPower.peakNotional.toFixed(0)} (
+                  {(buyingPower.peakNotionalPct * 100).toFixed(0)}% of account
+                  {buyingPower.peakPositions
+                    ? ` · ${buyingPower.peakPositions} positions`
+                    : ''}
+                  )
+                  {buyingPower.leverageDays
+                    ? ` — above account on ${buyingPower.leverageDays}/${buyingPower.activeDays} active days`
+                    : ''}
+                  {buyingPower.oversizeTrades
+                    ? ` · ${buyingPower.oversizeTrades} trade${
+                        buyingPower.oversizeTrades === 1 ? '' : 's'
+                      } alone exceed the account`
+                    : ''}
+                  . Dollar ≈ R × risk$ assumes every trade fits; tighten risk %, raise account, or
+                  cut max-open before trusting the $.
+                </Text>
+              </View>
+            ) : null}
+
             <View style={styles.noteBox}>
               <Text style={styles.noteItem}>
                 • Totals omit No data, short history, skipped, and suspect-data tickers (see
@@ -830,8 +890,18 @@ export default function PortfolioBacktestScreen() {
                 {Math.round(summary.concurrency.overCapPct * 100)}% of active days.
               </Text>
               <Text style={styles.noteItem}>
+                • Slippage is tiered by liquidity: 5 bps megacap · 10 bps mid · 20 bps small (see
+                per-symbol notes). Same tiers as the deep-backtest script.
+              </Text>
+              <Text style={styles.noteItem}>
                 • Dollar figures assume 1R = ${riskPerTrade.toFixed(0)} (account × risk %). The capped
-                number is the realistic one.
+                number is the realistic one
+                {buyingPower && !buyingPowerNeedsWarning(buyingPower)
+                  ? ` · peak open notional ≈ $${buyingPower.peakNotional.toFixed(0)} (${(
+                      buyingPower.peakNotionalPct * 100
+                    ).toFixed(0)}% of account)`
+                  : ''}
+                .
               </Text>
             </View>
 

@@ -1,8 +1,11 @@
 import {
   applyLongEntryFill,
   applyLongExitFill,
+  costsForSymbol,
   DEFAULT_BACKTEST_COSTS,
   netLongR,
+  slippageBpsLabel,
+  slippageTierForSymbol,
 } from '@/lib/backtestCosts';
 import { demoCandles, defaultSetups } from '@/constants/seed';
 import { runBacktest } from '@/lib/backtest';
@@ -60,5 +63,31 @@ describe('backtest costs + cooldown', () => {
     });
     expect(withCooldown.trades.length).toBeLessThanOrEqual(noCooldown.trades.length);
     expect(withCooldown.skippedCooldown).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('tiered slippage (honesty audit #6)', () => {
+  it('uses 5 bps for megacap names', () => {
+    expect(slippageTierForSymbol('AAPL')).toBe('big');
+    expect(costsForSymbol('AAPL').slippagePct).toBe(0.0005);
+    expect(slippageBpsLabel('MSFT')).toBe('5 bps');
+  });
+
+  it('uses 10 bps for mid-liquidity names', () => {
+    expect(slippageTierForSymbol('DDOG')).toBe('mid');
+    expect(costsForSymbol('CRWD').slippagePct).toBe(0.001);
+    expect(slippageBpsLabel('SNOW')).toBe('10 bps');
+  });
+
+  it('uses 20 bps for everything else', () => {
+    expect(slippageTierForSymbol('XYZ')).toBe('small');
+    expect(costsForSymbol('xyz').slippagePct).toBe(0.002);
+    expect(slippageBpsLabel('FOO')).toBe('20 bps');
+  });
+
+  it('keeps commission at $0 for tiered costs', () => {
+    expect(costsForSymbol('AAPL').commissionPct).toBe(0);
+    expect(costsForSymbol('DDOG').commissionPct).toBe(0);
+    expect(costsForSymbol('FOO').commissionPct).toBe(0);
   });
 });
