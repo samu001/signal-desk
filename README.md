@@ -149,15 +149,20 @@ plan, ranked by how much each distorts results.
    pipeline — at most one open position per ticker; same-day exit→re-entry is
    blocked. Pyramiding would need an explicit opt-in if ever wanted.
 5. **Missing-data checks fail open, and the portfolio run has no earnings
-   data.** `scoreRuleResults` drops `unknown` checks from the pass-rate
-   denominator, and the portfolio run passes no earnings calendar while the
-   Must profile disables the blackout — so nothing anywhere blocks entries into
-   earnings reports (live Desk would), and a setup whose defining check can't
-   be evaluated silently trades on its generic checks (e.g. Earnings Momentum,
-   currently retired, degrades to `above_sma_20` + `volume_expanding` if
-   re-enabled). Fix: mark each setup's core check required (unknown ⇒ no
-   signal), pass the same earnings dates the Desk uses, and revisit blackout
-   parity between backtest and live.
+   data.** `scoreRuleResults` dropped `unknown` checks from the pass-rate
+   denominator, and the portfolio run passed no earnings calendar while the
+   Must profile disabled the blackout — so nothing blocked entries into
+   earnings reports (live Desk would), and a setup whose defining check could
+   not be evaluated silently traded on its generic checks (e.g. Earnings
+   Momentum, currently retired, degraded to `above_sma_20` + `volume_expanding`
+   if re-enabled).
+   **Status: fixed.** `setupSignalPasses` treats `entryChecks[0]` unknown as
+   no signal (shared by backtest / Desk match / setup perf / candidates).
+   `earnings_clear` fails closed when the calendar fetch returns empty
+   (omitted calendar stays soft-unknown for legacy call sites). Portfolio
+   backtest fetches Finnhub earnings dates per symbol (same helper as the
+   single-symbol backtest), enables the earnings blackout gate (live Desk
+   parity), and threads dates into the parameter sweep.
 
 ### Next tier
 
@@ -182,14 +187,15 @@ plan, ranked by how much each distorts results.
 10. Post-stop cooldown windows use calendar days while labeled trading days
     (inactive on the portfolio screen — Must sets cooldown to 0).
 
-### Until the remaining items land — the defensible read
+### Defensible read (fix-now items 1–5)
 
-Items 1–4 are fixed: adjusted EOD + split-gap guard, Production headline
-default, max-open slots held through the exit day, and no same-ticker
-pyramiding. Still treat "Best (this window)" as optimism until it survives a
-different window, prefer a basket *you* chose over the curated default, and
-trust the capped total over All signals. Item 5 (earnings / fail-closed
-checks) remains open.
+All five fix-now items are done: adjusted EOD + split-gap guard, Production
+headline default, max-open slots held through the exit day, no same-ticker
+pyramiding, and earnings blackout + fail-closed core checks. Still treat
+"Best (this window)" as optimism until it survives a different window, prefer
+a basket *you* chose over the curated default, and trust the capped total over
+All signals. Next-tier items (tiered slippage, buying-power checks, curated
+defaults labeling) remain open.
 
 ## Tests
 

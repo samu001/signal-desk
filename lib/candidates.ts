@@ -1,6 +1,6 @@
 import { expectancyMap, SetupExpectancy } from '@/lib/expectancy';
 import { lastCompletedCandle } from '@/lib/indicators';
-import { evaluateSetupRules, RuleResult, scoreRuleResults } from '@/lib/rules';
+import { evaluateSetupRules, RuleResult, scoreRuleResults, setupSignalPasses } from '@/lib/rules';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import {
   Candle,
@@ -176,6 +176,7 @@ export function buildCandidates(
       session,
     });
     const scored = scoreRuleResults(rules);
+    const signal = setupSignalPasses(setup, rules);
     const expectancy = setup ? expectancies[setup.id] ?? null : null;
 
     // Promote to ready when in/near zone and rules mostly pass — but only if Desk
@@ -188,14 +189,10 @@ export function buildCandidates(
     if (deskBlocked && (status === 'in_zone' || status === 'near_zone' || status === 'watching')) {
       status = 'watching';
       label = 'Research only — Desk not Soft/Strong';
-    } else if (
-      (status === 'in_zone' || status === 'near_zone') &&
-      scored.passRate >= 0.7 &&
-      scored.failed === 0
-    ) {
+    } else if ((status === 'in_zone' || status === 'near_zone') && signal.pass) {
       status = 'ready';
       label = 'Ready — rules passing';
-    } else if (status === 'in_zone' && scored.failed > 0) {
+    } else if (status === 'in_zone' && !signal.pass) {
       label = `In zone · ${scored.failed} rule${scored.failed === 1 ? '' : 's'} failing`;
     }
 

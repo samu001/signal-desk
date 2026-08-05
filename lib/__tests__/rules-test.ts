@@ -37,7 +37,29 @@ describe('evaluateSetupRules', () => {
     expect(results.find((r) => r.id === 'above_sma_50')?.verdict).toBe('pass');
     expect(results.find((r) => r.id === 'near_or_in_buy_zone')?.verdict).toBe('pass');
     expect(results.find((r) => r.id === 'market_regime_ok')).toBeUndefined();
+    // Omitted calendar stays unknown; empty array (fetch returned nothing) fails closed.
     expect(results.find((r) => r.id === 'earnings_clear')?.verdict).toBe('unknown');
+  });
+
+  it('fails earnings_clear when the calendar fetch returned no dates', () => {
+    const setup = defaultSetups.find((s) => s.id === 'setup-prior-day-high')!;
+    const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;
+    const results = evaluateSetupRules(setup, {
+      item,
+      quote: null,
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
+      news: [],
+      earningsDates: [],
+      session: {
+        phase: 'rth',
+        label: 'RTH open',
+        tradable: true,
+        detail: 'ok',
+      },
+    });
+    expect(results.find((r) => r.id === 'earnings_clear')?.verdict).toBe('fail');
   });
 
   it('fails earnings_clear inside the blackout window', () => {

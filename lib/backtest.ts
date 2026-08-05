@@ -11,7 +11,7 @@ import { DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
 import { atr, barsUpTo } from '@/lib/indicators';
 import { applyLevelTuning, describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
 import { clampLevelsRisk } from '@/lib/recommend';
-import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
+import { evaluateSetupRules, setupSignalPasses } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { plannedRewardToRisk, tradePriorityScore } from '@/lib/tradePriority';
 import { Candle, Quote, Setup, WatchlistItem } from '@/types/trading';
@@ -114,13 +114,11 @@ function signalAt(
       detail: 'Backtest assumes regular-session daily bars.',
     },
   });
-  const usable = allResults.filter((r) => !SKIP_IN_BACKTEST.has(r.id));
-  const scored = scoreRuleResults(usable.length ? usable : allResults);
-  const hardFails = usable.filter((r) => r.verdict === 'fail').length;
-  return {
-    pass: scored.passRate >= MIN_PASS_RATE && hardFails === 0,
-    passRate: scored.passRate,
-  };
+  const { pass, passRate } = setupSignalPasses(setup, allResults, {
+    minPassRate: MIN_PASS_RATE,
+    skipCheckIds: SKIP_IN_BACKTEST,
+  });
+  return { pass, passRate };
 }
 
 function emptyResult(

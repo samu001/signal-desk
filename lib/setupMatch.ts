@@ -1,5 +1,5 @@
 import { SetupExpectancy } from '@/lib/expectancy';
-import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
+import { evaluateSetupRules, MIN_SETUP_PASS_RATE, setupSignalPasses } from '@/lib/rules';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { Candle, NewsItem, Quote, Setup, WatchlistItem } from '@/types/trading';
@@ -16,7 +16,6 @@ export type SetupMatch = {
   failedChecks: string[];
 };
 
-const MIN_PASS_RATE = 0.7;
 /** In Desk confirmation, skip session so after-hours research still can match setups. */
 const SKIP_FOR_DESK = new Set(['session_tradable']);
 
@@ -62,16 +61,20 @@ export function matchPlaybookSetups(input: {
       session,
     });
     const usable = results.filter((r) => !skip.has(r.id));
-    const scored = scoreRuleResults(usable.length ? usable : results);
-    const hardFails = usable.filter((r) => r.verdict === 'fail').length;
-    const pass = scored.passRate >= MIN_PASS_RATE && hardFails === 0;
+    const { pass, passRate } = setupSignalPasses(setup, results, {
+      minPassRate: MIN_SETUP_PASS_RATE,
+      skipCheckIds: skip,
+    });
     const passedChecks = usable.filter((r) => r.verdict === 'pass').map((r) => r.label);
-    const failedChecks = usable.filter((r) => r.verdict === 'fail').map((r) => r.label);
+    const failedChecks = usable
+      .filter((r) => r.verdict === 'fail' || r.verdict === 'unknown')
+      .filter((r) => r.verdict === 'fail' || r.id === setup.entryChecks[0])
+      .map((r) => r.label);
     return {
       setupId: setup.id,
       setupName: setup.name,
       pass,
-      passRate: scored.passRate,
+      passRate,
       expectancyScore: input.expectancy?.[setup.id]?.score ?? 0,
       passedChecks,
       failedChecks,
