@@ -124,8 +124,27 @@ export default function ParameterLabScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Parameter lab"
-          subtitle="Replays the same signals with different stop/target settings — one knob at a time, everything else frozen. A setting only counts as better if it wins across tickers AND across time, not just pooled."
+          subtitle="Replays the same signals with a small grid of complete exit packages (take-profit × stop policy). A setting only counts as better if it wins across tickers AND across time, not just pooled."
         />
+
+        <View style={styles.noteBox}>
+          <Text style={styles.noteTitle}>What this screen is (and isn't)</Text>
+          <Text style={styles.noteItem}>
+            • Research tool: it judges whether a stop/target setting is robustly better than
+            production. To keep the statistics honest it pools every setup's signals — no
+            same-day dedup, no stop cooldown, no max-open cap.
+          </Text>
+          <Text style={styles.noteItem}>
+            • Totals here are deliberately larger than reality and will not match Portfolio
+            backtest, which answers the other half of the question: what you actually keep
+            after capacity limits and trade picking.
+          </Text>
+          <Text style={styles.noteItem}>
+            • Workflow: if a setting earns a "Robust edge" badge here, validate it in
+            Portfolio backtest → Exit tuning (same basket) before adopting it. Flat or
+            fragile means keep production.
+          </Text>
+        </View>
 
         <Field
           label="Symbols (comma separated)"
@@ -249,6 +268,16 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   progressText: { color: palette.muted, fontSize: 13 },
+  noteBox: {
+    backgroundColor: palette.mist,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.line,
+    padding: spacing.md,
+    gap: 6,
+  },
+  noteTitle: { fontWeight: '700', color: palette.ink, fontSize: 13 },
+  noteItem: { color: palette.muted, fontSize: 12.5, lineHeight: 18 },
   results: { gap: spacing.md, marginTop: spacing.sm },
   meta: { color: palette.muted, fontSize: 12, lineHeight: 17 },
   knobCard: {

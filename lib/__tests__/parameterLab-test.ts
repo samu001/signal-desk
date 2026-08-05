@@ -85,17 +85,29 @@ describe('applyLevelTuning', () => {
 describe('runBacktest with levelTuning', () => {
   const candles = uptrendCandles();
 
-  it('keeps entries identical across targetR variants — only exits change', () => {
+  it('shared entries keep the same stop — only the target (and exit timing) differ', () => {
     const base = { setup: simpleTrend, symbol: 'UP', candles, spyCandles: demoCandles.SPY, sourceLabel: 't' };
     const prod = runBacktest(base);
     const tight = runBacktest({ ...base, levelTuning: { targetR: 1.0 } });
     const far = runBacktest({ ...base, levelTuning: { targetR: 3.0 } });
 
     expect(prod.trades.length).toBeGreaterThan(0);
-    expect(tight.trades.map((t) => t.entryTime)).toEqual(prod.trades.map((t) => t.entryTime));
-    expect(far.trades.map((t) => t.entryTime)).toEqual(prod.trades.map((t) => t.entryTime));
+    // Each variant runs its own position state machine: a stop-out triggers a
+    // cooldown while a target hit doesn't, so variants can be flat on different
+    // bars and entry sets can differ in BOTH directions. The stable guarantee is
+    // that any entry they share uses the identical (production-clamped) stop.
+    const prodByEntry = new Map(prod.trades.map((t) => [t.entryTime, t]));
+    let shared = 0;
+    for (const t of [...tight.trades, ...far.trades]) {
+      const ref = prodByEntry.get(t.entryTime);
+      if (ref) {
+        shared++;
+        expect(t.stop).toBeCloseTo(ref.stop, 6);
+      }
+    }
+    expect(shared).toBeGreaterThan(0);
 
-    // Closer targets are reached more often than far ones on the same entries.
+    // Closer targets are reached more often than far ones.
     const targetHits = (trades: typeof prod.trades) =>
       trades.filter((t) => t.reason === 'target').length;
     expect(targetHits(tight.trades)).toBeGreaterThanOrEqual(targetHits(far.trades));
@@ -161,21 +173,18 @@ describe('runParameterLab', () => {
     { symbol: 'MSFT', candles: demoCandles.MSFT },
   ];
 
-  it('sweeps one knob at a time with production pinned elsewhere', () => {
+  it('builds a small exit grid with production plus stop×target combos', () => {
     const variants = defaultParamVariants();
-    const knobs = new Set(variants.map((v) => v.knob));
-    expect(knobs).toEqual(new Set(['targetR', 'atrCapMult', 'pctCap']));
-    for (const knob of knobs) {
-      expect(variants.filter((v) => v.knob === knob && v.isProduction)).toHaveLength(1);
-    }
-    // Non-production variants touch exactly one knob.
-    for (const v of variants.filter((v) => !v.isProduction)) {
-      const keys = Object.keys(v.tuning ?? {});
-      expect(keys).toHaveLength(1);
+    expect(variants.every((v) => v.knob === 'exitGrid')).toBe(true);
+    expect(variants.filter((v) => v.isProduction)).toHaveLength(1);
+    const combos = variants.filter((v) => !v.isProduction);
+    expect(combos).toHaveLength(9);
+    for (const v of combos) {
+      expect(Object.keys(v.tuning ?? {}).sort()).toEqual(['atrCapMult', 'pctCap', 'targetR']);
     }
   });
 
-  it('runs the full sweep deterministically and returns per-knob verdicts', () => {
+  it('runs the full sweep deterministically and returns a verdict', () => {
     const input = {
       setups: defaultSetups,
       tickers,
@@ -185,7 +194,7 @@ describe('runParameterLab', () => {
     const a = runParameterLab(input);
     const b = runParameterLab(input);
 
-    expect(a.knobs.map((k) => k.knob)).toEqual(['targetR', 'atrCapMult', 'pctCap']);
+    expect(a.knobs.map((k) => k.knob)).toEqual(['exitGrid']);
     for (const knob of a.knobs) {
       expect(['edge', 'flat', 'fragile', 'insufficient']).toContain(knob.verdict.tone);
       expect(knob.variants.some((v) => v.variant.isProduction)).toBe(true);
@@ -207,20 +216,14 @@ describe('runParameterLab', () => {
     }
   });
 
-  it('targetR variants take the same entries as production (exits-only)', () => {
+  it('report renders the exit grid', () => {
     const result = runParameterLab({
       setups: defaultSetups,
       tickers,
       spyCandles: demoCandles.SPY,
       qqqCandles: demoCandles.QQQ,
     });
-    const targetKnob = result.knobs.find((k) => k.knob === 'targetR')!;
-    const prod = targetKnob.variants.find((v) => v.variant.isProduction)!;
-    if (prod.trades > 0) {
-      for (const v of targetKnob.variants) {
-        expect(v.trades).toBe(prod.trades);
-      }
-    }
     expect(formatLabReport(result)).toContain('Parameter lab');
+    expect(formatLabReport(result)).toContain('Exit grid');
   });
 });

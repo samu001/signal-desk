@@ -68,7 +68,7 @@ export function pickerLabel(id: SelectablePickerRuleId): string {
   if (id === 'rs20') return 'Relative strength';
   if (id === 'expectancy') return 'Setup expectancy';
   if (id === 'random') return `Random (seed ${ACTIVE_RANDOM_SEED})`;
-  return 'Current priority';
+  return 'Planned R:R + pass rate (Production)';
 }
 
 export type PickerVerdictTone = 'losing' | 'noise' | 'caution' | 'edge';
@@ -301,7 +301,7 @@ export function comparePickerRules(
   const current = applyPickerRule(trades, 'priority', maxOpen);
   results.push({
     id: 'priority',
-    label: 'Current priority',
+    label: 'Planned R:R + pass rate (Production)',
     description: 'Planned R:R + rule pass rate (what the app uses today).',
     trades: current.trades,
     skipped: current.skipped,

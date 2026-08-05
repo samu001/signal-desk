@@ -14,6 +14,12 @@ import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { PROFILE_MUST } from '@/lib/backtestProfile';
 import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
+import { ParamVerdictTone } from '@/lib/parameterLab';
+import {
+  bestParamVariantId,
+  ParameterSweepResult,
+  runParameterSweep,
+} from '@/lib/parameterSweep';
 import {
   applyPickerRule,
   bestSelectablePicker,
@@ -28,6 +34,7 @@ import {
 } from '@/lib/pickerLab';
 import { runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
 import { CapacityTrade } from '@/lib/portfolioCapacity';
+import { Candle } from '@/types/trading';
 
 const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
 
@@ -64,6 +71,8 @@ type PortfolioSummary = {
   concurrency: { max: number; median: number; avg: number; overCapPct: number };
   /** Same capped sim under alternative ranking rules (picker lab). */
   pickers: PickerRuleResult[];
+  /** Exit-parameter sweep under the same cap (parameter lab, portfolio-level). */
+  paramSweep: ParameterSweepResult | null;
   /** Usable trades kept so picker switches recompute without re-fetching. */
   usableTrades: PickerTrade[];
   maxOpen: number;
@@ -246,6 +255,20 @@ function concurrencyStats(allTrades: PortfolioTrade[], maxOpen: number) {
   };
 }
 
+function paramVerdictTone(tone: ParamVerdictTone): 'good' | 'warn' | 'bad' | 'neutral' {
+  if (tone === 'edge') return 'good';
+  if (tone === 'fragile') return 'warn';
+  if (tone === 'insufficient') return 'bad';
+  return 'neutral';
+}
+
+function paramVerdictLabel(tone: ParamVerdictTone): string {
+  if (tone === 'edge') return 'Robust edge';
+  if (tone === 'fragile') return 'Fragile — likely luck';
+  if (tone === 'insufficient') return 'Too few trades';
+  return 'Flat — keep production';
+}
+
 function verdictBannerStyles(tone: PickerVerdictTone) {
   if (tone === 'losing') {
     return {
@@ -281,10 +304,69 @@ export default function PortfolioBacktestScreen() {
   const [symbolSort, setSymbolSort] = useState<SymbolSort>('totalR_desc');
   /** Drives Max-open totals + capped per-symbol after a run (no re-fetch). */
   const [activePicker, setActivePicker] = useState<SelectablePickerRuleId>('rs20');
+  /** Active exit variant from the sweep (null = production / main run). */
+  const [activeParamId, setActiveParamId] = useState<string | null>(null);
+
+  /**
+   * The trade universe driving every stat below: the main run's trades when no
+   * exit variant is selected, or the tapped variant's uncapped trades from the
+   * sweep. Switching variants needs no re-run — the sweep stored each variant's
+   * full trade list (with RS20) at run time.
+   */
+  const activeParam = useMemo(() => {
+    if (activeParamId == null) return null;
+    const found = summary?.paramSweep?.uncappedByVariant.find(
+      (v) => v.variant.id === activeParamId
+    );
+    if (!found || found.variant.isProduction) return null;
+    return { id: found.variant.id, label: found.variant.label, trades: found.trades };
+  }, [summary, activeParamId]);
+
+  const effectiveTrades = useMemo<PickerTrade[]>(
+    () => activeParam?.trades ?? summary?.usableTrades ?? [],
+    [activeParam, summary]
+  );
+
+  const effectiveRows = useMemo<SymbolRow[]>(() => {
+    if (!summary) return [];
+    if (!activeParam) return summary.rows;
+    const bySymbol = new Map<string, { trades: number; wins: number; totalR: number }>();
+    for (const t of activeParam.trades) {
+      const cur = bySymbol.get(t.symbol) ?? { trades: 0, wins: 0, totalR: 0 };
+      cur.trades += 1;
+      if (t.r > 0) cur.wins += 1;
+      cur.totalR += t.r;
+      bySymbol.set(t.symbol, cur);
+    }
+    return summary.rows.map((row) => {
+      if (!isUsableForTotals(row.coverage)) return { ...row, trades: 0, winRate: null, totalR: 0 };
+      const c = bySymbol.get(row.symbol);
+      return {
+        ...row,
+        trades: c?.trades ?? 0,
+        winRate: c && c.trades ? c.wins / c.trades : null,
+        totalR: c?.totalR ?? 0,
+      };
+    });
+  }, [summary, activeParam]);
+
+  const effectiveAll = useMemo(() => {
+    const wins = effectiveTrades.filter((t) => t.r > 0).length;
+    return {
+      trades: effectiveTrades.length,
+      winRate: effectiveTrades.length ? wins / effectiveTrades.length : null,
+      totalR: effectiveTrades.reduce((a, t) => a + t.r, 0),
+    };
+  }, [effectiveTrades]);
+
+  const effectivePickers = useMemo<PickerRuleResult[]>(() => {
+    if (!activeParam) return summary?.pickers ?? [];
+    return comparePickerRules(activeParam.trades, summary?.maxOpen ?? 3);
+  }, [activeParam, summary]);
 
   const cappedView = useMemo(() => {
     if (!summary) return null;
-    const sim = applyPickerRule(summary.usableTrades, activePicker, summary.maxOpen);
+    const sim = applyPickerRule(effectiveTrades, activePicker, summary.maxOpen);
     return {
       capped: {
         trades: sim.trades,
@@ -294,20 +376,21 @@ export default function PortfolioBacktestScreen() {
         avgPriorityTaken: sim.avgPriorityTaken,
         avgPrioritySkipped: sim.avgPrioritySkipped,
       },
-      cappedRows: aggregateCappedRows(summary.rows, sim.taken, sim.skippedTrades),
+      cappedRows: aggregateCappedRows(effectiveRows, sim.taken, sim.skippedTrades),
       pickerName: pickerLabel(activePicker),
     };
-  }, [summary, activePicker]);
+  }, [summary, effectiveTrades, effectiveRows, activePicker]);
 
   const perSymbolRows = useMemo(() => {
     if (!summary || !cappedView) return [] as SymbolRow[];
-    const base = perSymbolMode === 'capped' ? cappedView.cappedRows : summary.rows;
+    const base = perSymbolMode === 'capped' ? cappedView.cappedRows : effectiveRows;
     return filterAndSortSymbolRows(base, coverageFilter, resultFilter, symbolSort);
-  }, [summary, cappedView, perSymbolMode, coverageFilter, resultFilter, symbolSort]);
+  }, [summary, cappedView, effectiveRows, perSymbolMode, coverageFilter, resultFilter, symbolSort]);
 
   const run = async () => {
     setLoading(true);
     setSummary(null);
+    setActiveParamId(null);
     try {
       // Persist account inputs so the rest of the app sizes positions the same way.
       const acct = Number(accountSize) > 0 ? Number(accountSize) : settings.accountSize;
@@ -374,6 +457,7 @@ export default function PortfolioBacktestScreen() {
 
       const rows: SymbolRow[] = [];
       const usableTrades: PickerTrade[] = [];
+      const candlesBySymbol = new Map<string, typeof spy.candles>();
       // 10 bps flat slippage: between megacap (5) and small-cap (20) script tiers.
       const costs = { slippagePct: 0.001, commissionPct: 0 };
 
@@ -403,6 +487,7 @@ export default function PortfolioBacktestScreen() {
           });
           continue;
         }
+        candlesBySymbol.set(symbol, bars.candles);
         const combined = runCombinedPlaybookBacktest({
           symbol,
           setups,
@@ -448,6 +533,30 @@ export default function PortfolioBacktestScreen() {
       setProgress('Comparing picker rules…');
       const pickers = comparePickerRules(usableTrades, cap);
       setActivePicker(bestSelectablePicker(pickers));
+
+      // Exit-parameter sweep over the same basket, under the same cap.
+      let paramSweep: ParameterSweepResult | null = null;
+      const sweepTickers = rows
+        .filter((r) => isUsableForTotals(r.coverage))
+        .map((r) => ({ symbol: r.symbol, candles: candlesBySymbol.get(r.symbol)! }))
+        .filter((t) => t.candles);
+      if (sweepTickers.length) {
+        setProgress('Sweeping exit parameters…');
+        paramSweep = runParameterSweep({
+          setups,
+          tickers: sweepTickers,
+          spyCandles: spy.candles,
+          qqqCandles: qqq.candles,
+          gates: PROFILE_MUST.gates,
+          costs,
+          stopCooldownBars: PROFILE_MUST.stopCooldownBars,
+          maxOpen: cap,
+        });
+        // Same as the picker: Active follows the best R on this window.
+        // Production stays identifiable by its label, not by the green row.
+        setActiveParamId(bestParamVariantId(paramSweep));
+      }
+
       setSummary({
         rows,
         benchmarks,
@@ -458,6 +567,7 @@ export default function PortfolioBacktestScreen() {
         },
         concurrency: concurrencyStats(usableTrades, cap),
         pickers,
+        paramSweep,
         usableTrades,
         maxOpen: cap,
         requestedDays,
@@ -531,7 +641,7 @@ export default function PortfolioBacktestScreen() {
           1R = ${riskPerTrade.toFixed(0)} per trade at these settings (saved to Settings on run).
         </Text>
 
-        <Button label={loading ? 'Running…' : 'Run portfolio backtest'} onPress={run} disabled={loading} />
+        <Button label={loading ? 'Running…' : 'Run portfolio backtest'} onPress={() => run()} disabled={loading} />
 
         {loading ? (
           <View style={styles.loading}>
@@ -552,19 +662,22 @@ export default function PortfolioBacktestScreen() {
             />
             <View style={styles.stats}>
               <View style={styles.stat}>
-                <Text style={styles.statLabel}>All signals (usable)</Text>
+                <Text style={styles.statLabel}>
+                  All signals{activeParam ? ` · ${activeParam.label}` : ' (usable)'}
+                </Text>
                 <Text style={styles.statValue}>
-                  {summary.all.totalR >= 0 ? '+' : ''}
-                  {summary.all.totalR.toFixed(1)}R
+                  {effectiveAll.totalR >= 0 ? '+' : ''}
+                  {effectiveAll.totalR.toFixed(1)}R
                 </Text>
                 <Text style={styles.statSub}>
-                  {summary.all.trades} trades ·{' '}
-                  {summary.all.winRate == null ? '—' : `${Math.round(summary.all.winRate * 100)}%`} win
+                  {effectiveAll.trades} trades ·{' '}
+                  {effectiveAll.winRate == null ? '—' : `${Math.round(effectiveAll.winRate * 100)}%`} win
                 </Text>
               </View>
               <View style={[styles.stat, styles.statPrimary]}>
                 <Text style={styles.statLabel}>
                   Max {summary.maxOpen} open · {cappedView.pickerName}
+                  {activeParam ? ` · ${activeParam.label}` : ''}
                 </Text>
                 <Text style={styles.statValue}>
                   {cappedView.capped.totalR >= 0 ? '+' : ''}
@@ -580,10 +693,10 @@ export default function PortfolioBacktestScreen() {
                 </Text>
               </View>
             </View>
-            {summary.all.totalR < 0 ? (
+            {effectiveAll.totalR < 0 ? (
               <View style={styles.losingBanner}>
                 <Text style={styles.losingBannerText}>
-                  All signals is negative ({summary.all.totalR.toFixed(1)}R) — do not treat the capped
+                  All signals is negative ({effectiveAll.totalR.toFixed(1)}R) — do not treat the capped
                   total as strategy edge. Read the honesty check in Picker lab.
                 </Text>
               </View>
@@ -620,15 +733,19 @@ export default function PortfolioBacktestScreen() {
 
             <SectionTitle
               title="Picker lab"
-              subtitle={`Same trades, same max-${summary.maxOpen} cap. Tap a rule to drive the realistic total. Read the honesty check before trusting any "Best" number.`}
+              subtitle={
+                activeParam
+                  ? `Same trades as the active exit variant (${activeParam.label}), same max-${summary.maxOpen} cap. Tap a rule to drive the realistic total.`
+                  : `Same trades, same max-${summary.maxOpen} cap. Tap a rule to drive the realistic total. Read the honesty check before trusting any "Best" number.`
+              }
             />
             {(() => {
-              const bestSelectableId = bestSelectablePicker(summary.pickers);
-              const best = summary.pickers.find((p) => p.id === bestSelectableId) ?? summary.pickers[0];
+              const bestSelectableId = bestSelectablePicker(effectivePickers);
+              const best = effectivePickers.find((p) => p.id === bestSelectableId) ?? effectivePickers[0];
               const verdict = interpretPickerLab({
-                pickers: summary.pickers,
-                allSignalsTotalR: summary.all.totalR,
-                allSignalsTrades: summary.all.trades,
+                pickers: effectivePickers,
+                allSignalsTotalR: effectiveAll.totalR,
+                allSignalsTrades: effectiveAll.trades,
               });
               const toneStyles = verdictBannerStyles(verdict.tone);
               return (
@@ -644,25 +761,8 @@ export default function PortfolioBacktestScreen() {
                     ))}
                   </View>
 
-                  <View style={styles.readGuide}>
-                    <Text style={styles.readGuideTitle}>How not to fool yourself</Text>
-                    <Text style={styles.readGuideItem}>
-                      1. Check All signals first. If that total is negative, ignore capped "wins."
-                    </Text>
-                    <Text style={styles.readGuideItem}>
-                      2. Compare Best to the Random seeds range — inside that band = noise.
-                    </Text>
-                    <Text style={styles.readGuideItem}>
-                      3. Auto-activating Best on this window is in-sample. Confirm on 800d or another
-                      basket before promoting a picker.
-                    </Text>
-                    <Text style={styles.readGuideItem}>
-                      4. On thin / volatile names, 10 bps model costs understate real friction.
-                    </Text>
-                  </View>
-
                   <View style={styles.pickerBox}>
-                    {summary.pickers.map((p) => {
+                    {effectivePickers.map((p) => {
                       const active = p.id === activePicker;
                       return (
                         <Pressable
@@ -677,17 +777,8 @@ export default function PortfolioBacktestScreen() {
                             <Text style={styles.symbolName}>{p.label}</Text>
                             <View style={styles.pillRow}>
                               {active ? <Pill label="Active" tone="good" /> : null}
-                              {p.id === best.id && summary.pickers.length > 1 ? (
-                                <Pill
-                                  label="Best (this window)"
-                                  tone={
-                                    verdict.tone === 'edge'
-                                      ? active
-                                        ? 'neutral'
-                                        : 'good'
-                                      : 'warn'
-                                  }
-                                />
+                              {p.id === best.id && effectivePickers.length > 1 ? (
+                                <Pill label="Best (this window)" tone="warn" />
                               ) : null}
                               <Text
                                 style={{
@@ -715,6 +806,79 @@ export default function PortfolioBacktestScreen() {
                 </View>
               );
             })()}
+
+            {summary.paramSweep ? (
+              <>
+                <SectionTitle
+                  title="Parameter lab"
+                  subtitle={`Same basket, same max-${summary.maxOpen} cap — only exits changed. Each row is a complete exit package (target + stop policy). Tap a row to drive every stat above — All signals, Max-open, Picker lab, and per-symbol — with that variant's trades; tap Production to return. This never changes production.`}
+                />
+                <View style={styles.pickerStack}>
+                  {summary.paramSweep.knobs.map(({ knob, variants, verdict }) => {
+                    const sorted = [...variants].sort((a, b) => b.totalR - a.totalR);
+                    const tone = paramVerdictTone(verdict.tone);
+                    return (
+                      <View key={knob} style={styles.paramCard}>
+                        <View style={styles.symbolHead}>
+                          <Text style={styles.paramTitle}>{verdict.headline}</Text>
+                          <Pill label={paramVerdictLabel(verdict.tone)} tone={tone} />
+                        </View>
+                        {sorted.map((v) => {
+                          const isWinner = verdict.winnerId === v.variant.id && sorted.length > 1;
+                          const isActive = v.variant.isProduction
+                            ? activeParam == null
+                            : activeParam?.id === v.variant.id;
+                          return (
+                            <View key={v.variant.id}>
+                              <Pressable
+                                onPress={() =>
+                                  setActiveParamId(v.variant.isProduction ? null : v.variant.id)
+                                }
+                                style={[
+                                  styles.pickerRow,
+                                  styles.pickerSelectable,
+                                  isActive && styles.pickerActive,
+                                ]}>
+                                <View style={styles.symbolHead}>
+                                  <Text style={styles.symbolName}>{v.variant.label}</Text>
+                                  <View style={styles.pillRow}>
+                                    {isActive ? <Pill label="Active" tone="good" /> : null}
+                                    {isWinner ? (
+                                      <Pill label="Best (this window)" tone="warn" />
+                                    ) : null}
+                                    <Text
+                                      style={{
+                                        fontFamily: 'SpaceMono',
+                                        fontSize: 15,
+                                        color: v.totalR >= 0 ? palette.leaf : palette.danger,
+                                      }}>
+                                      {v.totalR >= 0 ? '+' : ''}
+                                      {v.totalR.toFixed(1)}R
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Text style={styles.symbolMeta}>
+                                  {v.trades} taken
+                                  {v.winRate == null
+                                    ? ''
+                                    : ` · ${Math.round(v.winRate * 100)}% win`}
+                                  {v.avgR == null ? '' : ` · ${v.avgR >= 0 ? '+' : ''}${v.avgR.toFixed(2)}R avg`}
+                                </Text>
+                              </Pressable>
+                            </View>
+                          );
+                        })}
+                        {verdict.bullets.map((b) => (
+                          <Text key={b} style={styles.honestyBullet}>
+                            • {b}
+                          </Text>
+                        ))}
+                      </View>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
 
             {summary.warnings.length ? (
               <View style={styles.warnBox}>
@@ -908,7 +1072,7 @@ export default function PortfolioBacktestScreen() {
 
             <Text style={styles.filterMeta}>
               Showing {perSymbolRows.length} of{' '}
-              {(perSymbolMode === 'capped' ? cappedView.cappedRows : summary.rows).length} tickers
+              {(perSymbolMode === 'capped' ? cappedView.cappedRows : effectiveRows).length} tickers
               {coverageFilter !== 'all' || resultFilter !== 'all'
                 ? ' (filters applied)'
                 : ''}
@@ -1004,6 +1168,35 @@ const styles = StyleSheet.create({
   chipOn: {
     backgroundColor: palette.moss,
     borderColor: palette.moss,
+  },
+  chipBest: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: palette.moss,
+    borderColor: palette.moss,
+  },
+  chipProd: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.paper,
+  },
+  chipChosen: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: palette.moss,
+    backgroundColor: palette.mossSoft,
+  },
+  chipTextProd: {
+    color: palette.muted,
+    fontSize: 13,
+    fontWeight: '600',
   },
   chipText: {
     color: palette.ink,
@@ -1129,25 +1322,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
   },
-  readGuide: {
-    backgroundColor: palette.mist,
-    borderRadius: 12,
-    padding: spacing.md,
-    gap: 4,
+  pickerRow: { gap: 3 },
+  paramCard: {
+    backgroundColor: palette.white,
     borderWidth: 1,
     borderColor: palette.line,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 8,
   },
-  readGuideTitle: {
-    fontWeight: '700',
-    color: palette.ink,
-    marginBottom: 2,
-  },
-  readGuideItem: {
-    color: palette.muted,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  pickerRow: { gap: 3 },
+  paramTitle: { fontWeight: '700', color: palette.ink, fontSize: 14, lineHeight: 20, flex: 1 },
   pickerSelectable: {
     padding: spacing.sm,
     marginHorizontal: -spacing.sm,

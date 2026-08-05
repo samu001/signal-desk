@@ -22,7 +22,7 @@ import { PlaybookGateFlags } from '@/lib/backtestProfile';
 import { describeTuning, LevelTuning } from '@/lib/levelTuning';
 import { Candle, Setup } from '@/types/trading';
 
-export type ParamKnob = 'targetR' | 'atrCapMult' | 'pctCap';
+export type ParamKnob = 'exitGrid';
 
 export type ParamVariant = {
   id: string;
@@ -82,53 +82,45 @@ const MIN_TRADES = 10;
 const MIN_KNOB_TRADES = 30;
 
 function knobLabel(knob: ParamKnob): string {
-  if (knob === 'targetR') return 'Take-profit target';
-  if (knob === 'atrCapMult') return 'ATR stop cap';
-  return 'Percent stop cap';
+  return 'Exit grid';
 }
 
-/** One knob at a time; every other knob pinned at production. */
+function formatStopPolicyLabel(atr: number, pct: number): string {
+  return `min(${atr}×ATR, ${(pct * 100).toFixed(0)}%)`;
+}
+
+/**
+ * Small exit grid: production plus a few stop-policy × target combos.
+ * Each row is a complete exit package, so you can run and compare directly.
+ */
 export function defaultParamVariants(): ParamVariant[] {
-  const variants: ParamVariant[] = [];
-  const prod = (knob: ParamKnob): ParamVariant => ({
-    id: `${knob}:prod`,
-    knob,
-    label: 'Production',
-    tuning: undefined,
-    isProduction: true,
-  });
+  const variants: ParamVariant[] = [
+    {
+      id: 'exitGrid:prod',
+      knob: 'exitGrid',
+      label: 'Production (~2R · min(2.5×ATR, 8%))',
+      tuning: undefined,
+      isProduction: true,
+    },
+  ];
 
-  variants.push(prod('targetR'));
-  for (const r of [1.0, 1.5, 2.0, 2.5, 3.0]) {
-    variants.push({
-      id: `targetR:${r}`,
-      knob: 'targetR',
-      label: `Target ${r}R`,
-      tuning: { targetR: r },
-      isProduction: false,
-    });
-  }
+  const stops = [
+    { atr: 2.5, pct: 0.08 },
+    { atr: 2.0, pct: 0.08 },
+    { atr: 1.5, pct: 0.08 },
+  ];
+  const targets = [1.5, 2.0, 3.0];
 
-  variants.push(prod('atrCapMult'));
-  for (const k of [3.0, 2.5, 2.0, 1.5]) {
-    variants.push({
-      id: `atrCapMult:${k}`,
-      knob: 'atrCapMult',
-      label: `Stop cap ${k}×ATR`,
-      tuning: { atrCapMult: k },
-      isProduction: false,
-    });
-  }
-
-  variants.push(prod('pctCap'));
-  for (const p of [0.1, 0.08, 0.05]) {
-    variants.push({
-      id: `pctCap:${p}`,
-      knob: 'pctCap',
-      label: `Stop cap ${(p * 100).toFixed(0)}%`,
-      tuning: { pctCap: p },
-      isProduction: false,
-    });
+  for (const stop of stops) {
+    for (const targetR of targets) {
+      variants.push({
+        id: `exitGrid:atr${stop.atr}-pct${stop.pct}-t${targetR}`,
+        knob: 'exitGrid',
+        label: `${targetR}R · ${formatStopPolicyLabel(stop.atr, stop.pct)}`,
+        tuning: { targetR, atrCapMult: stop.atr, pctCap: stop.pct },
+        isProduction: false,
+      });
+    }
   }
 
   return variants;
@@ -172,7 +164,7 @@ function splitWindows(trades: BacktestTrade[]): VariantWindowResult[] {
   ];
 }
 
-function buildVerdict(knob: ParamKnob, results: ParamVariantResult[]): ParamKnobVerdict {
+export function buildVerdict(knob: ParamKnob, results: ParamVariantResult[]): ParamKnobVerdict {
   const productionId = `${knob}:prod`;
   const name = knobLabel(knob);
   const totalKnobTrades = results.reduce((a, r) => a + r.trades, 0);

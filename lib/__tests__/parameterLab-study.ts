@@ -72,5 +72,5 @@ it('STUDY: parameter lab across regimes', () => {
 
   // eslint-disable-next-line no-console
   console.log('\n' + formatLabReport(result));
-  expect(result.knobs.length).toBe(3);
+  expect(result.knobs.length).toBe(1);
 });

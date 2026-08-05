@@ -137,7 +137,7 @@ describe('interpretPickerLab', () => {
   ) => [
     {
       id: 'priority' as const,
-      label: 'Current priority',
+      label: 'Planned R:R + pass rate (Production)',
       description: '',
       trades: 10,
       skipped: 5,

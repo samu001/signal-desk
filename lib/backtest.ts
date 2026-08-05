@@ -10,6 +10,7 @@ import {
 import { DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
 import { atr, barsUpTo } from '@/lib/indicators';
 import { applyLevelTuning, describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
+import { clampLevelsRisk } from '@/lib/recommend';
 import { evaluateSetupRules, scoreRuleResults } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { plannedRewardToRisk, tradePriorityScore } from '@/lib/tradePriority';
@@ -365,8 +366,11 @@ export function runBacktestVariants(
     const next = candles[i + 1];
     const entryFill = applyLongEntryFill(next.open, costs);
     const atr14 = atr(history, 14);
+    // Match the Desk: cap risk at min(2.5×ATR, 8% of entry) before any tuning,
+    // so backtests measure the same stop geometry the cards actually trade.
+    const clamped = clampLevelsRisk(levels, atr14);
     for (const v of eligible) {
-      const tuned = applyLevelTuning(levels, entryFill, atr14, tunings[v]);
+      const tuned = applyLevelTuning(clamped, entryFill, atr14, tunings[v]);
       // Skip pathological fills where friction wipes the stop distance.
       if (entryFill <= tuned.stop) continue;
       const plannedRR = plannedRewardToRisk(entryFill, tuned.stop, tuned.target);

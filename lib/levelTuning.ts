@@ -3,8 +3,9 @@
  *
  * All knobs are EXITS-ONLY: they are applied after the entry signal fired and
  * never change which entries are taken, so a sweep isolates the effect of the
- * exit geometry. Undefined = production behavior (structure-based levels from
- * levelsForSetup, exactly as the live backtest runs today).
+ * exit geometry. Undefined = production behavior — the same risk-capped levels
+ * the Desk cards show (structural stop clamped to min(2.5×ATR, 8% of entry),
+ * ~2R target), exactly as the live backtest runs today.
  *
  * Deliberately absent: buy-zone placement. The zone feeds entry-rule checks
  * (in_buy_zone etc.), so tuning it changes WHICH trades happen, not just how
@@ -18,13 +19,14 @@ export type LevelTuning = {
   targetR?: number;
   /**
    * Tighten the stop to at most atrCapMult × ATR(14) below the fill
-   * (max with the structural stop — never loosens). Undefined = no ATR cap,
-   * which is current backtest behavior.
+   * (max with the structural stop — never loosens). Undefined = production,
+   * which already caps risk at min(2.5×ATR, 8% of entry) like the Desk cards.
    */
   atrCapMult?: number;
   /**
    * Tighten the stop to at most pctCap fraction below the fill (max with the
-   * structural stop — never loosens). Undefined = no percent cap.
+   * structural stop — never loosens). Undefined = production (no extra
+   * percent cap beyond the built-in 8%).
    */
   pctCap?: number;
 };

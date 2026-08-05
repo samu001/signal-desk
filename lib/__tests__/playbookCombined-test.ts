@@ -57,6 +57,48 @@ describe('runCombinedPlaybookBacktest', () => {
     expect(result.notes.some((n) => /cooldown/i.test(n))).toBe(true);
   });
 
+  it('threads exit tuning into every setup run and discloses it', () => {
+    const tuned = runCombinedPlaybookBacktest({
+      symbol: 'AAPL',
+      setups: defaultSetups,
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
+      sourceLabel: 'demo',
+      evalBars: 30,
+      levelTuning: { targetR: 1.0 },
+    });
+    const production = runCombinedPlaybookBacktest({
+      symbol: 'AAPL',
+      setups: defaultSetups,
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
+      sourceLabel: 'demo',
+      evalBars: 30,
+    });
+
+    expect(tuned.notes.some((n) => /Exit tuning active/i.test(n))).toBe(true);
+    expect(production.notes.some((n) => /Exit tuning active/i.test(n))).toBe(false);
+    // The disclosure comes from the engine itself, proving every setup got it.
+    for (const r of tuned.setupResults) {
+      expect(r.notes.some((n) => /tuning/i.test(n))).toBe(true);
+    }
+    // Tuning reached the fills: on entries both runs share, a 1R target caps
+    // planned R:R at ~1. (Entry sets can differ — a stop-out cools down while a
+    // target hit doesn't, so each run is flat on different bars.)
+    const prodByEntry = new Map(production.trades.map((t) => [t.entryTime, t]));
+    let shared = 0;
+    for (const t of tuned.trades) {
+      const ref = prodByEntry.get(t.entryTime);
+      if (ref) {
+        shared++;
+        expect(t.plannedRR).toBeLessThanOrEqual(1.01);
+      }
+    }
+    expect(shared).toBeGreaterThan(0);
+  });
+
   it('blocks entries inside the earnings blackout window', () => {
     const last = demoCandles.AAPL[demoCandles.AAPL.length - 1];
     const earnDay = new Date(last.time * 1000).toISOString().slice(0, 10);

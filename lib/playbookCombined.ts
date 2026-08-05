@@ -6,6 +6,7 @@ import {
   describeCostModel,
 } from '@/lib/backtestCosts';
 import { BacktestProfile, DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
+import { describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
 import { tradePriorityScore } from '@/lib/tradePriority';
 import { Candle, Setup } from '@/types/trading';
 
@@ -119,6 +120,12 @@ export function runCombinedPlaybookBacktest(input: {
   stopCooldownBars?: number;
   gates?: PlaybookGateFlags;
   profile?: BacktestProfile;
+  /**
+   * Exits-only stop/target overrides applied at the fill (see
+   * lib/levelTuning.ts). Threads into every per-setup run, so same-day dedup
+   * and picker priorities are recomputed from the tuned planned R:R.
+   */
+  levelTuning?: LevelTuning;
 }): CombinedPlaybookResult {
   const profile = input.profile;
   const costs = profile?.costs ?? input.costs ?? DEFAULT_BACKTEST_COSTS;
@@ -144,6 +151,7 @@ export function runCombinedPlaybookBacktest(input: {
       costs,
       stopCooldownBars,
       gates,
+      levelTuning: input.levelTuning,
     })
   );
 
@@ -191,6 +199,11 @@ export function runCombinedPlaybookBacktest(input: {
       }.`,
       `Overlapping same-day signals skipped: ${skippedOverlaps}.`,
       `Post-stop cooldown skips: ${skippedCooldown}.`,
+      ...(isProductionTuning(input.levelTuning)
+        ? []
+        : [
+            `Exit tuning active (exits-only): ${describeTuning(input.levelTuning)} — same entries; planned R:R and same-day/picker priorities recomputed from tuned levels.`,
+          ]),
     ],
     setupResults,
     trades,
