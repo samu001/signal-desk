@@ -88,6 +88,99 @@ The engine needs ≥ 60 daily bars (55 warmup + 5). With API keys set
 (`TIINGO_API_KEY`, `FMP_API_KEY`, `FINNHUB_API_KEY`), scripts prefer those
 sources; mind Tiingo's ~50 req/hour free-tier cap.
 
+## Portfolio backtest — honesty audit (Aug 2026)
+
+A code audit of the Portfolio backtest pipeline (`app/portfolio-backtest.tsx`,
+`lib/backtest.ts`, `lib/playbookCombined.ts`, `lib/portfolioCapacity.ts`,
+`lib/pickerLab.ts`, `lib/parameterSweep.ts`, providers). Verdict: the fill
+mechanics are conservative, but several layers around the engine inflate the
+numbers users actually see. This section records the gaps and the agreed fix
+plan, ranked by how much each distorts results.
+
+### Already honest (keep)
+
+- Signal on close → entry next-bar open; slippage applied against you on both fills.
+- Gap-aware exits (stop/target fills at the open when a bar gaps through);
+  same-bar stop+target resolves to **stop first**.
+- Benchmark history truncated by date (no future SPY/QQQ leak); slot ranking
+  never uses realized R; RS20/expectancy pickers are walk-forward only.
+- Picker lab carries a 25-seed random baseline and calls "best" rules noise
+  when they land inside the random range; negative pools are flagged as luck.
+
+### Fix now
+
+1. **Unadjusted prices on the FMP path (web default).** `lib/fmp.ts` maps raw
+   OHLC with no split/dividend adjustment, while `lib/tiingo.ts` uses adjusted
+   fields — so web and native can disagree, dividends drag long results, and a
+   split inside the window prints one catastrophic fake trade (gap-aware stop
+   fill on a −90% "bar"). The Yahoo proxy worker is out-of-repo; its adjustment
+   is unverified. Fix: derive adjusted OHLC for every provider, add a sanity
+   guard that flags absurd overnight gaps (>~40%) as data artifacts instead of
+   trades, and show adjusted/raw status per symbol in the coverage table.
+2. **Headline defaults to the in-sample maximum.** After each run the screen
+   auto-activates the best-R picker (`bestSelectablePicker`) *and* the best-R
+   exit variant (`bestParamVariantId`) chosen on the same window — a double
+   in-sample selection presented as the default number. Fix: default Active
+   picker and exit variant to **Production** after a run; keep "Best (this
+   window)" as a tappable comparison with the existing honesty banner.
+3. **Max-open cap leaks on transition days.** `simulateMaxOpenByPriority`
+   counts a position as open only while `exitTime > dayStart`, so a trade
+   exiting on day X frees its slot for a day-X entry — but entries fill at the
+   open, before intraday/close exits happen. The sim briefly holds more than
+   the cap and books extra trades. Fix: a position occupies its slot through
+   its exit day (free the slot the next day).
+4. **Same-symbol position stacking.** `selectBestTradesPerDay` de-dupes by
+   entry *day* only; different setups can pyramid the same ticker across a
+   trend, so All-signals counts one move several times and the capped book can
+   fill every slot with one symbol. Fix: enforce one open position per symbol
+   at the combined-playbook level (entry-time information — no lookahead);
+   make pyramiding an explicit toggle if ever wanted.
+5. **Missing-data checks fail open, and the portfolio run has no earnings
+   data.** `scoreRuleResults` drops `unknown` checks from the pass-rate
+   denominator, and the portfolio run passes no earnings calendar while the
+   Must profile disables the blackout — so nothing anywhere blocks entries into
+   earnings reports (live Desk would), and a setup whose defining check can't
+   be evaluated silently trades on its generic checks (e.g. Earnings Momentum,
+   currently retired, degrades to `above_sma_20` + `volume_expanding` if
+   re-enabled). Fix: mark each setup's core check required (unknown ⇒ no
+   signal), pass the same earnings dates the Desk uses, and revisit blackout
+   parity between backtest and live.
+
+### Next tier
+
+6. **Tiered slippage.** The app screen uses flat 10 bps for every symbol; the
+   deep script already tiers 5/10/20 bps by liquidity, and half the default
+   basket is the 20 bps tier. Reuse the script's tiering in the app run.
+7. **Dollar math ignores buying power.** `$ ≈ totalR × account × risk%` never
+   checks implied notional: tight stops mean big positions, and three open can
+   silently exceed the account (the tight-stop exit variants look best partly
+   because nobody pays their notional cost). Fix: compute implied notional per
+   trade and warn (or cap) when open exposure would need leverage.
+8. **Curated defaults.** The default symbol list and the active roster were
+   both selected on the history they are scored on (see `run-deep-backtest.ts`
+   universe comment above). Fix: label the default basket as
+   performance-picked, nudge users toward their own lists, and surface the
+   early/late window split more prominently as the in-app out-of-sample check.
+
+### Low priority
+
+9. Exits are not evaluated on the final bar (loop ends one bar early), so a
+   last-bar stop breach scores at the close via force-close instead of the stop.
+10. Post-stop cooldown windows use calendar days while labeled trading days
+    (inactive on the portfolio screen — Must sets cooldown to 0).
+
+### Until these land — the defensible read
+
+Run with Tiingo data (adjusted), read the **Production** exit row under the
+**Production (priority) picker** on a basket *you* chose, and treat everything
+the auto-selected "Best" combo adds as optimism until it survives a different
+window. The capped total remains the number to trust over All signals.
+
+Acceptance checks for the fixes: the same basket produces near-identical totals
+on web (FMP) and native (Tiingo); the default headline drops versus today;
+capped trade counts fall slightly (slot + per-symbol fixes); regression tests
+cover same-day slot handoff and same-symbol overlap.
+
 ## Tests
 
 ```bash
