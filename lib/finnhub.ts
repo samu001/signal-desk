@@ -1,3 +1,4 @@
+import { fetchAlphaVantageEarningsDates } from '@/lib/alphavantage';
 import {
   CandleApiOptions,
   CandleSource,
@@ -5,7 +6,7 @@ import {
   isLiveCandleSource,
   preferLiveCandleQuotes,
 } from '@/lib/candles';
-import { fetchFmpFundamentalsBundle } from '@/lib/fmp';
+import { fetchFmpEarningsDates, fetchFmpFundamentalsBundle } from '@/lib/fmp';
 import { createInflightMap } from '@/lib/ttlCache';
 import { fetchYahooDailyCandles } from '@/lib/yahoo';
 import { Candle, FundamentalSnapshot, NewsItem, Quote } from '@/types/trading';
@@ -197,48 +198,261 @@ export type EarningsWindow = {
   detail: string;
 };
 
-/** Historical earnings dates (YYYY-MM-DD) from Finnhub calendar for Playbook blackout. */
+/**
+ * Why an earnings calendar is missing or present.
+ * Callers pass `dates` into the blackout gate; `status` drives UI copy so
+ * no-key / fetch-fail / empty-window are not collapsed into one silent [].
+ */
+export type EarningsFetchStatus = 'ok' | 'empty' | 'no_key' | 'error';
+
+export type EarningsFetchResult = {
+  dates: string[];
+  status: EarningsFetchStatus;
+  detail: string;
+};
+
+/** Fail-closed gate copy when dates are empty (shared by rules + UI). */
+export function earningsFailClosedDetail(status: EarningsFetchStatus): string {
+  if (status === 'no_key') {
+    return 'No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed (add a key in Settings)';
+  }
+  if (status === 'error') {
+    return 'Earnings calendar fetch failed — blackout fails closed for this symbol';
+  }
+  if (status === 'empty') {
+    return 'Earnings calendar empty for this window — blackout fails closed (cannot verify clear)';
+  }
+  return 'Earnings calendar unavailable — blackout fails closed';
+}
+
+/** Roll up per-symbol fetches for a portfolio / multi-ticker banner. */
+export function summarizeEarningsFetches(
+  results: Iterable<Pick<EarningsFetchResult, 'status'>>
+): {
+  ok: number;
+  empty: number;
+  error: number;
+  noKey: number;
+  total: number;
+  /** True when any symbol will fail-closed without a usable calendar. */
+  anyBlocked: boolean;
+  headline: string;
+} {
+  let ok = 0;
+  let empty = 0;
+  let error = 0;
+  let noKey = 0;
+  let total = 0;
+  for (const r of results) {
+    total += 1;
+    if (r.status === 'ok') ok += 1;
+    else if (r.status === 'empty') empty += 1;
+    else if (r.status === 'error') error += 1;
+    else noKey += 1;
+  }
+  const blocked = empty + error + noKey;
+  let headline = '';
+  if (!total) {
+    headline = 'No earnings calendars requested.';
+  } else if (noKey === total) {
+    headline = `No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed on all ${total} symbols (almost no trades). Add a key in Settings.`;
+  } else if (ok === total) {
+    headline = `Earnings calendars loaded for all ${total} symbols.`;
+  } else if (ok === 0) {
+    headline = `No usable earnings calendars (${error} fetch error${error === 1 ? '' : 's'}, ${empty} empty) — blackout fails closed on every symbol.`;
+  } else {
+    headline = `Earnings: ${ok}/${total} calendars loaded — ${blocked} symbol${
+      blocked === 1 ? '' : 's'
+    } fail-closed (${[
+      error ? `${error} fetch error${error === 1 ? '' : 's'}` : '',
+      empty ? `${empty} empty` : '',
+      noKey ? `${noKey} no key` : '',
+    ]
+      .filter(Boolean)
+      .join(', ')}).`;
+  }
+  return {
+    ok,
+    empty,
+    error,
+    noKey,
+    total,
+    anyBlocked: blocked > 0,
+    headline,
+  };
+}
+
+/**
+ * Historical earnings dates (YYYY-MM-DD) for Playbook blackout.
+ * Chain: Finnhub → FMP → Alpha Vantage (last resort; free AV is ~25 calls/day).
+ */
 export async function fetchEarningsDates(
   symbol: string,
   apiKey: string | undefined,
   fromDate: string,
-  toDate: string
-): Promise<string[]> {
+  toDate: string,
+  fmpApiKey?: string,
+  alphaVantageApiKey?: string
+): Promise<EarningsFetchResult> {
   const upper = symbol.toUpperCase().trim();
-  if (!apiKey || !upper) return [];
+  const providers: Array<{
+    name: string;
+    run: () => Promise<Pick<EarningsFetchResult, 'dates' | 'status' | 'detail'>>;
+  }> = [];
 
+  if (apiKey?.trim()) {
+    providers.push({
+      name: 'Finnhub',
+      run: () => fetchFinnhubEarningsDates(upper, apiKey.trim(), fromDate, toDate),
+    });
+  }
+  if (fmpApiKey?.trim()) {
+    providers.push({
+      name: 'FMP',
+      run: () => fetchFmpEarningsDates(upper, fmpApiKey, fromDate, toDate),
+    });
+  }
+  if (alphaVantageApiKey?.trim()) {
+    providers.push({
+      name: 'Alpha Vantage',
+      run: () => fetchAlphaVantageEarningsDates(upper, alphaVantageApiKey, fromDate, toDate),
+    });
+  }
+
+  if (!upper || !providers.length) {
+    return {
+      dates: [],
+      status: 'no_key',
+      detail: earningsFailClosedDetail('no_key'),
+    };
+  }
+
+  const failures: string[] = [];
+  let sawError = false;
+  let sawEmpty = false;
+
+  for (let i = 0; i < providers.length; i++) {
+    const { name, run } = providers[i];
+    const result = await run();
+    if (result.status === 'ok' && result.dates.length) {
+      if (i === 0 && name === 'Finnhub') {
+        return {
+          dates: result.dates,
+          status: 'ok',
+          detail: result.detail.includes('via ')
+            ? result.detail
+            : `${result.dates.length} earnings date${
+                result.dates.length === 1 ? '' : 's'
+              } via Finnhub.`,
+        };
+      }
+      const prior = failures.length
+        ? ` after ${failures.map((f) => f.split(' ')[0]).join(' → ')}`
+        : providers[0].name !== name
+          ? ` (no ${providers
+              .slice(0, i)
+              .map((p) => p.name)
+              .join('/')})`
+          : '';
+      return {
+        dates: result.dates,
+        status: 'ok',
+        detail: `${result.dates.length} earnings date${
+          result.dates.length === 1 ? '' : 's'
+        } via ${name}${prior}.`,
+      };
+    }
+    if (result.status === 'error') sawError = true;
+    if (result.status === 'empty') sawEmpty = true;
+    failures.push(`${name}: ${result.detail}`);
+  }
+
+  const status: EarningsFetchStatus = sawError || !sawEmpty ? 'error' : 'empty';
+  return {
+    dates: [],
+    status,
+    detail: failures.join(' · '),
+  };
+}
+
+async function fetchFinnhubEarningsDates(
+  upper: string,
+  apiKey: string,
+  fromDate: string,
+  toDate: string
+): Promise<EarningsFetchResult> {
   try {
     const url = `${FINNHUB_BASE}/calendar/earnings?from=${fromDate}&to=${toDate}&symbol=${encodeURIComponent(upper)}&token=${encodeURIComponent(apiKey)}`;
     const res = await fetch(url);
-    if (!res.ok) return [];
+    if (!res.ok) {
+      const detail =
+        res.status === 429
+          ? `Finnhub earnings rate-limited (HTTP 429) — blackout fails closed for ${upper}.`
+          : `Finnhub earnings HTTP ${res.status} — blackout fails closed for ${upper}.`;
+      return { dates: [], status: 'error', detail };
+    }
     const data = (await res.json()) as {
       earningsCalendar?: Array<{ date?: string; symbol?: string }>;
+      error?: string;
     };
+    if (data.error) {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `Finnhub earnings error: ${String(data.error).slice(0, 120)} — blackout fails closed for ${upper}.`,
+      };
+    }
     const rows = (data.earningsCalendar ?? []).filter(
       (r) => (r.symbol ?? '').toUpperCase() === upper && r.date
     );
-    return [...new Set(rows.map((r) => String(r.date).slice(0, 10)))].sort();
-  } catch {
-    return [];
+    const dates = [...new Set(rows.map((r) => String(r.date).slice(0, 10)))].sort();
+    if (!dates.length) {
+      return {
+        dates: [],
+        status: 'empty',
+        detail: `Finnhub returned no earnings dates for ${upper} in ${fromDate}…${toDate} — blackout fails closed.`,
+      };
+    }
+    return {
+      dates,
+      status: 'ok',
+      detail: `${dates.length} earnings date${dates.length === 1 ? '' : 's'} via Finnhub.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      dates: [],
+      status: 'error',
+      detail: `Finnhub earnings request failed (${msg.slice(0, 80)}) — blackout fails closed for ${upper}.`,
+    };
   }
 }
 
-/** Next earnings date near today (Finnhub calendar). Blocks Desk buys inside ±1 day. */
+/** Next earnings date near today. Finnhub → FMP → Alpha Vantage. Blocks Desk buys inside ±1 day. */
 export async function fetchEarningsWindow(
   symbol: string,
-  apiKey?: string
+  apiKey?: string,
+  fmpApiKey?: string,
+  alphaVantageApiKey?: string
 ): Promise<EarningsWindow | null> {
   const upper = symbol.toUpperCase().trim();
-  if (!apiKey) return null;
+  if (!apiKey && !fmpApiKey && !alphaVantageApiKey) return null;
 
   try {
     const today = new Date();
     const from = new Date(today.getTime() - 2 * 86400000);
     const to = new Date(today.getTime() + 14 * 86400000);
     const fmt = (d: Date) => d.toISOString().slice(0, 10);
-    const dates = await fetchEarningsDates(upper, apiKey, fmt(from), fmt(to));
-    if (!dates.length) return null;
-    const next = dates[0];
+    const result = await fetchEarningsDates(
+      upper,
+      apiKey,
+      fmt(from),
+      fmt(to),
+      fmpApiKey,
+      alphaVantageApiKey
+    );
+    if (result.status !== 'ok' || !result.dates.length) return null;
+    const next = result.dates[0];
     const earnDate = new Date(`${next}T12:00:00Z`);
     const daysUntil = Math.round((earnDate.getTime() - today.getTime()) / 86400000);
     const blocked = daysUntil >= -1 && daysUntil <= 1;
@@ -397,7 +611,12 @@ async function fetchMarketBundleUncached(
 
   const earningsEntries = await Promise.all(
     equitySymbols.map(async (symbol) => {
-      const window = await fetchEarningsWindow(symbol, apiKey);
+      const window = await fetchEarningsWindow(
+        symbol,
+        apiKey,
+        options?.fmpApiKey,
+        options?.alphaVantageApiKey
+      );
       return [symbol, window?.date ? [window.date] : []] as const;
     })
   );

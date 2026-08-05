@@ -98,6 +98,14 @@ export type AppSettings = {
   /** Short compact history fallback (~100 bars). */
   alphaVantageApiKey: string;
   /**
+   * Cloudflare Worker base URL for Tiingo EOD on web (no trailing slash).
+   * Example: https://edge-stock-tiingo.xxx.workers.dev
+   * Token stays in the Worker (TIINGO_TOKEN); optional PROXY_TOKEN via tiingoProxyToken.
+   */
+  tiingoProxyUrl: string;
+  /** Optional Worker auth token (PROXY_TOKEN) for the Tiingo proxy. */
+  tiingoProxyToken: string;
+  /**
    * Cloudflare Worker base URL for Yahoo EOD (no trailing slash).
    * Example: https://signal-desk-bars.xxx.workers.dev
    */

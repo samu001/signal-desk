@@ -9,7 +9,7 @@ import {
   persistProviderCooldown,
 } from '@/lib/candleDiskCache';
 import { fetchFmpDailyCandles } from '@/lib/fmp';
-import { fetchTiingoDailyCandles } from '@/lib/tiingo';
+import { fetchTiingoDailyCandles, fetchTiingoDailyCandlesViaProxy } from '@/lib/tiingo';
 import { fetchYahooDailyCandles } from '@/lib/yahoo';
 import { createInflightMap, createTtlCache } from '@/lib/ttlCache';
 import { Candle } from '@/types/trading';
@@ -41,7 +41,7 @@ export type CandleSource =
 /** Split/dividend adjustment of a bar series, when known. */
 export type AdjustmentStatus = 'adjusted' | 'raw' | 'unknown';
 
-/** An overnight move big enough to look like an unadjusted split artifact. */
+/** Overnight moves beyond ±threshold vs prior close — split-artifact guard. */
 export type SuspectGap = { date: string; pct: number };
 
 export type CandleFetchResult = {
@@ -50,7 +50,7 @@ export type CandleFetchResult = {
   warnings: string[];
   /** How the bars are adjusted. Derived from source for older cache entries. */
   adjusted?: AdjustmentStatus;
-  /** Overnight moves beyond ±40% — data artifacts on raw/unknown feeds. */
+  /** Overnight moves beyond SUSPECT_GAP_THRESHOLD — artifacts on raw/unknown feeds. */
   suspectGaps?: SuspectGap[];
 };
 
@@ -72,13 +72,18 @@ const ADJUSTMENT_BY_SOURCE: Partial<Record<CandleSource, AdjustmentStatus>> = {
   alphavantage: 'raw',
 };
 
-export const SUSPECT_GAP_THRESHOLD = 0.4;
+/**
+ * Catch common unadjusted splits on raw/unknown feeds:
+ * 2:1 (−50%), 3:2 (−33%), 4:3 (−25%). Real single-day moves past ~22% are rare;
+ * false positives only exclude a ticker from the portfolio score (conservative).
+ * 5:4 (−20%) still slips under — rare enough to accept.
+ */
+export const SUSPECT_GAP_THRESHOLD = 0.22;
 
 /**
  * Overnight moves beyond ±threshold vs the prior close (checked on both the
- * open and the close). Real one-day moves this size are rare; on raw or
- * unknown-adjustment feeds they are usually unadjusted splits (2:1 = −50%,
- * 10:1 = −90%), which would otherwise print catastrophic fake trades.
+ * open and the close). On raw or unknown-adjustment feeds these are usually
+ * unadjusted splits, which would otherwise print catastrophic fake trades.
  */
 export function detectSuspectGaps(
   candles: Candle[],
@@ -105,6 +110,10 @@ function isSuspectGapNote(w: string): boolean {
   return /possible unadjusted split/i.test(w);
 }
 
+function thresholdPctLabel(threshold = SUSPECT_GAP_THRESHOLD): string {
+  return `±${Math.round(threshold * 100)}%`;
+}
+
 /**
  * Attach adjustment status + suspect-gap scan to a resolved result (fresh or
  * cached). Warns only when big gaps land on non-adjusted bars — on adjusted
@@ -118,7 +127,7 @@ function withDataQuality(symbol: string, result: CandleFetchResult): CandleFetch
   if (suspectGaps.length && adjusted !== 'adjusted') {
     const worst = suspectGaps.reduce((a, b) => (Math.abs(b.pct) > Math.abs(a.pct) ? b : a));
     warnings.push(
-      `${symbol}: ${suspectGaps.length} overnight move(s) beyond ±40% on ${
+      `${symbol}: ${suspectGaps.length} overnight move(s) beyond ${thresholdPctLabel()} on ${
         adjusted === 'raw' ? 'RAW unadjusted' : 'unknown-adjustment'
       } ${result.source} bars (worst ${worst.pct >= 0 ? '+' : ''}${(worst.pct * 100).toFixed(
         0
@@ -134,6 +143,9 @@ function noDataResult(warnings: string[]): CandleFetchResult {
 
 export type CandleApiOptions = {
   tiingoApiKey?: string;
+  /** Cloudflare Worker for Tiingo on web (CORS bypass). */
+  tiingoProxyUrl?: string;
+  tiingoProxyToken?: string;
   fmpApiKey?: string;
   finnhubApiKey?: string;
   alphaVantageApiKey?: string;
@@ -211,6 +223,7 @@ function candleCacheKey(symbol: string, options?: CandleApiOptions): string {
   const upper = symbol.toUpperCase().trim();
   const flags = [
     options?.tiingoApiKey ? 't' : '-',
+    options?.tiingoProxyUrl ? 'tp' : '-',
     options?.fmpApiKey ? 'f' : '-',
     options?.yahooProxyUrl ? 'y' : '-',
     options?.finnhubApiKey ? 'h' : '-',
@@ -356,9 +369,11 @@ async function fetchFinnhubCandles(
 
 /**
  * Resolve daily bars for scoring/backtests.
- * Prefer long clean EOD first:
- * Web: FMP → Yahoo proxy → Finnhub → Alpha Vantage → none (Tiingo skipped for CORS).
- * Native: Tiingo → FMP → Yahoo proxy → Finnhub → Alpha Vantage → none.
+ * Honest adjusted EOD order (web + native):
+ *   Tiingo (proxy on web) → Yahoo proxy → FMP dividend-adjusted → Finnhub → AV → none.
+ * After Tiingo 429, skip FMP (protect free caps) but still try Yahoo.
+ * After FMP 429, do not stack a raw FMP call; cool FMP for the rest of the run.
+ * Soft raw/unknown kept for Desk; portfolio scoring excludes them.
  * Never invents synthetic bars. Live successes are TTL-cached (12h); identical
  * in-flight requests coalesce.
  */
@@ -378,28 +393,55 @@ async function fetchDailyCandlesResolvedUncached(
   const upper = symbol.toUpperCase().trim();
   const days = options?.days ?? 800;
   const warnings: string[] = [];
-  // Tiingo's browser API is CORS-blocked; on web prefer FMP first and skip Tiingo.
+  // Tiingo direct API is CORS-blocked in browsers; on web use Tiingo proxy when set.
   const onWeb = Platform.OS === 'web';
   /** Once any paid/free EOD source 429s, stop cascading into Alpha Vantage. */
   let hitRateLimit = false;
 
   const tryTiingo = async () => {
-    if (!options?.tiingoApiKey) {
-      warnings.push('No Tiingo token — skipping best free long-history EOD source.');
-      return null;
-    }
-    if (onWeb) {
-      warnings.push(
-        'Tiingo skipped on web (CORS) — token ignored here; use FMP for browser EOD, or Expo Go / native for Tiingo.'
-      );
-      return null;
-    }
     const cool = providerCooling('tiingo');
     if (cool) {
       warnings.push(`Tiingo on cooldown after rate limit — ${cool}`);
       hitRateLimit = true;
       return null;
     }
+
+    const proxyUrl = options?.tiingoProxyUrl?.trim();
+    if (proxyUrl) {
+      const tiingo = await fetchTiingoDailyCandlesViaProxy(
+        upper,
+        proxyUrl,
+        days,
+        options?.tiingoProxyToken
+      );
+      pushProviderNote(warnings, tiingo.warning);
+      if (markProviderCooldown('tiingo', tiingo.warning)) hitRateLimit = true;
+      if (tiingo.candles.length >= 60) {
+        return {
+          candles: tiingo.candles,
+          source: 'tiingo' as const,
+          warnings,
+          adjusted: 'adjusted' as const,
+        };
+      }
+      if (tiingo.candles.length > 0) {
+        warnings.push(`Tiingo proxy only returned ${tiingo.candles.length} bars; trying fallbacks.`);
+      }
+      return null;
+    }
+
+    if (onWeb) {
+      warnings.push(
+        'No Tiingo proxy URL — skipped on web (CORS). Add Tiingo proxy URL in Settings (e.g. edge-stock-tiingo Worker).'
+      );
+      return null;
+    }
+
+    if (!options?.tiingoApiKey) {
+      warnings.push('No Tiingo token — skipping best free long-history EOD source.');
+      return null;
+    }
+
     const tiingo = await fetchTiingoDailyCandles(upper, options.tiingoApiKey, days);
     pushProviderNote(warnings, tiingo.warning);
     if (markProviderCooldown('tiingo', tiingo.warning)) hitRateLimit = true;
@@ -459,12 +501,14 @@ async function fetchDailyCandlesResolvedUncached(
     pushProviderNote(warnings, yahoo.warning);
     markProviderCooldown('yahoo', yahoo.warning);
     if (yahoo.candles.length >= 60) {
-      // Proxy worker is out-of-repo; whether its bars are adjusted is unverified.
+      // Prefer proxy-reported adjustment (adjclose-scaled Worker). Older workers
+      // omit the field → unknown.
+      const adjusted = yahoo.adjusted === 'adjusted' ? ('adjusted' as const) : ('unknown' as const);
       return {
         candles: yahoo.candles,
         source: 'yahoo' as const,
         warnings,
-        adjusted: 'unknown' as const,
+        adjusted,
       };
     }
     if (yahoo.candles.length > 0) {
@@ -473,34 +517,67 @@ async function fetchDailyCandlesResolvedUncached(
     return null;
   };
 
-  // Web: FMP → Yahoo → …. Native: Tiingo → FMP → Yahoo → ….
-  // Yahoo is tried even after FMP/Tiingo 429 (does not burn those quotas).
-  if (onWeb) {
-    const fmpHit = await tryFmp();
-    if (fmpHit) return fmpHit;
-    await tryTiingo(); // records the CORS skip note only
-  } else {
-    const tiingoHit = await tryTiingo();
-    if (tiingoHit) return tiingoHit;
-    if (!hitRateLimit) {
-      const fmpHit = await tryFmp();
-      if (fmpHit) return fmpHit;
-    } else {
-      warnings.push('Skipping FMP after upstream rate limit — protecting free-tier caps.');
-    }
-  }
+  /**
+   * Prefer adjusted EOD. Non-adjusted hits are kept as soft fallbacks so Desk /
+   * charts still get bars when every provider is raw/unknown — portfolio
+   * scoring excludes those later.
+   * Rank: adjusted > unknown > raw.
+   */
+  type SoftHit = CandleFetchResult;
+  let softFallback: SoftHit | null = null;
+  /** Tiingo 429 → skip FMP this ticker/run path (Yahoo is free of FMP quota). */
+  let tiingoRateLimited = false;
 
-  const yahooHit = await tryYahoo();
+  const rankAdjusted = (a: AdjustmentStatus | undefined) =>
+    a === 'adjusted' ? 2 : a === 'unknown' ? 1 : 0;
+
+  const consider = (hit: SoftHit | null): SoftHit | null => {
+    if (!hit) return null;
+    if (hit.adjusted === 'adjusted') return hit;
+    if (
+      !softFallback ||
+      rankAdjusted(hit.adjusted) > rankAdjusted(softFallback.adjusted)
+    ) {
+      softFallback = hit;
+      const label =
+        hit.adjusted === 'raw'
+          ? 'RAW unadjusted'
+          : 'unverified adjustment';
+      warnings.push(
+        `${hit.source} returned ${label} bars — preferring an adjusted source if available.`
+      );
+    }
+    return null;
+  };
+
+  // Honest EOD order (web + native): Tiingo → Yahoo → FMP adjusted.
+  // After Tiingo 429, skip FMP (protect free caps) but still try Yahoo.
+  const tiingoHit = await tryTiingo();
+  if (tiingoHit) return tiingoHit;
+  if (hitRateLimit) tiingoRateLimited = true;
+
+  const yahooHit = consider(await tryYahoo());
   if (yahooHit) return yahooHit;
+
+  if (tiingoRateLimited) {
+    warnings.push('Skipping FMP after Tiingo rate limit (protect free FMP caps).');
+  } else {
+    const fmpHit = consider(await tryFmp());
+    if (fmpHit) return fmpHit;
+  }
 
   if (hitRateLimit) {
     warnings.push(
       'Skipping Finnhub/Alpha Vantage candle fallbacks after rate limit (avoids burning the ~25/day AV cap).'
     );
+    if (softFallback) return softFallback;
     warnings.push(
-      options?.tiingoApiKey || options?.fmpApiKey || options?.yahooProxyUrl
-        ? 'No data — live EOD unavailable until provider cooldown ends (or check Yahoo proxy in Settings).'
-        : 'No data — add Tiingo/FMP keys or a Yahoo proxy URL in Settings for real bars.'
+      options?.tiingoApiKey ||
+      options?.tiingoProxyUrl ||
+      options?.fmpApiKey ||
+      options?.yahooProxyUrl
+        ? 'No data — live EOD unavailable until provider cooldown ends (or check Yahoo/Tiingo proxy in Settings).'
+        : 'No data — add Tiingo proxy / FMP keys or a Yahoo proxy URL in Settings for real bars.'
     );
     return noDataResult(warnings);
   }
@@ -515,9 +592,15 @@ async function fetchDailyCandlesResolvedUncached(
         if (fh.warning) warnings.push(fh.warning);
         if (markProviderCooldown('finnhub', fh.warning)) hitRateLimit = true;
         if (fh.candles.length >= 60) {
-          return { candles: fh.candles, source: 'finnhub', warnings, adjusted: 'raw' };
+          const hit = consider({
+            candles: fh.candles,
+            source: 'finnhub',
+            warnings,
+            adjusted: 'raw',
+          });
+          if (hit) return hit;
         }
-        if (fh.candles.length > 0) {
+        if (fh.candles.length > 0 && fh.candles.length < 60) {
           warnings.push(`Finnhub only returned ${fh.candles.length} bars; trying fallbacks.`);
         }
       } catch {
@@ -537,9 +620,15 @@ async function fetchDailyCandlesResolvedUncached(
       if (av.warning) warnings.push(av.warning);
       markProviderCooldown('alphavantage', av.warning);
       if (av.candles.length >= 60) {
-        return { candles: av.candles, source: 'alphavantage', warnings, adjusted: 'raw' };
+        const hit = consider({
+          candles: av.candles,
+          source: 'alphavantage',
+          warnings,
+          adjusted: 'raw',
+        });
+        if (hit) return hit;
       }
-      if (av.candles.length > 0) {
+      if (av.candles.length > 0 && av.candles.length < 60) {
         warnings.push(
           `Alpha Vantage only returned ${av.candles.length} bars; not enough history.`
         );
@@ -547,10 +636,15 @@ async function fetchDailyCandlesResolvedUncached(
     }
   }
 
+  if (softFallback) return softFallback;
+
   warnings.push(
-    options?.tiingoApiKey || options?.fmpApiKey || options?.yahooProxyUrl
+    options?.tiingoApiKey ||
+    options?.tiingoProxyUrl ||
+    options?.fmpApiKey ||
+    options?.yahooProxyUrl
       ? 'No data — all live EOD sources failed (see Tiingo/FMP/Yahoo warnings above).'
-      : 'No data — add Tiingo/FMP keys or a Yahoo proxy URL in Settings for real bars.'
+      : 'No data — add Tiingo proxy / FMP keys or a Yahoo proxy URL in Settings for real bars.'
   );
   return noDataResult(warnings);
 }

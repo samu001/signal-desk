@@ -5,9 +5,14 @@ import {
   DEFAULT_BACKTEST_COSTS,
   DEFAULT_STOP_COOLDOWN_BARS,
   describeCostModel,
+  gapAwareLongStopRaw,
+  gapAwareLongTargetRaw,
   netLongR,
+  overnightBorrowDragR,
+  resolveCosts,
 } from '@/lib/backtestCosts';
 import { DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import { atr, barsUpTo } from '@/lib/indicators';
 import { applyLevelTuning, describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
 import { clampLevelsRisk } from '@/lib/recommend';
@@ -81,6 +86,7 @@ function signalAt(
     qqqCandles?: Candle[];
     sectorCandles?: Candle[];
     earningsDates?: string[];
+    earningsCalendarStatus?: EarningsFetchStatus;
     gates?: PlaybookGateFlags;
   }
 ): { pass: boolean; passRate: number } {
@@ -105,6 +111,7 @@ function signalAt(
     sectorCandles: options?.sectorCandles,
     news: [],
     earningsDates: options?.earningsDates,
+    earningsCalendarStatus: options?.earningsCalendarStatus,
     asOfTime: candle.time,
     gates: options?.gates ?? DEFAULT_LIVE_GATES,
     session: {
@@ -165,6 +172,8 @@ export function runBacktest(input: {
   sectorCandles?: Candle[];
   /** YYYY-MM-DD earnings dates for ±1 day blackout. */
   earningsDates?: string[];
+  /** Distinguishes no-key / fetch-error / empty when dates are []. */
+  earningsCalendarStatus?: EarningsFetchStatus;
   costs?: BacktestCostModel;
   /** Trading days to wait after a stop-out before re-entering this setup. */
   stopCooldownBars?: number;
@@ -199,6 +208,7 @@ export function runBacktestVariants(
     qqqCandles?: Candle[];
     sectorCandles?: Candle[];
     earningsDates?: string[];
+    earningsCalendarStatus?: EarningsFetchStatus;
     costs?: BacktestCostModel;
     stopCooldownBars?: number;
     gates?: PlaybookGateFlags;
@@ -283,25 +293,40 @@ export function runBacktestVariants(
     exitTime: number,
     exitFill: number,
     reason: BacktestTrade['reason']
-  ): BacktestTrade => ({
-    entryTime: openPos.entryTime,
-    exitTime,
-    entry: openPos.entry,
-    exit: exitFill,
-    stop: openPos.stop,
-    target: openPos.target,
-    rMultiple: netLongR({
+  ): BacktestTrade => {
+    const holdCalendarDays = Math.max(
+      0,
+      Math.round((exitTime - openPos.entryTime) / 86400)
+    );
+    const borrowDragR = overnightBorrowDragR({
       entryFill: openPos.entry,
-      exitFill,
       stop: openPos.stop,
-    }),
-    reason,
-    passRate: openPos.passRate,
-    plannedRR: openPos.plannedRR,
-    priorityScore: openPos.priorityScore,
-  });
+      holdCalendarDays,
+      costs,
+    });
+    return {
+      entryTime: openPos.entryTime,
+      exitTime,
+      entry: openPos.entry,
+      exit: exitFill,
+      stop: openPos.stop,
+      target: openPos.target,
+      rMultiple: netLongR({
+        entryFill: openPos.entry,
+        exitFill,
+        stop: openPos.stop,
+        borrowDragR,
+      }),
+      reason,
+      passRate: openPos.passRate,
+      plannedRR: openPos.plannedRR,
+      priorityScore: openPos.priorityScore,
+    };
+  };
 
-  for (let i = loopStart; i < candles.length - 1; i++) {
+  const gapBeyond = resolveCosts(costs).gapBeyondFraction;
+
+  for (let i = loopStart; i < candles.length; i++) {
     // Eligibility snapshot BEFORE exits: only variants flat at the top of this
     // bar may act on this bar's signal (mirrors single-run semantics).
     const eligible: number[] = [];
@@ -321,16 +346,15 @@ export function runBacktestVariants(
         let rawExit = bar.close;
         let reason: BacktestTrade['reason'] = 'time';
         if (hitStop && hitTarget) {
-          // Conservative: assume stop first on same bar. Gap-aware: a bar that
-          // opens through the stop fills at the open, not the stop price.
-          rawExit = Math.min(open.stop, bar.open);
+          // Conservative: assume stop first on same bar. Gap-aware + gap-beyond
+          // when the open gaps through the stop.
+          rawExit = gapAwareLongStopRaw(open.stop, bar.open, gapBeyond);
           reason = 'stop';
         } else if (hitStop) {
-          rawExit = Math.min(open.stop, bar.open);
+          rawExit = gapAwareLongStopRaw(open.stop, bar.open, gapBeyond);
           reason = 'stop';
         } else if (hitTarget) {
-          // Favorable gaps fill at the open too.
-          rawExit = Math.max(open.target, bar.open);
+          rawExit = gapAwareLongTargetRaw(open.target, bar.open);
           reason = 'target';
         }
         const exitFill = applyLongExitFill(rawExit, costs);
@@ -342,6 +366,8 @@ export function runBacktestVariants(
       }
     }
 
+    // No new entries on the last bar — there is no next open to fill.
+    if (i >= candles.length - 1) continue;
     if (!eligible.length) continue;
 
     // Point-in-time benchmark truncation by DATE, not index: index slicing
@@ -356,6 +382,7 @@ export function runBacktestVariants(
       qqqCandles: qqqHistory,
       sectorCandles: sectorHistory,
       earningsDates: input.earningsDates,
+      earningsCalendarStatus: input.earningsCalendarStatus,
       gates,
     });
     if (!pass) continue;
@@ -385,7 +412,7 @@ export function runBacktestVariants(
     }
   }
 
-  // Force-close any open trade on last bar.
+  // Force-close any open trade that survived the last bar without stop/target/time.
   const last = candles[candles.length - 1];
   for (let v = 0; v < tunings.length; v++) {
     const open = opens[v];

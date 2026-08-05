@@ -55,6 +55,8 @@ export default function BacktestScreen() {
       // Short fetch: ~140 calendar days ≈ SMA50 warmup + last ~30 trading days to score.
       const keys = {
         tiingoApiKey: settings.tiingoApiKey || undefined,
+        tiingoProxyUrl: settings.tiingoProxyUrl || undefined,
+        tiingoProxyToken: settings.tiingoProxyToken || undefined,
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
@@ -111,17 +113,17 @@ export default function BacktestScreen() {
       const to = last
         ? new Date(last * 1000 + 2 * 86400000).toISOString().slice(0, 10)
         : new Date().toISOString().slice(0, 10);
-      const earningsDates = await fetchEarningsDates(
+      const earnings = await fetchEarningsDates(
         upper,
         settings.finnhubApiKey || undefined,
         from,
-        to
+        to,
+        settings.fmpApiKey || undefined,
+        settings.alphaVantageApiKey || undefined
       );
 
-      if (!earningsDates.length && settings.finnhubApiKey) {
-        warnings.push('No earnings dates returned for this window (blackout unchecked).');
-      } else if (!settings.finnhubApiKey) {
-        warnings.push('Add a Finnhub key to enable earnings blackout in backtests.');
+      if (earnings.status !== 'ok') {
+        warnings.push(earnings.detail);
       }
 
       if (mode === 'combined') {
@@ -132,7 +134,8 @@ export default function BacktestScreen() {
             candles: useSymbol,
             spyCandles: useSpy,
             qqqCandles: useQqq,
-            earningsDates,
+            earningsDates: earnings.dates,
+            earningsCalendarStatus: earnings.status,
             sourceLabel: symbolBars.source,
             warnings,
             evalBars: 30,
@@ -146,7 +149,8 @@ export default function BacktestScreen() {
             candles: useSymbol,
             spyCandles: useSpy,
             qqqCandles: useQqq,
-            earningsDates,
+            earningsDates: earnings.dates,
+            earningsCalendarStatus: earnings.status,
             sourceLabel: symbolBars.source,
             warnings,
             evalBars: 30,

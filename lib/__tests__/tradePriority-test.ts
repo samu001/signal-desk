@@ -1,6 +1,8 @@
 import {
   plannedRewardToRisk,
   tradePriorityScore,
+  compareByPriorityThenFifo,
+  stableTieBreakKey,
 } from '@/lib/tradePriority';
 import { simulateMaxOpenByPriority } from '@/lib/portfolioCapacity';
 import { selectBestTradesPerDay, CombinedPlaybookTrade } from '@/lib/playbookCombined';
@@ -16,7 +18,28 @@ describe('tradePriority', () => {
     const high = tradePriorityScore(2.5, 0.9);
     const low = tradePriorityScore(1.0, 0.7);
     expect(high).toBeGreaterThan(low);
-    expect(tradePriorityScore(2, 1)).toBe(3);
+    expect(tradePriorityScore(2, 1)).toBe(21);
+  });
+
+  it('spreads near-~2R scores so passRate still breaks near ties', () => {
+    // Both ~2R targets — old rr+pr packed them into 2.7–3.0.
+    const a = tradePriorityScore(2.0, 0.7);
+    const b = tradePriorityScore(2.0, 0.95);
+    expect(b).toBeGreaterThan(a);
+    expect(b - a).toBeCloseTo(0.25);
+  });
+
+  it('FIFO then hash beats alphabetical symbol bias on equal priority', () => {
+    const earlier = { priorityScore: 3, entryTime: 100, tieKey: 'XOM' };
+    const later = { priorityScore: 3, entryTime: 200, tieKey: 'AAPL' };
+    expect(compareByPriorityThenFifo(earlier, later)).toBeLessThan(0);
+
+    const sameTimeAapl = { priorityScore: 3, entryTime: 100, tieKey: 'AAPL' };
+    const sameTimeXom = { priorityScore: 3, entryTime: 100, tieKey: 'XOM' };
+    // Must not prefer AAPL solely because A < X.
+    const cmp = compareByPriorityThenFifo(sameTimeAapl, sameTimeXom);
+    expect(cmp).toBe(stableTieBreakKey('AAPL') - stableTieBreakKey('XOM'));
+    expect(cmp).not.toBe(0);
   });
 });
 
@@ -99,6 +122,31 @@ describe('simulateMaxOpenByPriority', () => {
     expect(result.taken.map((t) => t.symbol)).toEqual(['AAA', 'CCC']);
     expect(result.skippedTrades.map((t) => t.symbol)).toEqual(['BBB']);
     expect(result.totalR).toBe(3);
+  });
+
+  it('on equal priority prefers earlier entry, not alphabetical symbol', () => {
+    const t0 = day('2024-06-03');
+    const result = simulateMaxOpenByPriority(
+      [
+        {
+          symbol: 'AAPL',
+          entryTime: t0 + 120,
+          exitTime: t0 + 5 * 86400,
+          r: 1,
+          priorityScore: 2.5,
+        },
+        {
+          symbol: 'XOM',
+          entryTime: t0,
+          exitTime: t0 + 5 * 86400,
+          r: 2,
+          priorityScore: 2.5,
+        },
+      ],
+      1
+    );
+    expect(result.taken.map((t) => t.symbol)).toEqual(['XOM']);
+    expect(result.skippedTrades.map((t) => t.symbol)).toEqual(['AAPL']);
   });
 });
 

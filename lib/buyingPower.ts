@@ -1,11 +1,12 @@
 /**
  * Implied buying-power check for portfolio backtests.
  *
- * Dollar totals use `$ ≈ totalR × (account × risk%)`, which assumes every trade
- * can be sized to full risk. Tight stops imply large share counts / notional —
- * several open positions can silently exceed the account (leverage nobody said
- * you had). This module sizes each trade the same way the Desk does and reports
- * peak open notional so the UI can warn.
+ * Raw `$ ≈ totalR × (account × risk%)` assumes every trade can be sized to full
+ * risk. Tight stops imply large share counts / notional — several open
+ * positions can silently exceed the account. This module sizes each trade the
+ * same way the Desk does, reports peak open notional, and scales the dollar
+ * figure so peak open notional would fit the account (uniform shrink).
+ * R totals are left alone — only the $ path is capped.
  */
 
 import { calculatePositionSize } from '@/lib/positionSize';
@@ -37,6 +38,21 @@ export type BuyingPowerReport = {
   tightestStopPct: number | null;
   /** Loosest stop as a fraction of entry among sizable trades. */
   widestStopPct: number | null;
+};
+
+/** Dollar P&L with optional fundable-scale when peak notional exceeds the account. */
+export type ScaledDollarPnL = {
+  /** totalR × riskPerTrade (full-risk sizing, may imply leverage). */
+  unconstrainedDollars: number;
+  /**
+   * Dollars after uniformly shrinking every position so peak open notional
+   * would equal the account. Equal to unconstrained when the book fits.
+   */
+  scaledDollars: number;
+  /** Multiplier applied: min(1, account / peakNotional). */
+  scale: number;
+  /** True when scaledDollars < unconstrainedDollars (leverage would have been required). */
+  scaled: boolean;
 };
 
 function dayKey(ts: number) {
@@ -151,4 +167,26 @@ export function buyingPowerNeedsWarning(report: BuyingPowerReport): boolean {
     report.oversizeTrades > 0 ||
     report.leverageDays > 0
   );
+}
+
+/**
+ * Convert capped totalR to dollars, shrinking uniformly when peak open notional
+ * exceeds the account. Example: peak 180% of account → scale = 1/1.8 so the $
+ * figure matches what full-risk sizing would have required in buying power.
+ * Does not change R — only the dollar translation.
+ */
+export function scaleDollarsForBuyingPower(input: {
+  totalR: number;
+  riskPerTrade: number;
+  report: BuyingPowerReport | null | undefined;
+}): ScaledDollarPnL {
+  const unconstrainedDollars = input.totalR * input.riskPerTrade;
+  const peakPct = input.report?.peakNotionalPct ?? 0;
+  const scale = peakPct > 1 ? 1 / peakPct : 1;
+  return {
+    unconstrainedDollars,
+    scaledDollars: unconstrainedDollars * scale,
+    scale,
+    scaled: scale < 1,
+  };
 }

@@ -6,8 +6,9 @@ import {
   describeCostModel,
 } from '@/lib/backtestCosts';
 import { BacktestProfile, DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import { describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
-import { tradePriorityScore } from '@/lib/tradePriority';
+import { compareByPriorityThenFifo, tradePriorityScore } from '@/lib/tradePriority';
 import { Candle, Setup } from '@/types/trading';
 
 export type CombinedPlaybookTrade = BacktestTrade & {
@@ -49,9 +50,13 @@ export function selectBestTradesPerDay(
     if (byDay !== 0) return byDay;
     const aScore = a.priorityScore ?? tradePriorityScore(a.plannedRR ?? 0, a.passRate ?? 0);
     const bScore = b.priorityScore ?? tradePriorityScore(b.plannedRR ?? 0, b.passRate ?? 0);
-    if (bScore !== aScore) return bScore - aScore;
+    const byPri = compareByPriorityThenFifo(
+      { priorityScore: aScore, entryTime: a.entryTime, tieKey: a.setupId || a.setupName },
+      { priorityScore: bScore, entryTime: b.entryTime, tieKey: b.setupId || b.setupName }
+    );
+    if (byPri !== 0) return byPri;
     if (b.plannedRR !== a.plannedRR) return b.plannedRR - a.plannedRR;
-    return a.setupName.localeCompare(b.setupName);
+    return 0;
   });
 
   const winners: CombinedPlaybookTrade[] = [];
@@ -84,8 +89,10 @@ export function enforceOneOpenPosition(
     if (a.entryTime !== b.entryTime) return a.entryTime - b.entryTime;
     const aScore = a.priorityScore ?? tradePriorityScore(a.plannedRR ?? 0, a.passRate ?? 0);
     const bScore = b.priorityScore ?? tradePriorityScore(b.plannedRR ?? 0, b.passRate ?? 0);
-    if (bScore !== aScore) return bScore - aScore;
-    return a.setupName.localeCompare(b.setupName);
+    return compareByPriorityThenFifo(
+      { priorityScore: aScore, entryTime: a.entryTime, tieKey: a.setupId || a.setupName },
+      { priorityScore: bScore, entryTime: b.entryTime, tieKey: b.setupId || b.setupName }
+    );
   });
   const taken: CombinedPlaybookTrade[] = [];
   let skippedOpen = 0;
@@ -108,14 +115,53 @@ export function enforceOneOpenPosition(
  * entry that used to land while a later-stopping trade was still open is
  * no longer a candidate. Remaining cooldown checks only use the stop exit
  * (known by the time a later entry is considered).
+ *
+ * `barTimes` is the ticker's sorted daily bar timestamps (trading days). When
+ * provided, cooldown spans `stopCooldownBars` trading days — matching the
+ * per-setup engine's bar-index cooldown. Without barTimes, falls back to
+ * calendar-day approximation (legacy / tests).
  */
 export function applyStopCooldown(
   dayWinners: CombinedPlaybookTrade[],
-  stopCooldownBars: number
+  stopCooldownBars: number,
+  barTimes?: number[]
 ): { taken: CombinedPlaybookTrade[]; skippedCooldown: number } {
   const taken: CombinedPlaybookTrade[] = [];
   let skippedCooldown = 0;
   const windows: Array<{ from: number; until: number }> = [];
+
+  const barIndexAt = (ts: number): number => {
+    if (!barTimes?.length) return -1;
+    // Exact match first (exits/entries use bar.time).
+    const exact = barTimes.indexOf(ts);
+    if (exact >= 0) return exact;
+    // Nearest bar at or before ts.
+    let lo = 0;
+    let hi = barTimes.length - 1;
+    let best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (barTimes[mid] <= ts) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return best;
+  };
+
+  const cooldownUntil = (exitTime: number): number => {
+    if (stopCooldownBars <= 0) return exitTime;
+    if (barTimes?.length) {
+      const exitIdx = barIndexAt(exitTime);
+      if (exitIdx < 0) return exitTime + stopCooldownBars * 86400;
+      const untilIdx = exitIdx + stopCooldownBars;
+      return untilIdx < barTimes.length ? barTimes[untilIdx] : Number.POSITIVE_INFINITY;
+    }
+    return exitTime + stopCooldownBars * 86400;
+  };
+
   for (const trade of dayWinners) {
     const inCooldown =
       stopCooldownBars > 0 &&
@@ -128,7 +174,7 @@ export function applyStopCooldown(
     if (trade.reason === 'stop' && stopCooldownBars > 0) {
       windows.push({
         from: trade.exitTime,
-        until: trade.exitTime + stopCooldownBars * 86400,
+        until: cooldownUntil(trade.exitTime),
       });
     }
   }
@@ -149,6 +195,8 @@ export function runCombinedPlaybookBacktest(input: {
   qqqCandles?: Candle[];
   sectorCandles?: Candle[];
   earningsDates?: string[];
+  /** Distinguishes no-key / fetch-error / empty when dates are []. */
+  earningsCalendarStatus?: EarningsFetchStatus;
   sourceLabel: string;
   warnings?: string[];
   evalBars?: number;
@@ -181,6 +229,7 @@ export function runCombinedPlaybookBacktest(input: {
       qqqCandles: input.qqqCandles,
       sectorCandles: input.sectorCandles,
       earningsDates: input.earningsDates,
+      earningsCalendarStatus: input.earningsCalendarStatus,
       sourceLabel: input.sourceLabel,
       warnings: input.warnings,
       evalBars: input.evalBars,
@@ -207,7 +256,12 @@ export function runCombinedPlaybookBacktest(input: {
 
   const { winners: dayWinners, skippedOverlaps } = selectBestTradesPerDay(candidates);
   const { taken: nonOverlapping, skippedOpen } = enforceOneOpenPosition(dayWinners);
-  const { taken: trades, skippedCooldown } = applyStopCooldown(nonOverlapping, stopCooldownBars);
+  const barTimes = input.candles.map((c) => c.time);
+  const { taken: trades, skippedCooldown } = applyStopCooldown(
+    nonOverlapping,
+    stopCooldownBars,
+    barTimes
+  );
 
   const rs = trades.map((t) => t.rMultiple);
   const wins = rs.filter((r) => r > 0);

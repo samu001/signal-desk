@@ -32,15 +32,23 @@ function toDate(d: Date) {
 }
 
 /**
- * Once the adjusted endpoint is rejected for this key (plan restriction), stop
- * retrying it for the rest of the session so multi-ticker runs don't pay an
- * extra failed call per symbol.
+ * Adjusted-endpoint availability.
+ * Per-symbol blocklist: FMP rejects some symbols (e.g. index ETFs) with 402
+ * even on plans where dividend-adjusted works for others — one symbol must not
+ * poison the rest. Session-wide kill switch: only for plan-wide rejections
+ * (e.g. "Exclusive Endpoint: upgrade your plan") where no symbol will succeed.
  */
 let adjustedEndpointUnavailable = false;
+const adjustedUnavailableBySymbol = new Set<string>();
 
-/** Test helper — forget the per-session adjusted-endpoint availability. */
+function isPlanWideAdjustedRejection(reason: string): boolean {
+  return /exclusive endpoint|upgrade your plan|special endpoint|legacy endpoint/i.test(reason);
+}
+
+/** Test helper — forget adjusted-endpoint availability. */
 export function resetFmpAdjustedAvailability() {
   adjustedEndpointUnavailable = false;
+  adjustedUnavailableBySymbol.clear();
 }
 
 type FmpEodRow = {
@@ -148,7 +156,7 @@ export async function fetchFmpDailyCandles(
     const range = `symbol=${encodeURIComponent(upper)}&from=${toDate(start)}&to=${toDate(end)}&apikey=${encodeURIComponent(apiKey)}`;
 
     let fallbackNote: string | null = null;
-    if (!adjustedEndpointUnavailable) {
+    if (!adjustedEndpointUnavailable && !adjustedUnavailableBySymbol.has(upper)) {
       const adj = await requestFmpEod(`${FMP_BASE}/historical-price-eod/dividend-adjusted?${range}`);
       if (adj.kind === 'rows') {
         const candles = rowsToCandles(adj.rows, true);
@@ -158,12 +166,16 @@ export async function fetchFmpDailyCandles(
           warning: `FMP EOD (${candles.length} adjusted daily bars).`,
         };
       }
-      // Rate limit / auth: falling back would burn quota for the same outcome.
+      // Rate limit / auth: do not burn a second FMP call (raw) for the same outcome.
       if (adj.kind === 'ratelimit' || adj.kind === 'auth') {
         return { candles: [], adjusted: 'adjusted', warning: adj.warning };
       }
       if (adj.kind === 'unavailable') {
-        adjustedEndpointUnavailable = true;
+        if (isPlanWideAdjustedRejection(adj.warning)) {
+          adjustedEndpointUnavailable = true;
+        } else {
+          adjustedUnavailableBySymbol.add(upper);
+        }
       }
       fallbackNote = adj.warning;
     }
@@ -197,6 +209,134 @@ async function fetchJson(url: string): Promise<unknown> {
   const res = await fetch(url);
   if (!res.ok) return null;
   return res.json();
+}
+
+export type FmpEarningsFetchResult = {
+  dates: string[];
+  status: 'ok' | 'empty' | 'error' | 'no_key';
+  detail: string;
+};
+
+/**
+ * Historical + upcoming earnings announcement dates for blackout windows.
+ * Stable `/earnings?symbol=` — filter to [fromDate, toDate] (inclusive).
+ */
+export async function fetchFmpEarningsDates(
+  symbol: string,
+  apiKey: string | undefined,
+  fromDate: string,
+  toDate: string
+): Promise<FmpEarningsFetchResult> {
+  const upper = symbol.toUpperCase().trim();
+  if (!apiKey?.trim() || !upper) {
+    return {
+      dates: [],
+      status: 'no_key',
+      detail: 'No FMP key — earnings calendar unavailable.',
+    };
+  }
+
+  try {
+    const url = `${FMP_BASE}/earnings?symbol=${encodeURIComponent(upper)}&apikey=${encodeURIComponent(
+      apiKey.trim()
+    )}`;
+    const res = await fetch(url);
+    const text = await res.text();
+
+    if (res.status === 429 || /rate.?limit|limit reach|too many requests|exceeded your/i.test(text)) {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `FMP earnings rate-limited${res.status === 429 ? ' (HTTP 429)' : ''} — blackout fails closed for ${upper}.`,
+      };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `FMP earnings auth failed (HTTP ${res.status}) — check FMP key.`,
+      };
+    }
+    if (!res.ok) {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `FMP earnings HTTP ${res.status} — blackout fails closed for ${upper}.`,
+      };
+    }
+
+    let data: unknown;
+    try {
+      data = JSON.parse(text) as unknown;
+    } catch {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `FMP earnings returned non-JSON — blackout fails closed for ${upper}.`,
+      };
+    }
+
+    if (!Array.isArray(data)) {
+      const msg =
+        data && typeof data === 'object'
+          ? String(
+              (data as { 'Error Message'?: string; error?: string; message?: string })['Error Message'] ||
+                (data as { error?: string }).error ||
+                (data as { message?: string }).message ||
+                'unexpected payload'
+            )
+          : 'unexpected payload';
+      if (/rate.?limit|limit reach|exceeded|quota/i.test(msg)) {
+        return {
+          dates: [],
+          status: 'error',
+          detail: `FMP earnings rate-limited — blackout fails closed for ${upper}.`,
+        };
+      }
+      return {
+        dates: [],
+        status: 'error',
+        detail: `FMP earnings error: ${msg.slice(0, 120)} — blackout fails closed for ${upper}.`,
+      };
+    }
+
+    const from = fromDate.slice(0, 10);
+    const to = toDate.slice(0, 10);
+    const dates = [
+      ...new Set(
+        data
+          .map((row) => {
+            const r = row as { date?: string; symbol?: string };
+            const d = typeof r.date === 'string' ? r.date.slice(0, 10) : '';
+            const sym = typeof r.symbol === 'string' ? r.symbol.toUpperCase() : upper;
+            if (sym !== upper || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+            if (d < from || d > to) return null;
+            return d;
+          })
+          .filter((d): d is string => Boolean(d))
+      ),
+    ].sort();
+
+    if (!dates.length) {
+      return {
+        dates: [],
+        status: 'empty',
+        detail: `FMP returned no earnings dates for ${upper} in ${from}…${to} — blackout fails closed.`,
+      };
+    }
+    return {
+      dates,
+      status: 'ok',
+      detail: `${dates.length} earnings date${dates.length === 1 ? '' : 's'} via FMP.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      dates: [],
+      status: 'error',
+      detail: `FMP earnings request failed (${msg.slice(0, 80)}) — blackout fails closed for ${upper}.`,
+    };
+  }
 }
 
 /**

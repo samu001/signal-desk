@@ -27,6 +27,7 @@ import {
   assessWeeklyTrend,
 } from '@/lib/playbookExtras';
 import { assessEarningsGate, assessMarketRegime, dayKeyFromUnix } from '@/lib/playbookGates';
+import { earningsFailClosedDetail, EarningsFetchStatus } from '@/lib/finnhub';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import {
   Candle,
@@ -107,6 +108,11 @@ export function evaluateCheck(
     session: SessionInfo;
     /** YYYY-MM-DD earnings dates for blackout (±1 day). */
     earningsDates?: string[];
+    /**
+     * Why the calendar is missing/present. When dates are empty, drives the
+     * fail-closed detail so no-key ≠ fetch-error ≠ empty-window.
+     */
+    earningsCalendarStatus?: EarningsFetchStatus;
     /** Signal day override for historical evaluation (unix seconds). */
     asOfTime?: number;
   }
@@ -373,7 +379,7 @@ export function evaluateCheck(
     }
     case 'earnings_clear': {
       // undefined = caller did not supply a calendar (soft unknown for legacy
-      // call sites). [] = fetch ran and returned nothing → fail closed so a
+      // call sites). [] = fetch attempted / key missing → fail closed so a
       // missing Finnhub key / empty window cannot silently allow entries.
       if (ctx.earningsDates == null) {
         return {
@@ -384,11 +390,12 @@ export function evaluateCheck(
         };
       }
       if (!ctx.earningsDates.length) {
+        const status = ctx.earningsCalendarStatus ?? 'empty';
         return {
           id,
           label: LABELS[id],
           verdict: 'fail',
-          detail: 'Earnings calendar empty — treating as blocked (fail closed)',
+          detail: earningsFailClosedDetail(status),
         };
       }
       const asOf =
@@ -764,6 +771,7 @@ export function evaluateSetupRules(
     news: NewsItem[];
     session?: SessionInfo;
     earningsDates?: string[];
+    earningsCalendarStatus?: EarningsFetchStatus;
     asOfTime?: number;
     /** Which accuracy gates to append (defaults to live regime + earnings). */
     gates?: PlaybookGateFlags;

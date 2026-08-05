@@ -6,9 +6,11 @@ layer on top of the **Playbook** of rule-based setups. It does not auto-trade.
 
 ## Data sources
 
-Daily candles resolve in order: **Tiingo → FMP → Finnhub → Alpha Vantage → demo**.
-API keys live in Settings (or env vars for scripts) — never committed. Tiingo is
-blocked by CORS in the browser, so the web app relies on FMP for candles.
+Daily candles resolve in order: **Tiingo → Yahoo proxy → FMP → Finnhub → Alpha Vantage → none**
+(no synthetic bars). Web uses a Tiingo proxy Worker (CORS); native can use the
+Tiingo token directly. After a Tiingo 429, FMP is skipped for that path (Yahoo
+still tried). Portfolio scoring requires adjusted bars; RAW / adj? tickers are
+excluded. API keys live in Settings (or env vars for scripts) — never committed.
 
 ## Active Playbook setups
 
@@ -60,11 +62,13 @@ For deeper runs (5y history via the Yahoo EOD fallback, walk-forward splits),
 use the scripts:
 
 ```bash
-# Deep Must backtest (~800 calendar days by default; Yahoo EOD fallback when no keys)
+# Deep Must + earnings blackout (~800 calendar days; same gates as Portfolio UI).
+# Set FINNHUB_API_KEY and/or FMP_API_KEY / ALPHA_VANTAGE_API_KEY or the blackout
+# fails closed (~0 trades). Chain: Finnhub → FMP → Alpha Vantage.
 npx tsx scripts/run-deep-backtest.ts
 
-# ~5y window; BT_REGIME=1 stacks the regime gate globally (experiment override)
-BT_DAYS=1500 npx tsx scripts/run-deep-backtest.ts
+# ~5y window; BT_REGIME=1 also stacks the regime gate
+BT_DAYS=1500 FINNHUB_API_KEY=... npx tsx scripts/run-deep-backtest.ts
 
 # Walk-forward split: score a past era vs a recent era separately
 BT_DAYS=1500 BT_END=2023-12-31 npx tsx scripts/run-deep-backtest.ts
@@ -76,13 +80,19 @@ npx tsx scripts/compare-must-vs-all8.ts
 ```
 
 Realism features baked in: entries fill next-bar open; **stops/targets fill at
-the open when a bar gaps through the level** (no perfect-stop fantasy); outlier
-trades are kept, not trimmed; slippage is tiered by liquidity (5/10/20 bps);
-and a portfolio report caps concurrent open positions (`BT_MAX_OPEN`, default 3)
-to approximate a real account's capital limit. Expect the capped portfolio
-number — not the all-signals number — to resemble live results. Remaining known
-optimism: the roster and universe were selected on the same history they are
-scored on (mitigate by re-checking walk-forward windows before trusting a change).
+the open when a bar gaps through the level**, and stop gaps take an extra
+**gap-beyond** hit (tiered 10–25% of the gap); outlier trades are kept, not
+trimmed; friction is tiered by trailing ADV (**slip + half-spread**: ≥$100M → 5+1 /
+≥$20M → 10+2 / else 20+5 bps, missing volume → small; commission $0; stock-loan
+borrow n/a for long-only); **earnings
+blackout** matches live Desk / Portfolio (`FINNHUB_API_KEY` → `FMP_API_KEY` →
+`ALPHA_VANTAGE_API_KEY` — empty/missing calendars fail closed); and a portfolio report caps concurrent
+open positions (`BT_MAX_OPEN`, default 3) to approximate a real account's
+capital limit. Expect the capped portfolio number — not the all-signals number
+— to resemble live results. Remaining known optimism: the roster and universe
+were originally selected on the same history they are scored on (without the
+earnings blackout); re-runs with Finnhub will differ from those older totals
+(mitigate by re-checking walk-forward windows before trusting a change).
 
 The engine needs ≥ 60 daily bars (55 warmup + 5). With API keys set
 (`TIINGO_API_KEY`, `FMP_API_KEY`, `FINNHUB_API_KEY`), scripts prefer those
@@ -115,15 +125,15 @@ plan, ranked by how much each distorts results.
    and a split inside the window printed one catastrophic fake trade (gap-aware
    stop fill on a −90% "bar"). The Yahoo proxy worker is out-of-repo; its
    adjustment is unverified.
-   **Status: fixed.** FMP now calls the stable dividend-adjusted EOD endpoint
-   (same one-call-per-symbol shape — no extra rate-limit cost; falls back to
-   raw `/full` with a loud RAW warning only when the key's plan rejects it,
-   remembered per session). Every provider reports `adjusted`/`raw`/`unknown`,
-   surfaced as a pill per symbol. A ±40% overnight-gap guard
-   (`detectSuspectGaps` in `lib/candles.ts`) marks raw/unknown feeds with
-   split-sized gaps as **Suspect data** and the portfolio backtest excludes
-   them from the run instead of scoring fake trades. Yahoo-proxy bars remain
-   unverified (`adj?`) — covered by the gap guard.
+   **Status: fixed.** FMP prefers the dividend-adjusted EOD endpoint (falls
+   back to raw `/full` only when the plan rejects it; never stacks raw after a
+   429). Cascade is **Tiingo → Yahoo → FMP**; after Tiingo 429, FMP is skipped.
+   Adjusted hits win; soft RAW/unknown only when nothing better is available.
+   Every provider reports `adjusted`/`raw`/`unknown`. Gap guard
+   threshold is **±22%** (catches 4:3 / 3:2 / 2:1 splits). Portfolio totals
+   score **adjusted EOD only** — RAW and unverified (`adj?`) tickers are
+   excluded as **Unadjusted** (dividend drag / residual split risk), and
+   split-sized gaps on non-adjusted feeds remain **Suspect data**.
 2. **Headline defaults to the in-sample maximum.** After each run the screen
    auto-activated the best-R picker (`bestSelectablePicker`) *and* the best-R
    exit variant (`bestParamVariantId`) chosen on the same window — a double
@@ -158,47 +168,69 @@ plan, ranked by how much each distorts results.
    if re-enabled).
    **Status: fixed.** `setupSignalPasses` treats `entryChecks[0]` unknown as
    no signal (shared by backtest / Desk match / setup perf / candidates).
-   `earnings_clear` fails closed when the calendar fetch returns empty
-   (omitted calendar stays soft-unknown for legacy call sites). Portfolio
-   backtest fetches Finnhub earnings dates per symbol (same helper as the
-   single-symbol backtest), enables the earnings blackout gate (live Desk
-   parity), and threads dates into the parameter sweep.
+   `earnings_clear` fails closed when the calendar is empty / missing a key /
+   fetch-failed (omitted calendar stays soft-unknown for legacy call sites),
+   with **distinct detail copy** per status. `fetchEarningsDates` returns
+   `{ dates, status, detail }` (`ok` | `empty` | `no_key` | `error`) instead of
+   a bare `[]`. Finnhub is primary; **FMP then Alpha Vantage** back up on
+   rate-limit, empty, or missing Finnhub key (`FMP_API_KEY` /
+   `ALPHA_VANTAGE_API_KEY` / Settings). Portfolio shows a pre-run banner when
+   no calendar key is set, a post-run rollup when any symbol is fail-closed
+   (partial loads still score symbols that got a calendar), and per-symbol
+   `earn ok` / `earn: error` / `earn: empty` / `earn: no key` pills. Deep
+   script (`scripts/run-deep-backtest.ts`) uses the same Must + earnings
+   blackout profile and Finnhub→FMP→AV calendars as Portfolio. The default
+   roster was historically selected without that
+   blackout — re-score before comparing to older deep-script totals.
 
 ### Next tier
 
-6. **Tiered slippage.** — **Status: fixed.** Portfolio (and the deep script)
-   share `costsForSymbol` in `lib/backtestCosts.ts`: megacap **5 bps**, mid
-   **10 bps**, everything else **20 bps**, commission $0. Per-symbol notes show
-   which tier applied. (Previously the app used a flat slippage for every name.)
+6. **Tiered slippage.** — **Status: fixed (extended).** Portfolio (and the deep
+   script) share `costsFromCandles` / `costsForSymbol(symbol, candles)` in
+   `lib/backtestCosts.ts`: trailing **ADV** (≥$100M → **5 bps slip + 1 bp½
+   spread**, ≥$20M → **10+2**, else **20+5**; missing volume → small/safe). No
+   hardcoded megacap/mid symbol lists. Commission $0. Stop exits that gap
+   through the level fill gap-aware at the open and apply **gap-beyond**
+   (10–25% of the gap worse than the open). Stock-loan **borrow is n/a** for
+   this long-only playbook (rate field stays 0; wired if shorts are ever
+   added). Per-symbol notes show the slip+spread tier and ADV.
 7. **Dollar math ignores buying power.** — **Status: fixed.** After a capped
    run, `analyzeBuyingPower` (`lib/buyingPower.ts`) sizes each taken trade with
    Desk-style risk (`account × risk% / (entry−stop)`), tracks peak open notional
-   through the exit calendar day, and warns when peak > account or any single
-   trade notionals above the account. Does **not** rewrite R totals — flags the
-   dollar path as optimistic when leverage would have been required.
-8. **Curated defaults.** The default symbol list and the active roster were
-   both selected on the history they are scored on (see `run-deep-backtest.ts`
-   universe comment above). Fix: label the default basket as
-   performance-picked, nudge users toward their own lists, and surface the
-   early/late window split more prominently as the in-app out-of-sample check.
+   through the exit calendar day, and **scales the displayed $** by
+   `min(1, account / peakNotional)` via `scaleDollarsForBuyingPower`. R totals
+   stay full-risk; the $ path is fundable (no silent leverage). Banner shows
+   unconstrained → scaled when shrink applied.
+8. **Curated defaults.** — **Status: fixed (label).** The portfolio symbols
+   field shows a warning when the deep-script performance-picked default basket
+   is still loaded, nudging toward a list you chose. The roster itself is
+   unchanged (personal app — disclosure, not a new universe).
 
 ### Low priority
 
-9. Exits are not evaluated on the final bar (loop ends one bar early), so a
-   last-bar stop breach scores at the close via force-close instead of the stop.
-10. Post-stop cooldown windows use calendar days while labeled trading days
-    (inactive on the portfolio screen — Must sets cooldown to 0).
+9. Exits on the final bar — **Status: fixed.** The exit loop now evaluates
+   stop/target/time on the last bar; only positions that survive that bar are
+   force-closed at the close. A last-bar stop breach fills gap-aware at the
+   stop (not the close).
+10. Post-stop cooldown calendar vs trading days — **Status: fixed.**
+    `applyStopCooldown` takes the ticker's `barTimes` and spans
+    `stopCooldownBars` trading days (same as the per-setup bar-index cooldown).
+    Calendar-day fallback remains only for callers that omit barTimes.
+11. Priority ties favored A–Z symbols — **Status: fixed.** Score is
+    `plannedRR × 10 + passRate` (spreads the ~2R cluster), and contested slots
+    tie-break FIFO by entryTime then a stable non-alphabetical hash of the
+    symbol/setup id — not `localeCompare`.
 
-### Defensible read (items 1–7)
+### Defensible read (items 1–11)
 
-Fix-now items 1–5 and next-tier 6–7 are done: adjusted EOD + split-gap guard,
-Production headline default, max-open slots held through the exit day, no
-same-ticker pyramiding, earnings blackout + fail-closed core checks, tiered
-5/10/20 bps slippage, and buying-power / peak-notional warnings on the dollar
-path. Still treat "Best (this window)" as optimism until it survives a
-different window, prefer a basket *you* chose over the curated default, and
-trust the capped total over All signals. Item 8 (curated-defaults labeling)
-remains open.
+Fix-now items 1–5, next-tier 6–8, and low-priority 9–11 are done: adjusted-only
+portfolio scoring, Production headline default, max-open through exit day, no
+same-ticker pyramiding, earnings blackout + fail-closed calendars (portfolio +
+deep script parity), tiered slippage, fundable dollar figures, default-basket
+label, last-bar stop fills, trading-day cooldown, and non-alphabetical priority
+ties. Still treat "Best (this window)" as optimism until it survives a different
+window, prefer a basket *you* chose over the curated default, and trust the
+capped total over All signals.
 
 ## Tests
 

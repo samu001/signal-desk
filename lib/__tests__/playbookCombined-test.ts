@@ -239,4 +239,24 @@ describe('applyStopCooldown (no lookahead)', () => {
     expect(taken).toHaveLength(2);
     expect(skippedCooldown).toBe(0);
   });
+
+  it('counts trading days from barTimes (skips weekend calendar gap)', () => {
+    // Fri stop → Sat/Sun are not trading days. Cooldown 1 trading day = Monday.
+    const fri = Math.floor(new Date('2024-06-07T16:00:00Z').getTime() / 1000);
+    const mon = Math.floor(new Date('2024-06-10T16:00:00Z').getTime() / 1000);
+    const tue = Math.floor(new Date('2024-06-11T16:00:00Z').getTime() / 1000);
+    const barTimes = [fri, mon, tue];
+    const stop = makeTrade({ entryTime: fri - 5 * DAY, exitTime: fri, reason: 'stop' });
+    // Calendar +1 day would be Sat — not a bar. Mon is 1 trading day after Fri.
+    const monEntry = makeTrade({ entryTime: mon, exitTime: tue, reason: 'target' });
+    const { taken, skippedCooldown } = applyStopCooldown([stop, monEntry], 1, barTimes);
+    // until = barTimes[friIdx+1] = mon → entry at mon is NOT < until → allowed
+    expect(taken).toHaveLength(2);
+    expect(skippedCooldown).toBe(0);
+
+    // Cooldown 2 trading days: until = tue → Monday entry blocked.
+    const blocked = applyStopCooldown([stop, monEntry], 2, barTimes);
+    expect(blocked.taken.map((t) => t.entryTime)).toEqual([stop.entryTime]);
+    expect(blocked.skippedCooldown).toBe(1);
+  });
 });

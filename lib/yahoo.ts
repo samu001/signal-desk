@@ -3,11 +3,14 @@ import { Candle } from '@/types/trading';
 export type YahooCandleResult = {
   candles: Candle[];
   warning?: string;
+  /** From proxy when it scales OHLC by Yahoo adjclose. */
+  adjusted?: 'adjusted' | 'unknown';
 };
 
 type YahooEodResponse = {
   symbol?: string;
   source?: string;
+  adjusted?: 'adjusted' | 'raw' | 'unknown';
   candles?: Array<{
     time: number;
     open: number;
@@ -127,6 +130,7 @@ export async function fetchYahooDailyCandles(
     return {
       candles,
       warning: data.warning,
+      adjusted: data.adjusted === 'adjusted' ? 'adjusted' : 'unknown',
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'request failed';

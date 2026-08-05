@@ -63,6 +63,8 @@ export default function ParameterLabScreen() {
     try {
       const keys = {
         tiingoApiKey: settings.tiingoApiKey || undefined,
+        tiingoProxyUrl: settings.tiingoProxyUrl || undefined,
+        tiingoProxyToken: settings.tiingoProxyToken || undefined,
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,

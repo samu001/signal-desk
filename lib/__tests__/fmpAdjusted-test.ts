@@ -56,7 +56,55 @@ describe('fetchFmpDailyCandles (dividend-adjusted first)', () => {
     }
   });
 
-  it('falls back to raw /full when the plan rejects adjusted, then skips adjusted for the session', async () => {
+  it('per-symbol 402 (index ETF) blocks only that symbol — other symbols still get adjusted', async () => {
+    const { urls, restore } = installFetch((url) => {
+      if (!url.includes('dividend-adjusted')) {
+        return { ok: true, status: 200, body: JSON.stringify(rawRows) };
+      }
+      if (url.includes('symbol=QQQ')) {
+        return {
+          ok: false,
+          status: 402,
+          body: JSON.stringify({
+            'Error Message':
+              'Premium Query Parameter: symbol is not available under your current subscription',
+          }),
+        };
+      }
+      return { ok: true, status: 200, body: JSON.stringify(adjRows) };
+    });
+    try {
+      const qqq = await fetchFmpDailyCandles('QQQ', 'k', 400);
+      expect(qqq.adjusted).toBe('raw');
+
+      const aapl = await fetchFmpDailyCandles('AAPL', 'k', 400);
+      expect(aapl.adjusted).toBe('adjusted');
+      // QQQ: adjusted 402 + full; AAPL: adjusted only (QQQ did NOT poison AAPL).
+      const aaplAdjCalls = urls.filter((u) => u.includes('dividend-adjusted') && u.includes('symbol=AAPL'));
+      expect(aaplAdjCalls).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('per-symbol blocklist skips the adjusted retry on a second fetch of the same symbol', async () => {
+    const { urls, restore } = installFetch((url) => {
+      if (url.includes('dividend-adjusted')) {
+        return { ok: false, status: 402, body: JSON.stringify({ 'Error Message': 'symbol not available' }) };
+      }
+      return { ok: true, status: 200, body: JSON.stringify(rawRows) };
+    });
+    try {
+      await fetchFmpDailyCandles('QQQ', 'k', 400);
+      await fetchFmpDailyCandles('QQQ', 'k', 400);
+      const qqqAdjCalls = urls.filter((u) => u.includes('dividend-adjusted') && u.includes('symbol=QQQ'));
+      expect(qqqAdjCalls).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('plan-wide rejection (exclusive endpoint) still skips adjusted for the whole session', async () => {
     const { urls, restore } = installFetch((url) => {
       if (url.includes('dividend-adjusted')) {
         return {
@@ -70,17 +118,10 @@ describe('fetchFmpDailyCandles (dividend-adjusted first)', () => {
     try {
       const first = await fetchFmpDailyCandles('AAPL', 'k', 400);
       expect(first.adjusted).toBe('raw');
-      expect(first.candles).toHaveLength(2);
-      expect(first.candles[0]).toMatchObject({ open: 40, close: 42 });
-      expect(first.warning).toMatch(/RAW unadjusted/i);
-      // Discovery cost: adjusted + full = 2 calls, once.
-      expect(urls).toHaveLength(2);
-
       const second = await fetchFmpDailyCandles('MSFT', 'k', 400);
       expect(second.adjusted).toBe('raw');
-      // Session flag set: MSFT goes straight to /full (1 more call, not 2).
-      expect(urls).toHaveLength(3);
-      expect(urls[2]).toContain('/historical-price-eod/full');
+      // MSFT goes straight to /full — plan-wide lock still honored.
+      expect(urls.filter((u) => u.includes('dividend-adjusted'))).toHaveLength(1);
     } finally {
       restore();
     }

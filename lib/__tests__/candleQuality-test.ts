@@ -33,14 +33,17 @@ describe('detectSuspectGaps', () => {
     expect(gaps[0].pct).toBeLessThan(-0.85);
   });
 
-  it('flags a 2:1 split (−50%) but not normal volatility', () => {
-    const split = [bar('2024-06-03', 100), bar('2024-06-04', 50, 49.9)];
-    expect(detectSuspectGaps(split)).toHaveLength(1);
+  it('flags 2:1 (−50%), 3:2 (−33%), and 4:3 (−25%) splits', () => {
+    expect(detectSuspectGaps([bar('2024-06-03', 100), bar('2024-06-04', 50, 49.9)])).toHaveLength(1);
+    expect(detectSuspectGaps([bar('2024-06-03', 90), bar('2024-06-04', 60, 59.8)])).toHaveLength(1); // 3:2
+    expect(detectSuspectGaps([bar('2024-06-03', 80), bar('2024-06-04', 60, 59.9)])).toHaveLength(1); // 4:3
+  });
 
+  it('does not flag normal volatility under the threshold', () => {
     const volatile = [
       bar('2024-06-03', 100),
       bar('2024-06-04', 120, 118), // +20% day
-      bar('2024-06-05', 90, 92), // −25% day
+      bar('2024-06-05', 100, 102), // −17% day (under 22%)
     ];
     expect(detectSuspectGaps(volatile)).toHaveLength(0);
   });
@@ -56,10 +59,11 @@ describe('detectSuspectGaps', () => {
     expect(gaps[0].pct).toBeCloseTo(-0.55, 2);
   });
 
-  it('returns nothing for clean series and respects the threshold export', () => {
+  it('returns nothing for clean series and catches 4:3-sized moves', () => {
     const candles = [bar('2024-06-03', 100), bar('2024-06-04', 101), bar('2024-06-05', 99)];
     expect(detectSuspectGaps(candles)).toHaveLength(0);
-    expect(SUSPECT_GAP_THRESHOLD).toBeGreaterThan(0.3);
-    expect(SUSPECT_GAP_THRESHOLD).toBeLessThan(0.5);
+    // Threshold sits between a noisy −20% day and a 4:3 (−25%) split.
+    expect(SUSPECT_GAP_THRESHOLD).toBeGreaterThan(0.2);
+    expect(SUSPECT_GAP_THRESHOLD).toBeLessThan(0.25);
   });
 });

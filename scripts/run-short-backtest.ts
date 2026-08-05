@@ -8,6 +8,7 @@ const keys = {
   tiingoApiKey: process.env.TIINGO_API_KEY || undefined,
   fmpApiKey: process.env.FMP_API_KEY || undefined,
   finnhubApiKey: process.env.FINNHUB_API_KEY || undefined,
+  alphaVantageApiKey: process.env.ALPHA_VANTAGE_API_KEY || undefined,
   days: 140,
 };
 
@@ -32,12 +33,19 @@ async function main() {
     const to = last
       ? new Date(last.time * 1000 + 2 * 86400000).toISOString().slice(0, 10)
       : new Date().toISOString().slice(0, 10);
-    const earningsDates = await fetchEarningsDates(symbol, keys.finnhubApiKey, from, to);
+    const earnings = await fetchEarningsDates(
+      symbol,
+      keys.finnhubApiKey,
+      from,
+      to,
+      keys.fmpApiKey,
+      keys.alphaVantageApiKey
+    );
 
     console.log(
       `\n==== ${symbol} source=${bars.source} bars=${bars.candles.length} ${
         first ? fmt(first.time) : '?'
-      } → ${last ? fmt(last.time) : '?'} | earnings=${earningsDates.join(',') || 'none'} ====`
+      } → ${last ? fmt(last.time) : '?'} | earnings=${earnings.dates.join(',') || earnings.status} ====`
     );
 
     const combined = runCombinedPlaybookBacktest({
@@ -46,7 +54,8 @@ async function main() {
       candles: bars.candles,
       spyCandles: spy.candles,
       qqqCandles: qqq.candles,
-      earningsDates,
+      earningsDates: earnings.dates,
+      earningsCalendarStatus: earnings.status,
       sourceLabel: bars.source,
       warnings: bars.warnings,
       evalBars: 30,
@@ -69,7 +78,8 @@ async function main() {
         candles: bars.candles,
         spyCandles: spy.candles,
         qqqCandles: qqq.candles,
-        earningsDates,
+        earningsDates: earnings.dates,
+        earningsCalendarStatus: earnings.status,
         sourceLabel: bars.source,
         warnings: bars.warnings,
         evalBars: 30,

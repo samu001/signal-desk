@@ -15,6 +15,7 @@ const keys = {
   tiingoApiKey: process.env.TIINGO_API_KEY || undefined,
   fmpApiKey: process.env.FMP_API_KEY || undefined,
   finnhubApiKey: process.env.FINNHUB_API_KEY || undefined,
+  alphaVantageApiKey: process.env.ALPHA_VANTAGE_API_KEY || undefined,
   days: 140,
 };
 
@@ -78,8 +79,17 @@ async function main() {
     const to = last
       ? new Date(last.time * 1000 + 2 * 86400000).toISOString().slice(0, 10)
       : new Date().toISOString().slice(0, 10);
-    const earningsDates =
-      symbol === 'QQQ' ? [] : await fetchEarningsDates(symbol, keys.finnhubApiKey, from, to);
+    const earnings =
+      symbol === 'QQQ'
+        ? { dates: [] as string[], status: 'empty' as const, detail: 'QQQ skipped' }
+        : await fetchEarningsDates(
+            symbol,
+            keys.finnhubApiKey,
+            from,
+            to,
+            keys.fmpApiKey,
+            keys.alphaVantageApiKey
+          );
     const etf = sectorEtfForSymbol(symbol);
     const sectorCandles = etf ? sectorBars[etf] ?? [] : [];
 
@@ -90,7 +100,8 @@ async function main() {
       spyCandles: spy.candles,
       qqqCandles: qqq.candles,
       sectorCandles,
-      earningsDates,
+      earningsDates: earnings.dates,
+      earningsCalendarStatus: earnings.status,
       sourceLabel: bars.source,
       warnings: bars.warnings,
       evalBars: 30,
@@ -118,7 +129,7 @@ async function main() {
       allTotal: r(all8.totalR),
     });
 
-    console.log(`==== ${symbol} (earnings=${earningsDates.join(',') || 'none'}, sector=${etf ?? '—'}) ====`);
+    console.log(`==== ${symbol} (earnings=${earnings.dates.join(',') || earnings.status}, sector=${etf ?? '—'}) ====`);
     console.log(
       `  MUST  trades=${must.trades.length} win=${pct(must.winRate)} avgR=${r(must.avgR)} totalR=${r(must.totalR)} overlaps=${must.skippedOverlaps}`
     );

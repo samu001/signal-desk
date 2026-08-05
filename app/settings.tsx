@@ -22,6 +22,8 @@ export default function SettingsScreen() {
   const [marketBias, setMarketBias] = useState(settings.marketBias);
   const [finnhubKey, setFinnhubKey] = useState(settings.finnhubApiKey);
   const [tiingoKey, setTiingoKey] = useState(settings.tiingoApiKey);
+  const [tiingoProxyUrl, setTiingoProxyUrl] = useState(settings.tiingoProxyUrl ?? '');
+  const [tiingoProxyToken, setTiingoProxyToken] = useState(settings.tiingoProxyToken ?? '');
   const [fmpKey, setFmpKey] = useState(settings.fmpApiKey);
   const [alphaKey, setAlphaKey] = useState(settings.alphaVantageApiKey);
   const [yahooProxyUrl, setYahooProxyUrl] = useState(settings.yahooProxyUrl);
@@ -35,6 +37,8 @@ export default function SettingsScreen() {
     setMarketBias(settings.marketBias);
     setFinnhubKey(settings.finnhubApiKey);
     setTiingoKey(settings.tiingoApiKey);
+    setTiingoProxyUrl(settings.tiingoProxyUrl ?? '');
+    setTiingoProxyToken(settings.tiingoProxyToken ?? '');
     setFmpKey(settings.fmpApiKey);
     setAlphaKey(settings.alphaVantageApiKey);
     setYahooProxyUrl(settings.yahooProxyUrl);
@@ -45,7 +49,7 @@ export default function SettingsScreen() {
     const size = Number(accountSize);
     const risk = Number(riskPercent);
     if (!(size > 0) || !(risk > 0)) {
-      Alert.alert('Check risk inputs', 'Account size and risk % must be positive.');
+      notify('Check risk inputs', 'Account size and risk % must be positive.');
       return;
     }
 
@@ -56,15 +60,17 @@ export default function SettingsScreen() {
       marketBias: marketBias.trim(),
       finnhubApiKey: finnhubKey.trim(),
       tiingoApiKey: tiingoKey.trim(),
+      tiingoProxyUrl: tiingoProxyUrl.trim().replace(/\/+$/, ''),
+      tiingoProxyToken: tiingoProxyToken.trim(),
       fmpApiKey: fmpKey.trim(),
       alphaVantageApiKey: alphaKey.trim(),
       yahooProxyUrl: yahooProxyUrl.trim().replace(/\/+$/, ''),
       yahooProxyToken: yahooProxyToken.trim(),
     });
     await refreshQuotes();
-    Alert.alert(
+    notify(
       'Saved',
-      'Keys stored on device. Web EOD: FMP → Yahoo proxy → Finnhub → AV (Tiingo CORS-blocked). Native: Tiingo → FMP → Yahoo → …. No live history → No data (no synthetic bars). Pull-to-refresh updates quotes only; Desk / Refresh signals load history.'
+      'Keys stored on device. Web EOD: Tiingo proxy → Yahoo proxy → FMP → …. Native: Tiingo → Yahoo → FMP → …. Adjusted bars preferred; portfolio excludes RAW/adj?. Pull-to-refresh updates quotes only; Desk / Refresh signals load history.'
     );
   };
 
@@ -135,7 +141,23 @@ export default function SettingsScreen() {
           autoCorrect={false}
           value={tiingoKey}
           onChangeText={setTiingoKey}
-          placeholder="Best free long EOD history for backtests"
+          placeholder="Native / Expo Go direct API (optional if proxy set)"
+        />
+        <Field
+          label="Tiingo proxy URL (web)"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={tiingoProxyUrl}
+          onChangeText={setTiingoProxyUrl}
+          placeholder="https://edge-stock-tiingo.xxx.workers.dev"
+        />
+        <Field
+          label="Tiingo proxy token (optional)"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={tiingoProxyToken}
+          onChangeText={setTiingoProxyToken}
+          placeholder="Only if Worker PROXY_TOKEN is set"
         />
         <Field
           label="FMP API key"
@@ -181,11 +203,12 @@ export default function SettingsScreen() {
         <View style={styles.help}>
           <Text style={styles.helpTitle}>Where each key helps</Text>
           <Text style={styles.helpBody}>
-            Tiingo: long adjusted daily history (CORS-blocked in the browser — works in Expo Go /
-            native). FMP: daily bars + fundamentals on web. Yahoo proxy: Cloudflare Worker that
-            fetches Yahoo chart EOD (no Yahoo key; works on web after FMP). Finnhub: live quotes +
-            headlines. Alpha Vantage: last-resort short history (~25 calls/day). Without working EOD,
-            Desk and backtests show No data — they will not invent Soft/Strong or levels.
+            EOD order: Tiingo → Yahoo proxy → FMP adjusted. Tiingo: best free adjusted history
+            (web: proxy Worker; native: token). Yahoo: adjclose-scaled Worker (no FMP quota).
+            FMP: dividend-adjusted EOD fallback + fundamentals. Finnhub:
+            live quotes + headlines. Alpha Vantage: last-resort short history (~25 calls/day).
+            Without working EOD, Desk and backtests show No data — they will not invent Soft/Strong
+            or levels.
           </Text>
         </View>
 

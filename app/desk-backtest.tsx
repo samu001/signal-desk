@@ -53,6 +53,8 @@ export default function DeskBacktestScreen() {
       const upper = symbol.toUpperCase().trim() || 'AAPL';
       const keys = {
         tiingoApiKey: settings.tiingoApiKey || undefined,
+        tiingoProxyUrl: settings.tiingoProxyUrl || undefined,
+        tiingoProxyToken: settings.tiingoProxyToken || undefined,
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
@@ -100,20 +102,25 @@ export default function DeskBacktestScreen() {
       const to = last
         ? new Date(last * 1000 + 2 * 86400000).toISOString().slice(0, 10)
         : new Date().toISOString().slice(0, 10);
-      const earningsDates = await fetchEarningsDates(
+      const earnings = await fetchEarningsDates(
         upper,
         settings.finnhubApiKey || undefined,
         from,
-        to
+        to,
+        settings.fmpApiKey || undefined,
+        settings.alphaVantageApiKey || undefined
       );
       const next = runDeskBacktest({
         symbol: upper,
         candles: useSymbol,
         spyCandles: useSpy,
         qqqCandles: useQqq,
-        earningsDates,
+        earningsDates: earnings.dates,
         sourceLabel: symbolBars.source,
-        warnings: symbolBars.warnings,
+        warnings: [
+          ...symbolBars.warnings,
+          ...(earnings.status !== 'ok' ? [earnings.detail] : []),
+        ],
         evalBars: 30,
         setups,
       });

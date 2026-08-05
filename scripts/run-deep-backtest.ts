@@ -1,16 +1,20 @@
 /**
  * Deep Must-profile backtest across big+mid+small.
  *
- * Prefers TIINGO/FMP/FINNHUB when env keys are set; otherwise uses Yahoo chart
- * EOD (script-only, no key) so we can still score ~2y without rate-limit keys.
+ * Matches portfolio-backtest honesty: Must + earnings blackout (live Desk
+ * parity), tiered slippage, gap-aware fills. Prefers TIINGO/FMP/FINNHUB when
+ * env keys are set; otherwise uses Yahoo chart EOD (script-only) so we can
+ * still score ~2y — but without FINNHUB / FMP / ALPHA_VANTAGE keys the blackout
+ * fails closed (same as the portfolio screen). Finnhub → FMP → Alpha Vantage.
  *
  *   npx tsx scripts/run-deep-backtest.ts
- *   TIINGO_API_KEY=... npx tsx scripts/run-deep-backtest.ts
+ *   TIINGO_API_KEY=... FINNHUB_API_KEY=... FMP_API_KEY=... ALPHA_VANTAGE_API_KEY=... npx tsx scripts/run-deep-backtest.ts
  */
 import { defaultSetups } from '../constants/seed';
 import { BacktestProfile, PROFILE_MUST } from '../lib/backtestProfile';
 import { costsForSymbol } from '../lib/backtestCosts';
 import { fetchDailyCandlesResolved } from '../lib/candles';
+import { fetchEarningsDates, summarizeEarningsFetches } from '../lib/finnhub';
 import { runBacktest } from '../lib/backtest';
 import { runCombinedPlaybookBacktest } from '../lib/playbookCombined';
 import { Candle } from '../types/trading';
@@ -28,19 +32,26 @@ const START_DATE = process.env.BT_START || undefined;
 /** Max simultaneous open positions across the whole portfolio (capital limit). */
 const MAX_CONCURRENT = Number(process.env.BT_MAX_OPEN ?? 3);
 
-/** Must realism, optionally with the SPY/QQQ market-regime gate stacked on. */
-const PROFILE: BacktestProfile = REGIME
-  ? {
-      ...PROFILE_MUST,
-      label: 'Must + regime gate',
-      description: `${PROFILE_MUST.description} Plus SPY/QQQ market-regime gate.`,
-      gates: { ...PROFILE_MUST.gates, marketRegime: true },
-    }
-  : PROFILE_MUST;
+/**
+ * Same base as the portfolio screen: Must + earnings blackout (Desk parity).
+ * Optionally stack SPY/QQQ market-regime via BT_REGIME=1.
+ */
+const PROFILE: BacktestProfile = {
+  ...PROFILE_MUST,
+  label: REGIME ? 'Must + earnings + regime' : 'Must + earnings blackout',
+  description: REGIME
+    ? `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity) and SPY/QQQ market-regime gate.`
+    : `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity) — same gates as Portfolio backtest.`,
+  gates: {
+    ...PROFILE_MUST.gates,
+    earningsBlackout: true,
+    ...(REGIME ? { marketRegime: true } : {}),
+  },
+};
 
-// Universe picked by demonstrated combined R, not sector-matching. High-beta
-// consumer/gaming names (PENN, LYFT, CZR, ETSY, DECK) all lost over 5y and
-// were dropped; quality growth mid-caps (DUOL, FIX, IOT) fill the small/mid slots.
+// Universe picked by demonstrated combined R (historically scored without the
+// earnings blackout). Re-score with FINNHUB / FMP / ALPHA_VANTAGE keys — this
+// script uses the same blackout as the portfolio UI, so totals will differ.
 const BIG = ['AAPL', 'AMZN', 'JPM', 'XOM'];
 const MID = ['FANG', 'CFG', 'WSM', 'DDOG'];
 const SMALL = ['CROX', 'DUOL', 'FIX', 'IOT', 'PATH', 'RKLB'];
@@ -71,6 +82,7 @@ const keys = {
   tiingoApiKey: process.env.TIINGO_API_KEY || undefined,
   fmpApiKey: process.env.FMP_API_KEY || undefined,
   finnhubApiKey: process.env.FINNHUB_API_KEY || undefined,
+  alphaVantageApiKey: process.env.ALPHA_VANTAGE_API_KEY || undefined,
   days: DAYS,
 };
 
@@ -127,6 +139,7 @@ async function fetchYahooDaily(symbol: string, days: number): Promise<{
               close?: Array<number | null>;
               volume?: Array<number | null>;
             }>;
+            adjclose?: Array<{ adjclose?: Array<number | null> }>;
           };
         }>;
       };
@@ -134,10 +147,12 @@ async function fetchYahooDaily(symbol: string, days: number): Promise<{
     const result = data.chart?.result?.[0];
     const ts = result?.timestamp ?? [];
     const q = result?.indicators?.quote?.[0];
+    const adjSeries = result?.indicators?.adjclose?.[0]?.adjclose ?? [];
     if (!ts.length || !q?.close?.length) {
       return { candles: [], source: 'yahoo', warnings: [`Yahoo empty payload for ${upper}`] };
     }
     const candles: Candle[] = [];
+    let usedAdj = 0;
     for (let i = 0; i < ts.length; i++) {
       const open = q.open?.[i];
       const high = q.high?.[i];
@@ -153,13 +168,28 @@ async function fetchYahooDaily(symbol: string, days: number): Promise<{
       ) {
         continue;
       }
-      candles.push({ time: ts[i], open, high, low, close, volume: volume ?? 0 });
+      const adj = adjSeries[i];
+      const factor =
+        typeof adj === 'number' && Number.isFinite(adj) && adj > 0 ? adj / close : 1;
+      if (factor !== 1) usedAdj += 1;
+      candles.push({
+        time: ts[i],
+        open: open * factor,
+        high: high * factor,
+        low: low * factor,
+        close: close * factor,
+        volume: volume ?? 0,
+      });
     }
     candles.sort((a, b) => a.time - b.time);
+    const adjNote =
+      usedAdj > 0
+        ? ', split+dividend adjusted via adjclose'
+        : '';
     return {
       candles,
       source: 'yahoo',
-      warnings: [`Yahoo EOD (${candles.length} daily bars, range=${range}).`],
+      warnings: [`Yahoo EOD (${candles.length} daily bars, range=${range}${adjNote}).`],
     };
   } catch (err) {
     return {
@@ -193,15 +223,39 @@ async function main() {
   );
   console.log(`Setups (${defaultSetups.length}): ${defaultSetups.map((s) => s.name).join(', ')}`);
   console.log(`Universe (${SYMBOLS.length}): ${SYMBOLS.join(', ')}`);
-  console.log(`Profile: ${PROFILE.description}`);
+  console.log(`Profile: ${PROFILE.label} — ${PROFILE.description}`);
   console.log(
-    'Realism: gap-aware fills, outliers kept, tiered slippage 5/10/20 bps, portfolio position cap.'
+    'Realism: gap-aware + gap-beyond stop fills, outliers kept, ADV-tiered slip+spread (≥$100M 5+1 / ≥$20M 10+2 / else 20+5 bps), earnings blackout (Desk/portfolio parity), portfolio position cap.'
   );
   console.log(
     `Keys: tiingo=${Boolean(keys.tiingoApiKey)} fmp=${Boolean(keys.fmpApiKey)} finnhub=${Boolean(
       keys.finnhubApiKey
-    )} (Yahoo fallback if missing/demo)\n`
+    )} alphavantage=${Boolean(keys.alphaVantageApiKey)} (Yahoo fallback if missing/demo)`
   );
+  if (!keys.finnhubApiKey && !keys.fmpApiKey && !keys.alphaVantageApiKey) {
+    console.log(
+      'WARNING: No FINNHUB / FMP / ALPHA_VANTAGE key — earnings blackout fails closed on every symbol (expect ~0 trades).\n'
+    );
+  } else if (!keys.finnhubApiKey) {
+    console.log(
+      `No Finnhub key — earnings via ${[
+        keys.fmpApiKey ? 'FMP' : '',
+        keys.alphaVantageApiKey ? 'Alpha Vantage' : '',
+      ]
+        .filter(Boolean)
+        .join(' → ')} only (fail-closed on empty/error).\n`
+    );
+  } else {
+    const backups = [
+      keys.fmpApiKey ? 'FMP' : '',
+      keys.alphaVantageApiKey ? 'Alpha Vantage' : '',
+    ].filter(Boolean);
+    console.log(
+      `Finnhub earnings calendars per symbol${
+        backups.length ? ` (${backups.join(' → ')} backup)` : ''
+      }; fail-closed on empty/error.\n`
+    );
+  }
 
   const spy = await fetchBars('SPY');
   await sleep(SLEEP_MS);
@@ -227,6 +281,7 @@ async function main() {
   let outlierLosses = 0;
   let outlierWins = 0;
   const sources: Record<string, number> = {};
+  const earningsFetches: Awaited<ReturnType<typeof fetchEarningsDates>>[] = [];
 
   for (const symbol of SYMBOLS) {
     const raw = await fetchBars(symbol);
@@ -245,12 +300,36 @@ async function main() {
       continue;
     }
 
-    const costs = costsForSymbol(symbol);
+    const earnFrom = first
+      ? fmt(first.time)
+      : new Date(Date.now() - DAYS * 86400000).toISOString().slice(0, 10);
+    const earnTo = last
+      ? new Date(last.time * 1000 + 2 * 86400000).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    const earnings = await fetchEarningsDates(
+      symbol,
+      keys.finnhubApiKey,
+      earnFrom,
+      earnTo,
+      keys.fmpApiKey,
+      keys.alphaVantageApiKey
+    );
+    earningsFetches.push(earnings);
+    await sleep(Math.min(400, SLEEP_MS));
+    console.log(
+      `  earnings: ${earnings.status}${
+        earnings.status === 'ok' ? ` (${earnings.dates.length} dates)` : ` — ${earnings.detail}`
+      }`
+    );
+
+    const costs = costsForSymbol(symbol, candles);
     const common = {
       symbol,
       candles,
       spyCandles: spyBars,
       qqqCandles: qqqBars,
+      earningsDates: earnings.dates,
+      earningsCalendarStatus: earnings.status,
       sourceLabel: raw.source,
       warnings: raw.warnings,
       evalBars: evalBarsForWindow(candles),
@@ -299,6 +378,12 @@ async function main() {
         } avgR=${r(result.trades.length ? totalR / result.trades.length : null)} totalR=${r(totalR)}`
       );
     }
+  }
+
+  if (earningsFetches.length) {
+    const earnSummary = summarizeEarningsFetches(earningsFetches);
+    console.log(`\n=== EARNINGS CALENDARS ===`);
+    console.log(earnSummary.headline);
   }
 
   console.log(`\n=== SETUP RANK (${PROFILE.label}, outliers kept, gap-aware fills) ===`);

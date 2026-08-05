@@ -18,13 +18,19 @@ import {
   analyzeBuyingPower,
   buyingPowerNeedsWarning,
   BuyingPowerReport,
+  scaleDollarsForBuyingPower,
 } from '@/lib/buyingPower';
 import {
   AdjustmentStatus,
   fetchDailyCandlesResolved,
   isLiveCandleSource,
 } from '@/lib/candles';
-import { fetchEarningsDates } from '@/lib/finnhub';
+import {
+  EarningsFetchResult,
+  EarningsFetchStatus,
+  fetchEarningsDates,
+  summarizeEarningsFetches,
+} from '@/lib/finnhub';
 import { ParamVerdictTone } from '@/lib/parameterLab';
 import {
   ParameterSweepResult,
@@ -46,10 +52,26 @@ import { runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
 import { CapacityTrade } from '@/lib/portfolioCapacity';
 import { Candle } from '@/types/trading';
 
+/** Same roster as scripts/run-deep-backtest.ts — picked on demonstrated combined R. */
 const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
 
+function normalizeSymbolList(text: string): string {
+  return [
+    ...new Set(
+      text
+        .split(/[,\s]+/)
+        .map((s) => s.toUpperCase().trim())
+        .filter(Boolean)
+    ),
+  ]
+    .sort()
+    .join(',');
+}
+
+const DEFAULT_SYMBOLS_KEY = normalizeSymbolList(DEFAULT_SYMBOLS);
+
 /** How complete/trustworthy this ticker's EOD was for the backtest window. */
-type CoverageStatus = 'ok' | 'short' | 'none' | 'skipped' | 'suspect';
+type CoverageStatus = 'ok' | 'short' | 'none' | 'skipped' | 'suspect' | 'unadjusted';
 
 type SymbolRow = {
   symbol: string;
@@ -63,6 +85,8 @@ type SymbolRow = {
   adjusted: AdjustmentStatus;
   /** Provider failures / backups that applied to this symbol. */
   notes: string[];
+  /** Earnings calendar fetch outcome (when the ticker was scored). */
+  earningsStatus?: EarningsFetchStatus;
   /** Only set on cappedRows — how many signals were skipped by max-open. */
   skipped?: number;
 };
@@ -94,6 +118,8 @@ type PortfolioSummary = {
   usableSymbols: number;
   /** Tickers left out of totals (no data / short / skipped). */
   excludedSymbols: number;
+  /** Earnings calendar rollup for the scored basket. */
+  earningsSummary: ReturnType<typeof summarizeEarningsFetches> | null;
   warnings: string[];
 };
 
@@ -197,6 +223,7 @@ function coverageLabel(status: CoverageStatus): string {
   if (status === 'short') return 'Short history';
   if (status === 'none') return 'No data';
   if (status === 'suspect') return 'Suspect data';
+  if (status === 'unadjusted') return 'Unadjusted';
   return 'Skipped';
 }
 
@@ -204,6 +231,7 @@ function coverageTone(status: CoverageStatus): 'good' | 'warn' | 'bad' | 'neutra
   if (status === 'ok') return 'good';
   if (status === 'short') return 'warn';
   if (status === 'none') return 'bad';
+  if (status === 'unadjusted') return 'warn';
   return 'bad';
 }
 
@@ -217,6 +245,19 @@ function adjustmentTone(adjusted: AdjustmentStatus): 'good' | 'warn' | 'neutral'
   if (adjusted === 'adjusted') return 'good';
   if (adjusted === 'raw') return 'warn';
   return 'neutral';
+}
+
+function earningsStatusLabel(status: EarningsFetchStatus): string {
+  if (status === 'ok') return 'earn ok';
+  if (status === 'no_key') return 'earn: no key';
+  if (status === 'error') return 'earn: error';
+  return 'earn: empty';
+}
+
+function earningsStatusTone(status: EarningsFetchStatus): 'good' | 'warn' | 'bad' {
+  if (status === 'ok') return 'good';
+  if (status === 'error' || status === 'no_key') return 'bad';
+  return 'warn';
 }
 
 /** Portfolio totals only count full live EOD — no-data / short / skipped stay in the table. */
@@ -435,6 +476,19 @@ export default function PortfolioBacktestScreen() {
     });
   }, [cappedView, effectiveTrades, accountSize, riskPercent, settings.accountSize, settings.riskPercent]);
 
+  const riskPerTrade =
+    (Number(accountSize) || settings.accountSize) *
+    ((Number(riskPercent) || settings.riskPercent) / 100);
+
+  const dollarPnL = useMemo(() => {
+    if (!cappedView) return null;
+    return scaleDollarsForBuyingPower({
+      totalR: cappedView.capped.totalR,
+      riskPerTrade,
+      report: buyingPower,
+    });
+  }, [cappedView, riskPerTrade, buyingPower]);
+
   const perSymbolRows = useMemo(() => {
     if (!summary || !cappedView) return [] as SymbolRow[];
     const base = perSymbolMode === 'capped' ? cappedView.cappedRows : effectiveRows;
@@ -462,6 +516,8 @@ export default function PortfolioBacktestScreen() {
       ];
       const keys = {
         tiingoApiKey: settings.tiingoApiKey || undefined,
+        tiingoProxyUrl: settings.tiingoProxyUrl || undefined,
+        tiingoProxyToken: settings.tiingoProxyToken || undefined,
         fmpApiKey: settings.fmpApiKey || undefined,
         finnhubApiKey: settings.finnhubApiKey || undefined,
         alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
@@ -514,20 +570,26 @@ export default function PortfolioBacktestScreen() {
       const rows: SymbolRow[] = [];
       const usableTrades: PickerTrade[] = [];
       const candlesBySymbol = new Map<string, typeof spy.candles>();
-      const earningsBySymbol = new Map<string, string[]>();
+      const earningsBySymbol = new Map<string, EarningsFetchResult>();
       // Must realism + live earnings blackout (parity with Desk / DEFAULT_LIVE_GATES).
-      // Per-symbol tiered slippage (5/10/20 bps) is applied at each ticker run —
-      // not a flat profile cost — matching the deep-backtest script.
+      // Per-symbol tiered friction from trailing ADV (not hardcoded symbol lists).
       const portfolioProfile = {
         ...PROFILE_MUST,
         gates: { ...PROFILE_MUST.gates, earningsBlackout: true },
-        description: `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity). Tiered slippage 5/10/20 bps by liquidity.`,
+        description: `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity). Tiered slippage by trailing ADV.`,
       };
-      if (!settings.finnhubApiKey) {
+      const hasEarningsKey = Boolean(
+        settings.finnhubApiKey?.trim() ||
+          settings.fmpApiKey?.trim() ||
+          settings.alphaVantageApiKey?.trim()
+      );
+      if (!hasEarningsKey) {
         warnings.push(
-          'Add a Finnhub key in Settings to load earnings calendars — without it the blackout gate fails closed and blocks new entries.'
+          'No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed on every symbol (expect ~0 trades). Add a key in Settings.'
         );
       }
+
+      const earningsFetches: EarningsFetchResult[] = [];
 
       for (const symbol of symbols) {
         setProgress(`Backtesting ${symbol} (${rows.length + 1}/${symbols.length})…`);
@@ -544,6 +606,14 @@ export default function PortfolioBacktestScreen() {
         let coverage = classifyCoverage(bars.source, bars.candles.length, requestedDays);
         if (suspectGaps.length && (coverage === 'ok' || coverage === 'short')) {
           coverage = 'suspect';
+        } else if (
+          adjusted !== 'adjusted' &&
+          (coverage === 'ok' || coverage === 'short')
+        ) {
+          // Portfolio totals require split+dividend adjusted EOD. RAW still
+          // has dividend drag; unknown (Yahoo) is unverifiable — both excluded
+          // even when the gap guard is quiet.
+          coverage = 'unadjusted';
         }
         if (coverage === 'suspect') {
           const worst = suspectGaps.reduce((a, b) => (Math.abs(b.pct) > Math.abs(a.pct) ? b : a));
@@ -561,7 +631,26 @@ export default function PortfolioBacktestScreen() {
                 worst.date
               } on ${adjusted === 'raw' ? 'RAW unadjusted' : 'unknown-adjustment'} ${
                 bars.source
-              } bars — likely an unadjusted split, so trades on this feed would be fake. Excluded from the run; use Tiingo (adjusted) or fix the data source.`,
+              } bars — likely an unadjusted split, so trades on this feed would be fake. Excluded from the run; use Tiingo (adjusted) or FMP dividend-adjusted.`,
+              ...notes,
+            ],
+          });
+          continue;
+        }
+        if (coverage === 'unadjusted') {
+          rows.push({
+            symbol,
+            source: bars.source,
+            bars: bars.candles.length,
+            trades: 0,
+            winRate: null,
+            totalR: 0,
+            coverage,
+            adjusted,
+            notes: [
+              adjusted === 'raw'
+                ? `Bars from ${bars.source} are RAW (dividends/splits not adjusted) — excluded from portfolio totals. Use Tiingo or an FMP plan with the dividend-adjusted EOD endpoint.`
+                : `Adjustment of ${bars.source} bars is unverified (adj?) — excluded from portfolio totals. Use Tiingo or FMP dividend-adjusted EOD so splits/dividends cannot silently distort R.`,
               ...notes,
             ],
           });
@@ -595,27 +684,29 @@ export default function PortfolioBacktestScreen() {
           ? new Date(lastBar * 1000 + 2 * 86400000).toISOString().slice(0, 10)
           : new Date().toISOString().slice(0, 10);
         setProgress(`Earnings ${symbol} (${rows.length + 1}/${symbols.length})…`);
-        const earningsDates = await fetchEarningsDates(
+        const earnings = await fetchEarningsDates(
           symbol,
           settings.finnhubApiKey || undefined,
           earnFrom,
-          earnTo
+          earnTo,
+          settings.fmpApiKey || undefined,
+          settings.alphaVantageApiKey || undefined
         );
-        earningsBySymbol.set(symbol, earningsDates);
-        if (!earningsDates.length && settings.finnhubApiKey) {
-          notes.push(
-            'No earnings dates returned for this window — blackout gate fails closed (no new entries).'
-          );
+        earningsBySymbol.set(symbol, earnings);
+        earningsFetches.push(earnings);
+        if (earnings.status !== 'ok') {
+          notes.push(earnings.detail);
         }
 
-        const symbolCosts = costsForSymbol(symbol);
+        const symbolCosts = costsForSymbol(symbol, bars.candles);
         const combined = runCombinedPlaybookBacktest({
           symbol,
           setups,
           candles: bars.candles,
           spyCandles: spy.candles,
           qqqCandles: qqq.candles,
-          earningsDates,
+          earningsDates: earnings.dates,
+          earningsCalendarStatus: earnings.status,
           sourceLabel: bars.source,
           profile: { ...portfolioProfile, costs: symbolCosts },
         });
@@ -639,16 +730,9 @@ export default function PortfolioBacktestScreen() {
             `Thin history: ${bars.candles.length} bars via ${bars.source} (requested ~${requestedDays} calendar days).`
           );
         }
-        rowNotes.push(`Slippage tier: ${slippageBpsLabel(symbol)} (liquidity).`);
-        if (adjusted !== 'adjusted') {
-          rowNotes.push(
-            adjusted === 'raw'
-              ? `Bars from ${bars.source} are RAW (dividends/splits not adjusted) — no split-sized gaps detected, but dividend drops slightly distort long backtests.`
-              : `Adjustment of ${bars.source} bars is unverified — no split-sized gaps detected.`
-          );
-        }
-        if (earningsDates.length) {
-          rowNotes.push(`Earnings calendar: ${earningsDates.length} dates in window.`);
+        rowNotes.push(`Slippage tier: ${slippageBpsLabel(symbol, bars.candles)} (ADV).`);
+        if (earnings.status === 'ok') {
+          rowNotes.push(`Earnings calendar: ${earnings.dates.length} dates in window.`);
         }
         rows.push({
           symbol,
@@ -659,6 +743,7 @@ export default function PortfolioBacktestScreen() {
           totalR: combined.totalR ?? 0,
           coverage,
           adjusted,
+          earningsStatus: earnings.status,
           notes: rowNotes,
         });
       }
@@ -666,6 +751,11 @@ export default function PortfolioBacktestScreen() {
       const usableSymbolCount = rows.filter((r) => isUsableForTotals(r.coverage)).length;
       const excludedSymbolCount = rows.length - usableSymbolCount;
       const wins = usableTrades.filter((t) => t.r > 0).length;
+      const earningsSummary =
+        earningsFetches.length > 0 ? summarizeEarningsFetches(earningsFetches) : null;
+      if (earningsSummary?.anyBlocked) {
+        warnings.unshift(earningsSummary.headline);
+      }
       setProgress('Comparing picker rules…');
       const pickers = comparePickerRules(usableTrades, cap);
       // Headline stays on Production — never auto-activate the in-sample "Best"
@@ -677,12 +767,16 @@ export default function PortfolioBacktestScreen() {
       let paramSweep: ParameterSweepResult | null = null;
       const sweepTickers = rows
         .filter((r) => isUsableForTotals(r.coverage))
-        .map((r) => ({
-          symbol: r.symbol,
-          candles: candlesBySymbol.get(r.symbol)!,
-          earningsDates: earningsBySymbol.get(r.symbol) ?? [],
-          costs: costsForSymbol(r.symbol),
-        }))
+        .map((r) => {
+          const earn = earningsBySymbol.get(r.symbol);
+          return {
+            symbol: r.symbol,
+            candles: candlesBySymbol.get(r.symbol)!,
+            earningsDates: earn?.dates ?? [],
+            earningsCalendarStatus: earn?.status,
+            costs: costsForSymbol(r.symbol, candlesBySymbol.get(r.symbol)),
+          };
+        })
         .filter((t) => t.candles);
       if (sweepTickers.length) {
         setProgress('Sweeping exit parameters…');
@@ -713,6 +807,7 @@ export default function PortfolioBacktestScreen() {
         requestedDays,
         usableSymbols: usableSymbolCount,
         excludedSymbols: excludedSymbolCount,
+        earningsSummary,
         warnings,
       });
     } finally {
@@ -721,9 +816,8 @@ export default function PortfolioBacktestScreen() {
     }
   };
 
-  const riskPerTrade =
-    (Number(accountSize) || settings.accountSize) *
-    ((Number(riskPercent) || settings.riskPercent) / 100);
+  const usingDefaultBasket =
+    normalizeSymbolList(symbolsText) === DEFAULT_SYMBOLS_KEY;
 
   return (
     <Screen>
@@ -731,7 +825,7 @@ export default function PortfolioBacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Portfolio backtest"
-          subtitle="Runs the combined Playbook across a symbol list with gap-aware fills, tiered slippage (5/10/20 bps), earnings blackout (live Desk parity), then a max-open-positions capital cap. R is converted to dollars using your account settings — with a buying-power check on the capped book."
+          subtitle="Runs the combined Playbook across a symbol list with gap-aware + gap-beyond stop fills, ADV-tiered slip/spread (≥$100M 5+1 / ≥$20M 10+2 / else 20+5 bps), earnings blackout (live Desk parity), then a max-open-positions capital cap. R is converted to dollars using your account settings — dollars scale down when peak open notional would exceed the account."
         />
 
         <Field
@@ -741,6 +835,13 @@ export default function PortfolioBacktestScreen() {
           onChangeText={setSymbolsText}
           multiline
         />
+        {usingDefaultBasket ? (
+          <Text style={styles.riskNote}>
+            Default basket is performance-picked on the same history it scores (deep-script
+            universe). Prefer your own watchlist or a liquid set you did not cherry-pick —
+            otherwise treat the total as optimistic.
+          </Text>
+        ) : null}
         <View style={styles.row}>
           <View style={styles.rowItem}>
             <Field
@@ -780,6 +881,25 @@ export default function PortfolioBacktestScreen() {
         <Text style={styles.riskNote}>
           1R = ${riskPerTrade.toFixed(0)} per trade at these settings (saved to Settings on run).
         </Text>
+        {!settings.finnhubApiKey?.trim() &&
+        !settings.fmpApiKey?.trim() &&
+        !settings.alphaVantageApiKey?.trim() ? (
+          <View style={styles.losingBanner}>
+            <Text style={styles.losingBannerText}>
+              No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed, so a run will
+              take almost no trades. Add a key in Settings (Finnhub → FMP → Alpha Vantage) before
+              trusting portfolio results.
+            </Text>
+          </View>
+        ) : !settings.finnhubApiKey?.trim() ? (
+          <View style={styles.losingBanner}>
+            <Text style={styles.losingBannerText}>
+              No Finnhub key — earnings calendars use FMP
+              {settings.alphaVantageApiKey?.trim() ? ' / Alpha Vantage' : ''} backup only. Finnhub
+              is preferred when available.
+            </Text>
+          </View>
+        ) : null}
 
         <Button label={loading ? 'Running…' : 'Run portfolio backtest'} onPress={() => run()} disabled={loading} />
 
@@ -796,8 +916,8 @@ export default function PortfolioBacktestScreen() {
               title="Portfolio"
               subtitle={
                 summary.excludedSymbols
-                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect left out.`
-                  : `Totals use all ${summary.usableSymbols} tickers (full live EOD).`
+                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out.`
+                  : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD).`
               }
             />
             <View style={styles.stats}>
@@ -824,8 +944,8 @@ export default function PortfolioBacktestScreen() {
                   {cappedView.capped.totalR.toFixed(1)}R
                 </Text>
                 <Text style={styles.statSub}>
-                  ≈ ${(cappedView.capped.totalR * riskPerTrade).toFixed(0)} ·{' '}
-                  {cappedView.capped.trades} taken ·{' '}
+                  ≈ ${dollarPnL ? dollarPnL.scaledDollars.toFixed(0) : '—'}
+                  {dollarPnL?.scaled ? ' fundable' : ''} · {cappedView.capped.trades} taken ·{' '}
                   {cappedView.capped.winRate == null
                     ? '—'
                     : `${Math.round(cappedView.capped.winRate * 100)}%`}{' '}
@@ -842,7 +962,19 @@ export default function PortfolioBacktestScreen() {
               </View>
             ) : null}
 
-            {buyingPower && buyingPowerNeedsWarning(buyingPower) ? (
+            {summary.earningsSummary?.anyBlocked ? (
+              <View style={styles.losingBanner}>
+                <Text style={styles.losingBannerText}>{summary.earningsSummary.headline}</Text>
+              </View>
+            ) : null}
+
+            {summary.earningsSummary &&
+            !summary.earningsSummary.anyBlocked &&
+            summary.earningsSummary.ok > 0 ? (
+              <Text style={styles.riskNote}>{summary.earningsSummary.headline}</Text>
+            ) : null}
+
+            {buyingPower && buyingPowerNeedsWarning(buyingPower) && dollarPnL?.scaled ? (
               <View style={styles.losingBanner}>
                 <Text style={styles.losingBannerText}>
                   Buying power: peak open notional ≈ ${buyingPower.peakNotional.toFixed(0)} (
@@ -859,16 +991,20 @@ export default function PortfolioBacktestScreen() {
                         buyingPower.oversizeTrades === 1 ? '' : 's'
                       } alone exceed the account`
                     : ''}
-                  . Dollar ≈ R × risk$ assumes every trade fits; tighten risk %, raise account, or
-                  cut max-open before trusting the $.
+                  . $ shown is scaled to{' '}
+                  {Math.round(dollarPnL.scale * 100)}% of full-risk sizing (≈$
+                  {dollarPnL.unconstrainedDollars.toFixed(0)} unconstrained → ≈$
+                  {dollarPnL.scaledDollars.toFixed(0)} fundable). R is unchanged. Tighten risk %,
+                  raise account, or cut max-open to size at full risk.
                 </Text>
               </View>
             ) : null}
 
             <View style={styles.noteBox}>
               <Text style={styles.noteItem}>
-                • Totals omit No data, short history, skipped, and suspect-data tickers (see
-                Coverage). Use the Per symbol toggle for uncapped vs max-open breakdowns.
+                • Totals omit No data, short history, skipped, suspect-data, and unadjusted
+                (RAW / adj?) tickers — portfolio scores adjusted EOD only (see Coverage). Use the
+                Per symbol toggle for uncapped vs max-open breakdowns.
               </Text>
               <Text style={styles.noteItem}>
                 • Max-open defaults to Production ({cappedView.pickerName}
@@ -890,18 +1026,25 @@ export default function PortfolioBacktestScreen() {
                 {Math.round(summary.concurrency.overCapPct * 100)}% of active days.
               </Text>
               <Text style={styles.noteItem}>
-                • Slippage is tiered by liquidity: 5 bps megacap · 10 bps mid · 20 bps small (see
-                per-symbol notes). Same tiers as the deep-backtest script.
+                • Friction is tiered by trailing ADV (≥$100M → 5+1 bps, ≥$20M → 10+2,
+                else 20+5; missing volume → small). Stop gaps fill at the open and
+                worsen further into the gap (10–25% of the gap). Stock-loan borrow is n/a
+                (long-only). Same ADV tiers as the deep-backtest script.
               </Text>
               <Text style={styles.noteItem}>
-                • Dollar figures assume 1R = ${riskPerTrade.toFixed(0)} (account × risk %). The capped
-                number is the realistic one
+                • Earnings blackout matches live Desk (±1 day). Calendars: Finnhub → FMP → Alpha
+                Vantage. No key, fetch errors, and empty windows each fail closed; banners and
+                per-symbol notes say which. Partial loads still score symbols with a calendar.
+              </Text>
+              <Text style={styles.noteItem}>
+                • Dollars use 1R = ${riskPerTrade.toFixed(0)} (account × risk %), then shrink
+                uniformly if peak open notional would exceed the account — so the $ is fundable,
+                not leveraged. R totals stay full-risk.
                 {buyingPower && !buyingPowerNeedsWarning(buyingPower)
-                  ? ` · peak open notional ≈ $${buyingPower.peakNotional.toFixed(0)} (${(
+                  ? ` Peak open notional ≈ $${buyingPower.peakNotional.toFixed(0)} (${(
                       buyingPower.peakNotionalPct * 100
-                    ).toFixed(0)}% of account)`
+                    ).toFixed(0)}% of account).`
                   : ''}
-                .
               </Text>
             </View>
 
@@ -1143,9 +1286,11 @@ export default function PortfolioBacktestScreen() {
                             ? ' · no live EOD (backtest refused)'
                             : row.coverage === 'suspect'
                               ? ' · split-sized gap on non-adjusted bars (excluded)'
-                              : row.coverage === 'short'
-                                ? ' · live source but thinner than requested window'
-                                : ' · not enough history to score'}
+                              : row.coverage === 'unadjusted'
+                                ? ' · RAW / unverified adjustment (excluded — adjusted EOD only)'
+                                : row.coverage === 'short'
+                                  ? ' · live source but thinner than requested window'
+                                  : ' · not enough history to score'}
                         </Text>
                         {row.notes.slice(0, 4).map((n) => (
                           <Text key={n} style={styles.noteLine}>
@@ -1277,6 +1422,12 @@ export default function PortfolioBacktestScreen() {
                         tone={row.source === 'demo' || row.source === 'none' ? 'warn' : 'good'}
                       />
                       <Pill label={adjustmentLabel(row.adjusted)} tone={adjustmentTone(row.adjusted)} />
+                      {row.earningsStatus ? (
+                        <Pill
+                          label={earningsStatusLabel(row.earningsStatus)}
+                          tone={earningsStatusTone(row.earningsStatus)}
+                        />
+                      ) : null}
                     </View>
                   </View>
                   {row.coverage === 'none' ? (
@@ -1284,6 +1435,10 @@ export default function PortfolioBacktestScreen() {
                   ) : row.coverage === 'suspect' ? (
                     <Text style={styles.symbolMeta}>
                       Suspected unadjusted split in the bars — backtest not run (see notes).
+                    </Text>
+                  ) : row.coverage === 'unadjusted' ? (
+                    <Text style={styles.symbolMeta}>
+                      Non-adjusted EOD (RAW / adj?) — excluded from portfolio totals (see notes).
                     </Text>
                   ) : row.bars < 60 ? (
                     <Text style={styles.symbolMeta}>

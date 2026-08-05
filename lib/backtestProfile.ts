@@ -25,7 +25,7 @@ export const PROFILE_MUST: BacktestProfile = {
   id: 'must',
   label: 'Must (de-dupe + slippage)',
   description:
-    'One best setup per day and 5 bps slippage. Commission 0 (Robinhood stocks). No other filters.',
+    'One best setup per day and tiered slip+spread. Commission 0 (Robinhood stocks). No other filters.',
   gates: {
     marketRegime: false,
     earningsBlackout: false,
@@ -33,7 +33,7 @@ export const PROFILE_MUST: BacktestProfile = {
     sectorRs: false,
     volatility: false,
   },
-  costs: { slippagePct: 0.0005, commissionPct: 0 },
+  costs: { slippagePct: 0.0005, commissionPct: 0, halfSpreadPct: 0.0001, gapBeyondFraction: 0.1, overnightBorrowPctPerDay: 0 },
   stopCooldownBars: 0,
 };
 
@@ -50,7 +50,7 @@ export const PROFILE_ALL8: BacktestProfile = {
     sectorRs: true,
     volatility: true,
   },
-  costs: { slippagePct: 0.0005, commissionPct: 0 },
+  costs: { slippagePct: 0.0005, commissionPct: 0, halfSpreadPct: 0.0001, gapBeyondFraction: 0.1, overnightBorrowPctPerDay: 0 },
   stopCooldownBars: 3,
 };
 

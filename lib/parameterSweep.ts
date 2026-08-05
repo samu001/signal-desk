@@ -23,6 +23,7 @@
 import { runBacktestVariants } from '@/lib/backtest';
 import { BacktestCostModel, DEFAULT_BACKTEST_COSTS } from '@/lib/backtestCosts';
 import { PlaybookGateFlags } from '@/lib/backtestProfile';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import { LevelTuning } from '@/lib/levelTuning';
 import {
   buildVerdict,
@@ -48,6 +49,8 @@ export type SweepTicker = {
   candles: Candle[];
   /** YYYY-MM-DD earnings dates for ±1 day blackout (same as portfolio run). */
   earningsDates?: string[];
+  /** Distinguishes no-key / fetch-error / empty when dates are []. */
+  earningsCalendarStatus?: EarningsFetchStatus;
   /** Per-ticker costs (tiered slippage); falls back to input.costs. */
   costs?: BacktestCostModel;
 };
@@ -145,6 +148,7 @@ export function runParameterSweep(input: {
           spyCandles: input.spyCandles,
           qqqCandles: input.qqqCandles,
           earningsDates: ticker.earningsDates,
+          earningsCalendarStatus: ticker.earningsCalendarStatus,
           costs: ticker.costs ?? input.costs ?? DEFAULT_BACKTEST_COSTS,
           gates: input.gates,
           stopCooldownBars: input.stopCooldownBars,
@@ -172,7 +176,12 @@ export function runParameterSweep(input: {
     byVariant.forEach((candidates, vi) => {
       const { winners } = selectBestTradesPerDay(candidates);
       const { taken: nonOverlapping } = enforceOneOpenPosition(winners);
-      const { taken } = applyStopCooldown(nonOverlapping, input.stopCooldownBars ?? 0);
+      const barTimes = ticker.candles.map((c) => c.time);
+      const { taken } = applyStopCooldown(
+        nonOverlapping,
+        input.stopCooldownBars ?? 0,
+        barTimes
+      );
       for (const t of taken) {
         pooledByVariant[vi].push({ ...t, symbol: ticker.symbol });
         uncappedByVariant[vi].trades.push({

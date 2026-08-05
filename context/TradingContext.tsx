@@ -151,10 +151,21 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const apiKeysKey = useMemo(() => {
     const s = state?.settings;
     if (!s) return '';
-    return [s.finnhubApiKey, s.tiingoApiKey, s.fmpApiKey, s.alphaVantageApiKey, s.yahooProxyUrl, s.yahooProxyToken].join('|');
+    return [
+      s.finnhubApiKey,
+      s.tiingoApiKey,
+      s.tiingoProxyUrl,
+      s.tiingoProxyToken,
+      s.fmpApiKey,
+      s.alphaVantageApiKey,
+      s.yahooProxyUrl,
+      s.yahooProxyToken,
+    ].join('|');
   }, [
     state?.settings.finnhubApiKey,
     state?.settings.tiingoApiKey,
+    state?.settings.tiingoProxyUrl,
+    state?.settings.tiingoProxyToken,
     state?.settings.fmpApiKey,
     state?.settings.alphaVantageApiKey,
     state?.settings.yahooProxyUrl,
@@ -214,6 +225,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       const bundle = await fetchMarketBundle(symbolList(), {
         finnhubApiKey: current.settings.finnhubApiKey || undefined,
         tiingoApiKey: current.settings.tiingoApiKey || undefined,
+        tiingoProxyUrl: current.settings.tiingoProxyUrl || undefined,
+        tiingoProxyToken: current.settings.tiingoProxyToken || undefined,
         fmpApiKey: current.settings.fmpApiKey || undefined,
         alphaVantageApiKey: current.settings.alphaVantageApiKey || undefined,
         yahooProxyUrl: current.settings.yahooProxyUrl || undefined,
@@ -473,6 +486,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       riskPercent: 0,
       finnhubApiKey: '',
       tiingoApiKey: '',
+      tiingoProxyUrl: '',
+      tiingoProxyToken: '',
       fmpApiKey: '',
       alphaVantageApiKey: '',
       yahooProxyUrl: '',

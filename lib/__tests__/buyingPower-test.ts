@@ -1,4 +1,8 @@
-import { analyzeBuyingPower, buyingPowerNeedsWarning } from '@/lib/buyingPower';
+import {
+  analyzeBuyingPower,
+  buyingPowerNeedsWarning,
+  scaleDollarsForBuyingPower,
+} from '@/lib/buyingPower';
 
 function ts(isoDate: string): number {
   return Math.floor(new Date(`${isoDate}T16:00:00.000Z`).getTime() / 1000);
@@ -106,5 +110,55 @@ describe('buying-power check (honesty audit #7)', () => {
     expect(report.peakNotional).toBeCloseTo(80_000, 0);
     expect(report.peakPositions).toBe(1);
     expect(buyingPowerNeedsWarning(report)).toBe(false);
+  });
+
+  it('scales dollars by 1/peakNotionalPct when the book needs leverage', () => {
+    const report = analyzeBuyingPower({
+      trades: [
+        {
+          symbol: 'BIG',
+          entryTime: ts('2024-01-02'),
+          exitTime: ts('2024-01-03'),
+          entry: 200,
+          stop: 199, // $200k notional on $100k account → 2×
+        },
+      ],
+      accountSize: 100_000,
+      riskPercent: 1,
+    });
+    // 10R at $1,000/R = $10,000 unconstrained → $5,000 fundable at 50% scale
+    const dollars = scaleDollarsForBuyingPower({
+      totalR: 10,
+      riskPerTrade: 1_000,
+      report,
+    });
+    expect(dollars.unconstrainedDollars).toBe(10_000);
+    expect(dollars.scale).toBeCloseTo(0.5, 5);
+    expect(dollars.scaledDollars).toBeCloseTo(5_000, 0);
+    expect(dollars.scaled).toBe(true);
+  });
+
+  it('leaves dollars unchanged when peak notional fits the account', () => {
+    const report = analyzeBuyingPower({
+      trades: [
+        {
+          symbol: 'AAA',
+          entryTime: ts('2024-01-02'),
+          exitTime: ts('2024-01-03'),
+          entry: 50,
+          stop: 49,
+        },
+      ],
+      accountSize: 100_000,
+      riskPercent: 1,
+    });
+    const dollars = scaleDollarsForBuyingPower({
+      totalR: 4.5,
+      riskPerTrade: 1_000,
+      report,
+    });
+    expect(dollars.scale).toBe(1);
+    expect(dollars.scaledDollars).toBeCloseTo(4_500, 0);
+    expect(dollars.scaled).toBe(false);
   });
 });

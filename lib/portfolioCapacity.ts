@@ -1,3 +1,5 @@
+import { compareByPriorityThenFifo } from '@/lib/tradePriority';
+
 /**
  * Portfolio capacity: fill max-open slots with highest entry-time priority each day.
  */
@@ -72,11 +74,12 @@ export function simulateMaxOpenByPriority(
     // Occupy through exit day: exit on day D still blocks day-D entries.
     const openNow = taken.filter((o) => dayKey(o.exitTime) >= day).length;
     const free = Math.max(0, cap - openNow);
-    const ranked = [...dayEntries].sort((a, b) => {
-      if (b.priorityScore !== a.priorityScore) return b.priorityScore - a.priorityScore;
-      if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
-      return a.entryTime - b.entryTime;
-    });
+    const ranked = [...dayEntries].sort((a, b) =>
+      compareByPriorityThenFifo(
+        { priorityScore: a.priorityScore, entryTime: a.entryTime, tieKey: a.symbol },
+        { priorityScore: b.priorityScore, entryTime: b.entryTime, tieKey: b.symbol }
+      )
+    );
     for (let i = 0; i < ranked.length; i++) {
       if (i < free) taken.push(ranked[i]);
       else skippedList.push(ranked[i]);

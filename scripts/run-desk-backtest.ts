@@ -7,6 +7,7 @@ const keys = {
   tiingoApiKey: process.env.TIINGO_API_KEY || undefined,
   fmpApiKey: process.env.FMP_API_KEY || undefined,
   finnhubApiKey: process.env.FINNHUB_API_KEY || undefined,
+  alphaVantageApiKey: process.env.ALPHA_VANTAGE_API_KEY || undefined,
   days: 140,
 };
 
@@ -31,14 +32,21 @@ async function main() {
     const to = last
       ? new Date(last.time * 1000 + 2 * 86400000).toISOString().slice(0, 10)
       : new Date().toISOString().slice(0, 10);
-    const earningsDates = await fetchEarningsDates(symbol, keys.finnhubApiKey, from, to);
+    const earnings = await fetchEarningsDates(
+      symbol,
+      keys.finnhubApiKey,
+      from,
+      to,
+      keys.fmpApiKey,
+      keys.alphaVantageApiKey
+    );
 
     const result = runDeskBacktest({
       symbol,
       candles: bars.candles,
       spyCandles: spy.candles,
       qqqCandles: qqq.candles,
-      earningsDates,
+      earningsDates: earnings.dates,
       sourceLabel: bars.source,
       warnings: bars.warnings,
       evalBars: 30,
@@ -47,7 +55,9 @@ async function main() {
 
     const win = result.winRate == null ? 'n/a' : `${(result.winRate * 100).toFixed(0)}%`;
     const avg = result.avgR == null ? 'n/a' : result.avgR.toFixed(2);
-    console.log(`\n==== ${symbol} source=${result.sourceLabel} earnings=${earningsDates.join(',') || 'none'} ====`);
+    console.log(
+      `\n==== ${symbol} source=${result.sourceLabel} earnings=${earnings.dates.join(',') || earnings.status} ====`
+    );
     console.log(
       `Signals: strong=${result.signals.strong_buy} soft=${result.signals.soft_buy} wait=${result.signals.wait} avoid=${result.signals.avoid}`
     );

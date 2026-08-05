@@ -17,6 +17,8 @@ type ApiSettings = Pick<
   AppSettings,
   | 'finnhubApiKey'
   | 'tiingoApiKey'
+  | 'tiingoProxyUrl'
+  | 'tiingoProxyToken'
   | 'fmpApiKey'
   | 'alphaVantageApiKey'
   | 'yahooProxyUrl'
@@ -144,6 +146,8 @@ export async function fetchRecommendationsWithBundle(
     bundle = await fetchMarketBundle(unique, {
       finnhubApiKey: settings.finnhubApiKey || undefined,
       tiingoApiKey: settings.tiingoApiKey || undefined,
+      tiingoProxyUrl: settings.tiingoProxyUrl || undefined,
+      tiingoProxyToken: settings.tiingoProxyToken || undefined,
       fmpApiKey: settings.fmpApiKey || undefined,
       alphaVantageApiKey: settings.alphaVantageApiKey || undefined,
       yahooProxyUrl: settings.yahooProxyUrl || undefined,
