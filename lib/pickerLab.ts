@@ -27,7 +27,7 @@ export type PickerRuleId = 'priority' | 'rs20' | 'expectancy' | 'random';
 /** Any rule that can drive Max-open totals (including a single random seed). */
 export type SelectablePickerRuleId = PickerRuleId;
 
-/** Rules compared for "Best" / auto-activate — random never wins that badge. */
+/** Rules compared for the "Best (this window)" badge — random never wins that badge. */
 export type RankingPickerRuleId = Exclude<PickerRuleId, 'random'>;
 
 export type PickerRuleResult = {
@@ -137,7 +137,7 @@ export function interpretPickerLab(input: {
   }
 
   const inSampleNote =
-    'Auto-activating the best rule on this same window is in-sample selection — confirm on a longer history (e.g. 800d) or a different basket before trusting it.';
+    'The "Best (this window)" badge is in-sample selection on this same history — leave Active on Production unless you confirm the rule on a longer history (e.g. 800d) or a different basket.';
 
   // Random itself topped the board (only happened if we counted it as best —
   // we don't, but handle empty selectable edge cases above). Prefer comparing

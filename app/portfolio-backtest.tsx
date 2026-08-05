@@ -20,7 +20,6 @@ import {
 } from '@/lib/candles';
 import { ParamVerdictTone } from '@/lib/parameterLab';
 import {
-  bestParamVariantId,
   ParameterSweepResult,
   runParameterSweep,
 } from '@/lib/parameterSweep';
@@ -323,7 +322,7 @@ export default function PortfolioBacktestScreen() {
   const [resultFilter, setResultFilter] = useState<ResultFilter>('all');
   const [symbolSort, setSymbolSort] = useState<SymbolSort>('totalR_desc');
   /** Drives Max-open totals + capped per-symbol after a run (no re-fetch). */
-  const [activePicker, setActivePicker] = useState<SelectablePickerRuleId>('rs20');
+  const [activePicker, setActivePicker] = useState<SelectablePickerRuleId>('priority');
   /** Active exit variant from the sweep (null = production / main run). */
   const [activeParamId, setActiveParamId] = useState<string | null>(null);
 
@@ -592,7 +591,10 @@ export default function PortfolioBacktestScreen() {
       const wins = usableTrades.filter((t) => t.r > 0).length;
       setProgress('Comparing picker rules…');
       const pickers = comparePickerRules(usableTrades, cap);
-      setActivePicker(bestSelectablePicker(pickers));
+      // Headline stays on Production — never auto-activate the in-sample "Best"
+      // picker or exit variant (those remain tappable comparison rows).
+      setActivePicker('priority');
+      setActiveParamId(null);
 
       // Exit-parameter sweep over the same basket, under the same cap.
       let paramSweep: ParameterSweepResult | null = null;
@@ -612,9 +614,6 @@ export default function PortfolioBacktestScreen() {
           stopCooldownBars: PROFILE_MUST.stopCooldownBars,
           maxOpen: cap,
         });
-        // Same as the picker: Active follows the best R on this window.
-        // Production stays identifiable by its label, not by the green row.
-        setActiveParamId(bestParamVariantId(paramSweep));
       }
 
       setSummary({
@@ -768,9 +767,10 @@ export default function PortfolioBacktestScreen() {
                 Coverage). Use the Per symbol toggle for uncapped vs max-open breakdowns.
               </Text>
               <Text style={styles.noteItem}>
-                • Max-open currently uses {cappedView.pickerName}. Tap any Picker lab row to switch —
-                no re-run needed. Random Active uses one seed; the lab row still shows the seed
-                average.
+                • Max-open defaults to Production ({cappedView.pickerName}
+                {activeParam ? ` · ${activeParam.label}` : ''}). Tap any Picker lab or Parameter lab
+                row to compare alternatives — "Best (this window)" is in-sample, not the default.
+                Random Active uses one seed; the lab row still shows the seed average.
               </Text>
               {cappedView.capped.skipped > 0 &&
               cappedView.capped.avgPriorityTaken != null &&
@@ -795,8 +795,8 @@ export default function PortfolioBacktestScreen() {
               title="Picker lab"
               subtitle={
                 activeParam
-                  ? `Same trades as the active exit variant (${activeParam.label}), same max-${summary.maxOpen} cap. Tap a rule to drive the realistic total.`
-                  : `Same trades, same max-${summary.maxOpen} cap. Tap a rule to drive the realistic total. Read the honesty check before trusting any "Best" number.`
+                  ? `Same trades as the active exit variant (${activeParam.label}), same max-${summary.maxOpen} cap. Active defaults to Production; tap a rule to compare.`
+                  : `Same trades, same max-${summary.maxOpen} cap. Active defaults to Production; "Best (this window)" is a comparison only — read the honesty check before promoting it.`
               }
             />
             {(() => {
@@ -871,7 +871,7 @@ export default function PortfolioBacktestScreen() {
               <>
                 <SectionTitle
                   title="Parameter lab"
-                  subtitle={`Same basket, same max-${summary.maxOpen} cap — only exits changed. Each row is a complete exit package (target + stop policy). Tap a row to drive every stat above — All signals, Max-open, Picker lab, and per-symbol — with that variant's trades; tap Production to return. This never changes production.`}
+                  subtitle={`Same basket, same max-${summary.maxOpen} cap — only exits changed. Active defaults to Production. Tap another row to drive every stat above with that variant's trades; tap Production to return. "Best (this window)" is in-sample — this never changes production.`}
                 />
                 <View style={styles.pickerStack}>
                   {summary.paramSweep.knobs.map(({ knob, variants, verdict }) => {
