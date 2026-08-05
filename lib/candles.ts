@@ -38,14 +38,94 @@ export type CandleSource =
   | 'demo'
   | 'none';
 
+/** Split/dividend adjustment of a bar series, when known. */
+export type AdjustmentStatus = 'adjusted' | 'raw' | 'unknown';
+
+/** An overnight move big enough to look like an unadjusted split artifact. */
+export type SuspectGap = { date: string; pct: number };
+
 export type CandleFetchResult = {
   candles: Candle[];
   source: CandleSource;
   warnings: string[];
+  /** How the bars are adjusted. Derived from source for older cache entries. */
+  adjusted?: AdjustmentStatus;
+  /** Overnight moves beyond ±40% — data artifacts on raw/unknown feeds. */
+  suspectGaps?: SuspectGap[];
 };
 
 export function isLiveCandleSource(source: CandleSource | string | undefined): boolean {
   return Boolean(source && source !== 'demo' && source !== 'none');
+}
+
+/**
+ * Adjustment by provider when a result predates the `adjusted` field (old disk
+ * cache): Tiingo bars have always come from adj* fields; FMP used the raw /full
+ * endpoint before Aug 2026; the Yahoo proxy worker is out-of-repo (unverified);
+ * Finnhub and Alpha Vantage free endpoints are unadjusted.
+ */
+const ADJUSTMENT_BY_SOURCE: Partial<Record<CandleSource, AdjustmentStatus>> = {
+  tiingo: 'adjusted',
+  fmp: 'raw',
+  yahoo: 'unknown',
+  finnhub: 'raw',
+  alphavantage: 'raw',
+};
+
+export const SUSPECT_GAP_THRESHOLD = 0.4;
+
+/**
+ * Overnight moves beyond ±threshold vs the prior close (checked on both the
+ * open and the close). Real one-day moves this size are rare; on raw or
+ * unknown-adjustment feeds they are usually unadjusted splits (2:1 = −50%,
+ * 10:1 = −90%), which would otherwise print catastrophic fake trades.
+ */
+export function detectSuspectGaps(
+  candles: Candle[],
+  threshold = SUSPECT_GAP_THRESHOLD
+): SuspectGap[] {
+  const gaps: SuspectGap[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const prevClose = candles[i - 1].close;
+    if (!(prevClose > 0)) continue;
+    const openMove = candles[i].open > 0 ? candles[i].open / prevClose - 1 : 0;
+    const closeMove = candles[i].close / prevClose - 1;
+    const move = Math.abs(openMove) >= Math.abs(closeMove) ? openMove : closeMove;
+    if (Math.abs(move) > threshold) {
+      gaps.push({
+        date: new Date(candles[i].time * 1000).toISOString().slice(0, 10),
+        pct: move,
+      });
+    }
+  }
+  return gaps;
+}
+
+function isSuspectGapNote(w: string): boolean {
+  return /possible unadjusted split/i.test(w);
+}
+
+/**
+ * Attach adjustment status + suspect-gap scan to a resolved result (fresh or
+ * cached). Warns only when big gaps land on non-adjusted bars — on adjusted
+ * feeds a huge move is likely a real crash/squeeze, not an artifact.
+ */
+function withDataQuality(symbol: string, result: CandleFetchResult): CandleFetchResult {
+  if (!isLiveCandleSource(result.source) || !result.candles.length) return result;
+  const adjusted = result.adjusted ?? ADJUSTMENT_BY_SOURCE[result.source] ?? 'unknown';
+  const suspectGaps = detectSuspectGaps(result.candles);
+  const warnings = result.warnings.filter((w) => !isSuspectGapNote(w));
+  if (suspectGaps.length && adjusted !== 'adjusted') {
+    const worst = suspectGaps.reduce((a, b) => (Math.abs(b.pct) > Math.abs(a.pct) ? b : a));
+    warnings.push(
+      `${symbol}: ${suspectGaps.length} overnight move(s) beyond ±40% on ${
+        adjusted === 'raw' ? 'RAW unadjusted' : 'unknown-adjustment'
+      } ${result.source} bars (worst ${worst.pct >= 0 ? '+' : ''}${(worst.pct * 100).toFixed(
+        0
+      )}% on ${worst.date}) — possible unadjusted split; backtests on this feed are suspect.`
+    );
+  }
+  return { ...result, adjusted, suspectGaps, warnings };
 }
 
 function noDataResult(warnings: string[]): CandleFetchResult {
@@ -109,6 +189,7 @@ function hydrateFromDisk(): Promise<void> {
           candles: entry.value.candles,
           source: entry.value.source as CandleSource,
           warnings: entry.value.warnings ?? [],
+          adjusted: entry.value.adjusted as AdjustmentStatus | undefined,
         };
         if (key.startsWith('bench:')) {
           benchmarkTtlCache.setUntil(key, result, entry.expiresAt);
@@ -323,7 +404,12 @@ async function fetchDailyCandlesResolvedUncached(
     pushProviderNote(warnings, tiingo.warning);
     if (markProviderCooldown('tiingo', tiingo.warning)) hitRateLimit = true;
     if (tiingo.candles.length >= 60) {
-      return { candles: tiingo.candles, source: 'tiingo' as const, warnings };
+      return {
+        candles: tiingo.candles,
+        source: 'tiingo' as const,
+        warnings,
+        adjusted: 'adjusted' as const,
+      };
     }
     if (tiingo.candles.length > 0) {
       warnings.push(`Tiingo only returned ${tiingo.candles.length} bars; trying fallbacks.`);
@@ -346,7 +432,7 @@ async function fetchDailyCandlesResolvedUncached(
     pushProviderNote(warnings, fmp.warning);
     if (markProviderCooldown('fmp', fmp.warning)) hitRateLimit = true;
     if (fmp.candles.length >= 60) {
-      return { candles: fmp.candles, source: 'fmp' as const, warnings };
+      return { candles: fmp.candles, source: 'fmp' as const, warnings, adjusted: fmp.adjusted };
     }
     if (fmp.candles.length > 0) {
       warnings.push(`FMP only returned ${fmp.candles.length} bars; trying fallbacks.`);
@@ -373,7 +459,13 @@ async function fetchDailyCandlesResolvedUncached(
     pushProviderNote(warnings, yahoo.warning);
     markProviderCooldown('yahoo', yahoo.warning);
     if (yahoo.candles.length >= 60) {
-      return { candles: yahoo.candles, source: 'yahoo' as const, warnings };
+      // Proxy worker is out-of-repo; whether its bars are adjusted is unverified.
+      return {
+        candles: yahoo.candles,
+        source: 'yahoo' as const,
+        warnings,
+        adjusted: 'unknown' as const,
+      };
     }
     if (yahoo.candles.length > 0) {
       warnings.push(`Yahoo only returned ${yahoo.candles.length} bars; trying fallbacks.`);
@@ -423,7 +515,7 @@ async function fetchDailyCandlesResolvedUncached(
         if (fh.warning) warnings.push(fh.warning);
         if (markProviderCooldown('finnhub', fh.warning)) hitRateLimit = true;
         if (fh.candles.length >= 60) {
-          return { candles: fh.candles, source: 'finnhub', warnings };
+          return { candles: fh.candles, source: 'finnhub', warnings, adjusted: 'raw' };
         }
         if (fh.candles.length > 0) {
           warnings.push(`Finnhub only returned ${fh.candles.length} bars; trying fallbacks.`);
@@ -445,7 +537,7 @@ async function fetchDailyCandlesResolvedUncached(
       if (av.warning) warnings.push(av.warning);
       markProviderCooldown('alphavantage', av.warning);
       if (av.candles.length >= 60) {
-        return { candles: av.candles, source: 'alphavantage', warnings };
+        return { candles: av.candles, source: 'alphavantage', warnings, adjusted: 'raw' };
       }
       if (av.candles.length > 0) {
         warnings.push(
@@ -475,13 +567,13 @@ export async function fetchDailyCandlesResolved(
     const ttlH = Math.round(
       (BENCHMARK_SYMBOLS.has(upper) ? BENCHMARK_CANDLE_TTL_MS : CANDLE_TTL_MS) / 3600000
     );
-    return {
+    return withDataQuality(upper, {
       ...cached,
       warnings: [
         `Cached ${cached.source} EOD (${cached.candles.length} bars, ≤${ttlH}h TTL).`,
         ...cached.warnings.filter((w) => !/Cached .+ EOD/i.test(w)),
       ],
-    };
+    });
   }
 
   return candleInflight.run(key, async () => {
@@ -490,19 +582,19 @@ export async function fetchDailyCandlesResolved(
       const ttlH = Math.round(
         (BENCHMARK_SYMBOLS.has(upper) ? BENCHMARK_CANDLE_TTL_MS : CANDLE_TTL_MS) / 3600000
       );
-      return {
+      return withDataQuality(upper, {
         ...again,
         warnings: [
           `Cached ${again.source} EOD (${again.candles.length} bars, ≤${ttlH}h TTL).`,
           ...again.warnings.filter((w) => !/Cached .+ EOD/i.test(w)),
         ],
-      };
+      });
     }
     const result = await fetchDailyCandlesResolvedUncached(upper, options);
     if (isLiveCandleSource(result.source) && result.candles.length >= 60) {
       cacheSet(key, upper, result);
     }
-    return result;
+    return withDataQuality(upper, result);
   });
 }
 

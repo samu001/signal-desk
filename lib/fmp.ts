@@ -15,9 +15,14 @@ export function clearFundamentalsCache() {
   fundamentalsInflight.clear();
 }
 
+/** Whether the bars carry split/dividend adjustment. */
+export type FmpAdjustment = 'adjusted' | 'raw';
+
 export type FmpCandleResult = {
   candles: Candle[];
   warning?: string;
+  /** 'adjusted' = dividend-adjusted endpoint; 'raw' = unadjusted /full fallback. */
+  adjusted: FmpAdjustment;
 };
 
 export type { FundamentalSnapshot };
@@ -27,7 +32,109 @@ function toDate(d: Date) {
 }
 
 /**
+ * Once the adjusted endpoint is rejected for this key (plan restriction), stop
+ * retrying it for the rest of the session so multi-ticker runs don't pay an
+ * extra failed call per symbol.
+ */
+let adjustedEndpointUnavailable = false;
+
+/** Test helper — forget the per-session adjusted-endpoint availability. */
+export function resetFmpAdjustedAvailability() {
+  adjustedEndpointUnavailable = false;
+}
+
+type FmpEodRow = {
+  date?: string;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+  adjOpen?: number;
+  adjHigh?: number;
+  adjLow?: number;
+  adjClose?: number;
+  volume?: number;
+};
+
+function rowsToCandles(rows: FmpEodRow[], adjusted: boolean): Candle[] {
+  return rows
+    .map((row) => ({
+      time: row.date ? Math.floor(new Date(`${row.date}T16:00:00Z`).getTime() / 1000) : 0,
+      // Prefer adj* fields on the adjusted endpoint, tolerating raw field names
+      // (same graceful pattern as the Tiingo adapter).
+      open: Number(adjusted ? (row.adjOpen ?? row.open) : row.open) || 0,
+      high: Number(adjusted ? (row.adjHigh ?? row.high) : row.high) || 0,
+      low: Number(adjusted ? (row.adjLow ?? row.low) : row.low) || 0,
+      close: Number(adjusted ? (row.adjClose ?? row.close) : row.close) || 0,
+      volume: Number(row.volume) || 0,
+    }))
+    .filter((c) => c.close > 0 && c.time > 0)
+    .sort((a, b) => a.time - b.time);
+}
+
+type FmpEodResponse =
+  | { kind: 'rows'; rows: FmpEodRow[] }
+  | { kind: 'ratelimit'; warning: string }
+  | { kind: 'auth'; warning: string }
+  /** Endpoint rejected for this key/plan — safe to fall back to another endpoint. */
+  | { kind: 'unavailable'; warning: string }
+  | { kind: 'error'; warning: string };
+
+async function requestFmpEod(url: string): Promise<FmpEodResponse> {
+  const res = await fetch(url);
+  const text = await res.text();
+
+  if (res.status === 429 || /rate.?limit|limit reach|too many requests|exceeded your/i.test(text)) {
+    return {
+      kind: 'ratelimit',
+      warning: `FMP rate limit${res.status === 429 ? ` (HTTP 429)` : ''} — wait before Refresh signals, or slow down multi-ticker scans.`,
+    };
+  }
+  if (res.status === 401) {
+    return { kind: 'auth', warning: 'FMP auth failed — check your API key in Settings.' };
+  }
+  if (!res.ok) {
+    if (res.status === 402 || res.status === 403 || res.status === 404) {
+      return {
+        kind: 'unavailable',
+        warning: `HTTP ${res.status}${text ? `: ${text.slice(0, 120)}` : ''}`,
+      };
+    }
+    return {
+      kind: 'error',
+      warning: `FMP candles HTTP ${res.status}${text ? `: ${text.slice(0, 120)}` : ''}`,
+    };
+  }
+
+  let data: FmpEodRow[] | { 'Error Message'?: string; error?: string; message?: string };
+  try {
+    data = JSON.parse(text) as typeof data;
+  } catch {
+    return { kind: 'error', warning: 'FMP returned non-JSON candle payload.' };
+  }
+
+  if (!Array.isArray(data)) {
+    const msg = String(
+      data['Error Message'] || data.error || data.message || 'FMP returned an unexpected candle payload.'
+    );
+    if (/rate.?limit|limit reach|exceeded|quota/i.test(msg)) {
+      return { kind: 'ratelimit', warning: `FMP rate limit: ${msg.slice(0, 140)}` };
+    }
+    if (/exclusive|subscription|upgrade|premium|plan|special endpoint|legacy/i.test(msg)) {
+      return { kind: 'unavailable', warning: msg.slice(0, 140) };
+    }
+    return { kind: 'error', warning: msg };
+  }
+
+  return { kind: 'rows', rows: data };
+}
+
+/**
  * FMP stable EOD — solid free/cheap daily history for backtests when Tiingo isn't set.
+ * Prefers the dividend-adjusted endpoint (split+dividend adjusted OHLC, same
+ * one-call-per-symbol shape as /full). Falls back to raw /full bars — clearly
+ * flagged — only when the key's plan rejects the adjusted endpoint; that
+ * discovery costs a single extra call once per session, never per symbol.
  */
 export async function fetchFmpDailyCandles(
   symbol: string,
@@ -38,78 +145,47 @@ export async function fetchFmpDailyCandles(
   try {
     const end = new Date();
     const start = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const url = `${FMP_BASE}/historical-price-eod/full?symbol=${encodeURIComponent(upper)}&from=${toDate(start)}&to=${toDate(end)}&apikey=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(url);
-    const text = await res.text();
+    const range = `symbol=${encodeURIComponent(upper)}&from=${toDate(start)}&to=${toDate(end)}&apikey=${encodeURIComponent(apiKey)}`;
 
-    if (res.status === 429 || /rate.?limit|limit reach|too many requests|exceeded your/i.test(text)) {
-      return {
-        candles: [],
-        warning: `FMP rate limit${res.status === 429 ? ` (HTTP 429)` : ''} — wait before Refresh signals, or slow down multi-ticker scans.`,
-      };
+    let fallbackNote: string | null = null;
+    if (!adjustedEndpointUnavailable) {
+      const adj = await requestFmpEod(`${FMP_BASE}/historical-price-eod/dividend-adjusted?${range}`);
+      if (adj.kind === 'rows') {
+        const candles = rowsToCandles(adj.rows, true);
+        return {
+          candles,
+          adjusted: 'adjusted',
+          warning: `FMP EOD (${candles.length} adjusted daily bars).`,
+        };
+      }
+      // Rate limit / auth: falling back would burn quota for the same outcome.
+      if (adj.kind === 'ratelimit' || adj.kind === 'auth') {
+        return { candles: [], adjusted: 'adjusted', warning: adj.warning };
+      }
+      if (adj.kind === 'unavailable') {
+        adjustedEndpointUnavailable = true;
+      }
+      fallbackNote = adj.warning;
     }
 
-    if (!res.ok) {
-      return {
-        candles: [],
-        warning:
-          res.status === 401 || res.status === 403
-            ? 'FMP auth failed — check your API key in Settings.'
-            : `FMP candles HTTP ${res.status}${text ? `: ${text.slice(0, 120)}` : ''}`,
-      };
+    const raw = await requestFmpEod(`${FMP_BASE}/historical-price-eod/full?${range}`);
+    if (raw.kind !== 'rows') {
+      return { candles: [], adjusted: 'raw', warning: raw.warning };
     }
-
-    let data:
-      | Array<{
-          date?: string;
-          open?: number;
-          high?: number;
-          low?: number;
-          close?: number;
-          volume?: number;
-        }>
-      | { 'Error Message'?: string; error?: string };
-    try {
-      data = JSON.parse(text) as typeof data;
-    } catch {
-      return { candles: [], warning: 'FMP returned non-JSON candle payload.' };
-    }
-
-    if (!Array.isArray(data)) {
-      const msg =
-        (data as { 'Error Message'?: string; error?: string })['Error Message'] ||
-        (data as { error?: string }).error ||
-        'FMP returned an unexpected candle payload.';
-      const limit = /rate.?limit|limit reach|exceeded|quota/i.test(String(msg));
-      return {
-        candles: [],
-        warning: limit
-          ? `FMP rate limit: ${String(msg).slice(0, 140)}`
-          : String(msg),
-      };
-    }
-
-    const candles: Candle[] = data
-      .map((row) => ({
-        time: row.date ? Math.floor(new Date(`${row.date}T16:00:00Z`).getTime() / 1000) : 0,
-        open: Number(row.open) || 0,
-        high: Number(row.high) || 0,
-        low: Number(row.low) || 0,
-        close: Number(row.close) || 0,
-        volume: Number(row.volume) || 0,
-      }))
-      .filter((c) => c.close > 0 && c.time > 0)
-      .sort((a, b) => a.time - b.time);
-
+    const candles = rowsToCandles(raw.rows, false);
     return {
       candles,
-      warning: `FMP EOD (${candles.length} daily bars).`,
+      adjusted: 'raw',
+      warning: `FMP adjusted EOD unavailable${
+        fallbackNote ? ` (${fallbackNote})` : ' for this key'
+      } — using RAW unadjusted bars (${candles.length}); dividends/splits are not adjusted.`,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const corsLike = /failed to fetch|networkerror|load failed|cors/i.test(msg);
     return {
       candles: [],
+      adjusted: 'raw',
       warning: corsLike
         ? 'FMP request blocked in this browser (network/CORS) — check key and free-tier limits.'
         : `FMP candle request failed: ${msg.slice(0, 120)}`,
