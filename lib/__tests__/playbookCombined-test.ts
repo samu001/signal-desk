@@ -2,6 +2,7 @@ import { demoCandles, defaultSetups } from '@/constants/seed';
 import {
   applyStopCooldown,
   CombinedPlaybookTrade,
+  enforceOneOpenPosition,
   runCombinedPlaybookBacktest,
 } from '@/lib/playbookCombined';
 
@@ -51,10 +52,24 @@ describe('runCombinedPlaybookBacktest', () => {
 
     const rawCount = result.setupResults.reduce((n, r) => n + r.trades.length, 0);
     expect(
-      result.trades.length + result.skippedOverlaps + result.skippedCooldown
+      result.trades.length +
+        result.skippedOverlaps +
+        result.skippedOpen +
+        result.skippedCooldown
     ).toBeLessThanOrEqual(rawCount);
     expect(result.notes.some((n) => /Costs:/i.test(n))).toBe(true);
     expect(result.notes.some((n) => /cooldown/i.test(n))).toBe(true);
+    expect(result.notes.some((n) => /one open position/i.test(n))).toBe(true);
+    // No two taken trades overlap on this ticker (occupy through exit day).
+    for (let i = 0; i < result.trades.length; i++) {
+      for (let j = i + 1; j < result.trades.length; j++) {
+        const a = result.trades[i];
+        const b = result.trades[j];
+        const aExitDay = new Date(a.exitTime * 1000).toISOString().slice(0, 10);
+        const bEntryDay = new Date(b.entryTime * 1000).toISOString().slice(0, 10);
+        expect(aExitDay < bEntryDay).toBe(true);
+      }
+    }
   });
 
   it('threads exit tuning into every setup run and discloses it', () => {
@@ -123,6 +138,60 @@ describe('runCombinedPlaybookBacktest', () => {
     });
     // Blackout around the last bar should not increase trade count.
     expect(withBlackout.trades.length).toBeLessThanOrEqual(without.trades.length);
+  });
+});
+
+describe('enforceOneOpenPosition', () => {
+  const t0 = 1_700_000_000;
+
+  it('skips a new entry while a prior trade is still open', () => {
+    const a = makeTrade({ entryTime: t0, exitTime: t0 + 7 * DAY, reason: 'target' });
+    const b = makeTrade({
+      entryTime: t0 + 3 * DAY,
+      exitTime: t0 + 9 * DAY,
+      reason: 'target',
+      setupId: 'setup-b',
+      setupName: 'Setup B',
+    });
+    const { taken, skippedOpen } = enforceOneOpenPosition([a, b]);
+    expect(taken).toHaveLength(1);
+    expect(taken[0].setupName).toBe('Setup A');
+    expect(skippedOpen).toBe(1);
+  });
+
+  it('blocks same-day exit→re-entry (slot occupies the exit calendar day)', () => {
+    const a = makeTrade({ entryTime: t0, exitTime: t0 + 5 * DAY, reason: 'target' });
+    const sameDay = makeTrade({
+      entryTime: t0 + 5 * DAY,
+      exitTime: t0 + 8 * DAY,
+      reason: 'target',
+      setupId: 'setup-b',
+      setupName: 'Setup B',
+    });
+    const nextDay = makeTrade({
+      entryTime: t0 + 6 * DAY,
+      exitTime: t0 + 9 * DAY,
+      reason: 'target',
+      setupId: 'setup-c',
+      setupName: 'Setup C',
+    });
+    const { taken, skippedOpen } = enforceOneOpenPosition([a, sameDay, nextDay]);
+    expect(taken.map((t) => t.setupName)).toEqual(['Setup A', 'Setup C']);
+    expect(skippedOpen).toBe(1);
+  });
+
+  it('allows a new entry once the prior trade has fully exited', () => {
+    const a = makeTrade({ entryTime: t0, exitTime: t0 + 2 * DAY, reason: 'stop' });
+    const b = makeTrade({
+      entryTime: t0 + 3 * DAY,
+      exitTime: t0 + 6 * DAY,
+      reason: 'target',
+      setupId: 'setup-b',
+      setupName: 'Setup B',
+    });
+    const { taken, skippedOpen } = enforceOneOpenPosition([a, b]);
+    expect(taken).toHaveLength(2);
+    expect(skippedOpen).toBe(0);
   });
 });
 

@@ -62,6 +62,44 @@ describe('simulateMaxOpenByPriority', () => {
     );
     expect(result.totalR).toBe(-0.5);
   });
+
+  it('keeps the slot occupied through the exit calendar day (no same-day recycle)', () => {
+    // Trade A exits on 2024-06-05. With maxOpen=1, a new entry that same day
+    // must be skipped — entries fill at the open, before exits happen.
+    const aEntry = day('2024-06-03');
+    const aExit = day('2024-06-05');
+    const bEntry = day('2024-06-05');
+    const cEntry = day('2024-06-06');
+    const result = simulateMaxOpenByPriority(
+      [
+        {
+          symbol: 'AAA',
+          entryTime: aEntry,
+          exitTime: aExit,
+          r: 1,
+          priorityScore: 2,
+        },
+        {
+          symbol: 'BBB',
+          entryTime: bEntry,
+          exitTime: bEntry + 3 * 86400,
+          r: 5,
+          priorityScore: 3,
+        },
+        {
+          symbol: 'CCC',
+          entryTime: cEntry,
+          exitTime: cEntry + 3 * 86400,
+          r: 2,
+          priorityScore: 3,
+        },
+      ],
+      1
+    );
+    expect(result.taken.map((t) => t.symbol)).toEqual(['AAA', 'CCC']);
+    expect(result.skippedTrades.map((t) => t.symbol)).toEqual(['BBB']);
+    expect(result.totalR).toBe(3);
+  });
 });
 
 describe('selectBestTradesPerDay', () => {

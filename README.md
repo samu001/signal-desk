@@ -133,17 +133,21 @@ plan, ranked by how much each distorts results.
    comparison row with the existing honesty banner; promoting it is an
    explicit choice, not the headline.
 3. **Max-open cap leaks on transition days.** `simulateMaxOpenByPriority`
-   counts a position as open only while `exitTime > dayStart`, so a trade
-   exiting on day X frees its slot for a day-X entry — but entries fill at the
-   open, before intraday/close exits happen. The sim briefly holds more than
-   the cap and books extra trades. Fix: a position occupies its slot through
-   its exit day (free the slot the next day).
-4. **Same-symbol position stacking.** `selectBestTradesPerDay` de-dupes by
-   entry *day* only; different setups can pyramid the same ticker across a
-   trend, so All-signals counts one move several times and the capped book can
-   fill every slot with one symbol. Fix: enforce one open position per symbol
-   at the combined-playbook level (entry-time information — no lookahead);
-   make pyramiding an explicit toggle if ever wanted.
+   counted a position as open only while `exitTime > dayStart`, so a trade
+   exiting on day X freed its slot for a day-X entry — but entries fill at the
+   open, before intraday/close exits happen. The sim briefly held more than
+   the cap and booked extra trades.
+   **Status: fixed.** A position occupies its slot through its exit calendar
+   day; the slot frees the next day. Same rule applied in the deep-backtest
+   script's portfolio report. Regression: same-day exit→entry is skipped.
+4. **Same-symbol position stacking.** `selectBestTradesPerDay` de-duped by
+   entry *day* only; different setups could pyramid the same ticker across a
+   trend, so All-signals counted one move several times and the capped book
+   could fill every slot with one symbol.
+   **Status: fixed.** `enforceOneOpenPosition` runs after same-day dedup (and
+   before stop cooldown) in the combined Playbook and the parameter-sweep
+   pipeline — at most one open position per ticker; same-day exit→re-entry is
+   blocked. Pyramiding would need an explicit opt-in if ever wanted.
 5. **Missing-data checks fail open, and the portfolio run has no earnings
    data.** `scoreRuleResults` drops `unknown` checks from the pass-rate
    denominator, and the portfolio run passes no earnings calendar while the
@@ -180,14 +184,12 @@ plan, ranked by how much each distorts results.
 
 ### Until the remaining items land — the defensible read
 
-Items 1–2 are fixed: FMP/Tiingo now serve adjusted bars with a split-gap guard,
-and the headline defaults to Production. Still treat "Best (this window)" as
-optimism until it survives a different window, prefer a basket *you* chose
-over the curated default, and trust the capped total over All signals.
-
-Acceptance checks for the remaining fixes: capped trade counts fall slightly
-(slot + per-symbol fixes); regression tests cover same-day slot handoff and
-same-symbol overlap.
+Items 1–4 are fixed: adjusted EOD + split-gap guard, Production headline
+default, max-open slots held through the exit day, and no same-ticker
+pyramiding. Still treat "Best (this window)" as optimism until it survives a
+different window, prefer a basket *you* chose over the curated default, and
+trust the capped total over All signals. Item 5 (earnings / fail-closed
+checks) remains open.
 
 ## Tests
 

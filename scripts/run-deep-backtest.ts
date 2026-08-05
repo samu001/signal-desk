@@ -354,11 +354,14 @@ async function main() {
   }
 
   // Capital-constrained portfolio: max N open positions, first-come first-served.
+  // Occupy through exit calendar day (entries fill at the open; exits are later).
+  const dayKey = (ts: number) => new Date(ts * 1000).toISOString().slice(0, 10);
   const sorted = [...allCombined].sort((a, b) => a.entryTime - b.entryTime);
   const taken: PortfolioTrade[] = [];
   let skippedForCapital = 0;
   for (const t of sorted) {
-    const openNow = taken.filter((o) => o.exitTime > t.entryTime).length;
+    const entryDay = dayKey(t.entryTime);
+    const openNow = taken.filter((o) => dayKey(o.exitTime) >= entryDay).length;
     if (openNow >= MAX_CONCURRENT) {
       skippedForCapital += 1;
       continue;
