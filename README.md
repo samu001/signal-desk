@@ -109,14 +109,21 @@ plan, ranked by how much each distorts results.
 
 ### Fix now
 
-1. **Unadjusted prices on the FMP path (web default).** `lib/fmp.ts` maps raw
+1. **Unadjusted prices on the FMP path (web default).** `lib/fmp.ts` mapped raw
    OHLC with no split/dividend adjustment, while `lib/tiingo.ts` uses adjusted
-   fields — so web and native can disagree, dividends drag long results, and a
-   split inside the window prints one catastrophic fake trade (gap-aware stop
-   fill on a −90% "bar"). The Yahoo proxy worker is out-of-repo; its adjustment
-   is unverified. Fix: derive adjusted OHLC for every provider, add a sanity
-   guard that flags absurd overnight gaps (>~40%) as data artifacts instead of
-   trades, and show adjusted/raw status per symbol in the coverage table.
+   fields — so web and native could disagree, dividends dragged long results,
+   and a split inside the window printed one catastrophic fake trade (gap-aware
+   stop fill on a −90% "bar"). The Yahoo proxy worker is out-of-repo; its
+   adjustment is unverified.
+   **Status: fixed.** FMP now calls the stable dividend-adjusted EOD endpoint
+   (same one-call-per-symbol shape — no extra rate-limit cost; falls back to
+   raw `/full` with a loud RAW warning only when the key's plan rejects it,
+   remembered per session). Every provider reports `adjusted`/`raw`/`unknown`,
+   surfaced as a pill per symbol. A ±40% overnight-gap guard
+   (`detectSuspectGaps` in `lib/candles.ts`) marks raw/unknown feeds with
+   split-sized gaps as **Suspect data** and the portfolio backtest excludes
+   them from the run instead of scoring fake trades. Yahoo-proxy bars remain
+   unverified (`adj?`) — covered by the gap guard.
 2. **Headline defaults to the in-sample maximum.** After each run the screen
    auto-activates the best-R picker (`bestSelectablePicker`) *and* the best-R
    exit variant (`bestParamVariantId`) chosen on the same window — a double

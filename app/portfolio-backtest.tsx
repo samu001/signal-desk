@@ -13,7 +13,11 @@ import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/compone
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { PROFILE_MUST } from '@/lib/backtestProfile';
-import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
+import {
+  AdjustmentStatus,
+  fetchDailyCandlesResolved,
+  isLiveCandleSource,
+} from '@/lib/candles';
 import { ParamVerdictTone } from '@/lib/parameterLab';
 import {
   bestParamVariantId,
@@ -38,8 +42,8 @@ import { Candle } from '@/types/trading';
 
 const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
 
-/** How complete this ticker's EOD was for the backtest window. */
-type CoverageStatus = 'ok' | 'short' | 'none' | 'skipped';
+/** How complete/trustworthy this ticker's EOD was for the backtest window. */
+type CoverageStatus = 'ok' | 'short' | 'none' | 'skipped' | 'suspect';
 
 type SymbolRow = {
   symbol: string;
@@ -49,6 +53,8 @@ type SymbolRow = {
   winRate: number | null;
   totalR: number;
   coverage: CoverageStatus;
+  /** Split/dividend adjustment of the bars this row was scored on. */
+  adjusted: AdjustmentStatus;
   /** Provider failures / backups that applied to this symbol. */
   notes: string[];
   /** Only set on cappedRows — how many signals were skipped by max-open. */
@@ -61,6 +67,7 @@ type BenchmarkRow = {
   source: string;
   bars: number;
   coverage: CoverageStatus;
+  adjusted: AdjustmentStatus;
   notes: string[];
 };
 
@@ -173,7 +180,7 @@ function usefulNotes(warnings: string[]): string[] {
   return warnings.filter(
     (w) =>
       !/^Cached .+ EOD/i.test(w) &&
-      /rate limit|429|cooldown|demo|No data|HTTP|cors|skipped|failed|auth|proxy|fallback|insufficient|only returned|No Tiingo|No FMP|No Yahoo|using built-in/i.test(
+      /rate limit|429|cooldown|demo|No data|HTTP|cors|skipped|failed|auth|proxy|fallback|insufficient|only returned|No Tiingo|No FMP|No Yahoo|using built-in|unadjusted|suspect|split/i.test(
         w
       )
   );
@@ -183,6 +190,7 @@ function coverageLabel(status: CoverageStatus): string {
   if (status === 'ok') return 'Full';
   if (status === 'short') return 'Short history';
   if (status === 'none') return 'No data';
+  if (status === 'suspect') return 'Suspect data';
   return 'Skipped';
 }
 
@@ -191,6 +199,18 @@ function coverageTone(status: CoverageStatus): 'good' | 'warn' | 'bad' | 'neutra
   if (status === 'short') return 'warn';
   if (status === 'none') return 'bad';
   return 'bad';
+}
+
+function adjustmentLabel(adjusted: AdjustmentStatus): string {
+  if (adjusted === 'adjusted') return 'adj';
+  if (adjusted === 'raw') return 'RAW';
+  return 'adj?';
+}
+
+function adjustmentTone(adjusted: AdjustmentStatus): 'good' | 'warn' | 'neutral' {
+  if (adjusted === 'adjusted') return 'good';
+  if (adjusted === 'raw') return 'warn';
+  return 'neutral';
 }
 
 /** Portfolio totals only count full live EOD — no-data / short / skipped stay in the table. */
@@ -435,6 +455,7 @@ export default function PortfolioBacktestScreen() {
           source: spy.source,
           bars: spy.candles.length,
           coverage: classifyCoverage(spy.source, spy.candles.length, requestedDays),
+          adjusted: spy.adjusted ?? 'unknown',
           notes: spyNotes,
         },
         {
@@ -442,6 +463,7 @@ export default function PortfolioBacktestScreen() {
           source: qqq.source,
           bars: qqq.candles.length,
           coverage: classifyCoverage(qqq.source, qqq.candles.length, requestedDays),
+          adjusted: qqq.adjusted ?? 'unknown',
           notes: qqqNotes,
         },
       ];
@@ -469,7 +491,36 @@ export default function PortfolioBacktestScreen() {
           const tagged = w.includes(symbol) ? w : `${symbol}: ${w}`;
           if (!warnings.includes(tagged)) warnings.push(tagged);
         }
-        const coverage = classifyCoverage(bars.source, bars.candles.length, requestedDays);
+        const adjusted = bars.adjusted ?? 'unknown';
+        // Big overnight moves on non-adjusted bars are treated as data
+        // artifacts (unadjusted splits), not trades — the symbol is excluded.
+        const suspectGaps = adjusted !== 'adjusted' ? (bars.suspectGaps ?? []) : [];
+        let coverage = classifyCoverage(bars.source, bars.candles.length, requestedDays);
+        if (suspectGaps.length && (coverage === 'ok' || coverage === 'short')) {
+          coverage = 'suspect';
+        }
+        if (coverage === 'suspect') {
+          const worst = suspectGaps.reduce((a, b) => (Math.abs(b.pct) > Math.abs(a.pct) ? b : a));
+          rows.push({
+            symbol,
+            source: bars.source,
+            bars: bars.candles.length,
+            trades: 0,
+            winRate: null,
+            totalR: 0,
+            coverage,
+            adjusted,
+            notes: [
+              `Overnight move of ${worst.pct >= 0 ? '+' : ''}${(worst.pct * 100).toFixed(0)}% on ${
+                worst.date
+              } on ${adjusted === 'raw' ? 'RAW unadjusted' : 'unknown-adjustment'} ${
+                bars.source
+              } bars — likely an unadjusted split, so trades on this feed would be fake. Excluded from the run; use Tiingo (adjusted) or fix the data source.`,
+              ...notes,
+            ],
+          });
+          continue;
+        }
         if (coverage === 'none' || coverage === 'skipped' || bars.candles.length < 60) {
           rows.push({
             symbol,
@@ -479,6 +530,7 @@ export default function PortfolioBacktestScreen() {
             winRate: null,
             totalR: 0,
             coverage,
+            adjusted,
             notes: notes.length
               ? notes
               : coverage === 'none'
@@ -515,6 +567,13 @@ export default function PortfolioBacktestScreen() {
             `Thin history: ${bars.candles.length} bars via ${bars.source} (requested ~${requestedDays} calendar days).`
           );
         }
+        if (adjusted !== 'adjusted') {
+          rowNotes.push(
+            adjusted === 'raw'
+              ? `Bars from ${bars.source} are RAW (dividends/splits not adjusted) — no split-sized gaps detected, but dividend drops slightly distort long backtests.`
+              : `Adjustment of ${bars.source} bars is unverified — no split-sized gaps detected.`
+          );
+        }
         rows.push({
           symbol,
           source: bars.source,
@@ -523,6 +582,7 @@ export default function PortfolioBacktestScreen() {
           winRate: combined.winRate,
           totalR: combined.totalR ?? 0,
           coverage,
+          adjusted,
           notes: rowNotes,
         });
       }
@@ -656,7 +716,7 @@ export default function PortfolioBacktestScreen() {
               title="Portfolio"
               subtitle={
                 summary.excludedSymbols
-                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped left out.`
+                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect left out.`
                   : `Totals use all ${summary.usableSymbols} tickers (full live EOD).`
               }
             />
@@ -704,8 +764,8 @@ export default function PortfolioBacktestScreen() {
 
             <View style={styles.noteBox}>
               <Text style={styles.noteItem}>
-                • Totals omit No data, short history, and skipped tickers (see Coverage). Use the Per
-                symbol toggle for uncapped vs max-open breakdowns.
+                • Totals omit No data, short history, skipped, and suspect-data tickers (see
+                Coverage). Use the Per symbol toggle for uncapped vs max-open breakdowns.
               </Text>
               <Text style={styles.noteItem}>
                 • Max-open currently uses {cappedView.pickerName}. Tap any Picker lab row to switch —
@@ -911,6 +971,7 @@ export default function PortfolioBacktestScreen() {
                         label={row.source}
                         tone={row.source === 'demo' || row.source === 'none' ? 'warn' : 'good'}
                       />
+                      <Pill label={adjustmentLabel(row.adjusted)} tone={adjustmentTone(row.adjusted)} />
                     </View>
                   </View>
                   <Text style={styles.symbolMeta}>
@@ -956,15 +1017,21 @@ export default function PortfolioBacktestScreen() {
                                 row.source === 'demo' || row.source === 'none' ? 'warn' : 'neutral'
                               }
                             />
+                            <Pill
+                              label={adjustmentLabel(row.adjusted)}
+                              tone={adjustmentTone(row.adjusted)}
+                            />
                           </View>
                         </View>
                         <Text style={styles.symbolMeta}>
                           {row.bars} bars
                           {row.coverage === 'none'
                             ? ' · no live EOD (backtest refused)'
-                            : row.coverage === 'short'
-                              ? ' · live source but thinner than requested window'
-                              : ' · not enough history to score'}
+                            : row.coverage === 'suspect'
+                              ? ' · split-sized gap on non-adjusted bars (excluded)'
+                              : row.coverage === 'short'
+                                ? ' · live source but thinner than requested window'
+                                : ' · not enough history to score'}
                         </Text>
                         {row.notes.slice(0, 4).map((n) => (
                           <Text key={n} style={styles.noteLine}>
@@ -1095,10 +1162,15 @@ export default function PortfolioBacktestScreen() {
                         label={row.source}
                         tone={row.source === 'demo' || row.source === 'none' ? 'warn' : 'good'}
                       />
+                      <Pill label={adjustmentLabel(row.adjusted)} tone={adjustmentTone(row.adjusted)} />
                     </View>
                   </View>
                   {row.coverage === 'none' ? (
                     <Text style={styles.symbolMeta}>No data — backtest not run.</Text>
+                  ) : row.coverage === 'suspect' ? (
+                    <Text style={styles.symbolMeta}>
+                      Suspected unadjusted split in the bars — backtest not run (see notes).
+                    </Text>
                   ) : row.bars < 60 ? (
                     <Text style={styles.symbolMeta}>
                       Insufficient history ({row.bars} bars) — skipped.

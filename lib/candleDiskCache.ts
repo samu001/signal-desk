@@ -11,6 +11,8 @@ export type PersistedCandleResult = {
   candles: Candle[];
   source: string;
   warnings: string[];
+  /** Split/dividend adjustment of the bars ('adjusted' | 'raw' | 'unknown'). */
+  adjusted?: string;
 };
 
 type CandleEntry = { value: PersistedCandleResult; expiresAt: number };
@@ -130,6 +132,7 @@ export function persistCandle(key: string, value: PersistedCandleResult, expires
         source: value.source,
         // Drop cache-hit noise so disk stays small / readable.
         warnings: value.warnings.filter((w) => !/^Cached .+ EOD/i.test(w)).slice(0, 8),
+        ...(value.adjusted ? { adjusted: value.adjusted } : {}),
       },
       expiresAt,
     };
