@@ -72,7 +72,7 @@ describe('earnings calendar status (honesty UX)', () => {
       detail: earningsFailClosedDetail('no_key'),
     }));
     const s = summarizeEarningsFetches(rows);
-    expect(s.headline).toMatch(/No Finnhub \/ FMP \/ Alpha Vantage key/i);
+    expect(s.headline).toMatch(/No Finnhub \/ FMP \/ Alpha Vantage \/ Yahoo proxy/i);
     expect(s.headline).toMatch(/almost no trades/i);
   });
 
@@ -93,7 +93,7 @@ describe('earnings calendar status (honesty UX)', () => {
       earningsCalendarStatus: 'no_key',
     });
     expect(noKey.find((r) => r.id === 'earnings_clear')?.detail).toMatch(
-      /No Finnhub \/ FMP \/ Alpha Vantage key/i
+      /No Finnhub \/ FMP \/ Alpha Vantage \/ Yahoo proxy/i
     );
 
     const err = evaluateSetupRules(setup, {
@@ -252,5 +252,41 @@ AAPL,Apple,2024-08-01,2024-06-30,1.6,USD`;
     expect(r.detail).toMatch(/Finnhub/i);
     expect(r.detail).toMatch(/FMP/i);
     expect(r.detail).toMatch(/Alpha Vantage/i);
+  });
+
+  it('falls back to Yahoo proxy when Finnhub/FMP/AV fail', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('finnhub.io') || url.includes('financialmodelingprep.com') || url.includes('alphavantage.co')) {
+        return { ok: false, status: 429, text: async () => 'limit', json: async () => ({}) } as Response;
+      }
+      if (url.includes('yahoo.example') && url.includes('/earnings')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              symbol: 'PATH',
+              source: 'yahoo',
+              dates: ['2024-05-29', '2024-09-05', '2025-03-12'],
+            }),
+          json: async () => ({}),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const r = await fetchEarningsDates(
+      'PATH',
+      'fh',
+      '2024-01-01',
+      '2025-12-31',
+      'fmp',
+      'av',
+      { url: 'https://yahoo.example', token: 't' }
+    );
+    expect(r.status).toBe('ok');
+    expect(r.dates).toEqual(['2024-05-29', '2024-09-05', '2025-03-12']);
+    expect(r.detail).toMatch(/Yahoo/i);
   });
 });

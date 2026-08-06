@@ -64,7 +64,7 @@ use the scripts:
 ```bash
 # Deep Must + earnings blackout (~800 calendar days; same gates as Portfolio UI).
 # Set FINNHUB_API_KEY and/or FMP_API_KEY / ALPHA_VANTAGE_API_KEY or the blackout
-# fails closed (~0 trades). Chain: Finnhub → FMP → Alpha Vantage.
+# fails closed (~0 trades). Chain: Finnhub → FMP → Alpha Vantage → Yahoo proxy.
 npx tsx scripts/run-deep-backtest.ts
 
 # ~5y window; BT_REGIME=1 also stacks the regime gate

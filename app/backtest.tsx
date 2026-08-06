@@ -119,7 +119,10 @@ export default function BacktestScreen() {
         from,
         to,
         settings.fmpApiKey || undefined,
-        settings.alphaVantageApiKey || undefined
+        settings.alphaVantageApiKey || undefined,
+        settings.yahooProxyUrl?.trim()
+          ? { url: settings.yahooProxyUrl, token: settings.yahooProxyToken || undefined }
+          : undefined
       );
 
       if (earnings.status !== 'ok') {

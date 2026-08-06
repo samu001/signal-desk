@@ -83,8 +83,14 @@ const keys = {
   fmpApiKey: process.env.FMP_API_KEY || undefined,
   finnhubApiKey: process.env.FINNHUB_API_KEY || undefined,
   alphaVantageApiKey: process.env.ALPHA_VANTAGE_API_KEY || undefined,
+  yahooProxyUrl: process.env.YAHOO_PROXY_URL || undefined,
+  yahooProxyToken: process.env.YAHOO_PROXY_TOKEN || undefined,
   days: DAYS,
 };
+
+const yahooProxy = keys.yahooProxyUrl
+  ? { url: keys.yahooProxyUrl, token: keys.yahooProxyToken }
+  : undefined;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -312,7 +318,8 @@ async function main() {
       earnFrom,
       earnTo,
       keys.fmpApiKey,
-      keys.alphaVantageApiKey
+      keys.alphaVantageApiKey,
+      yahooProxy
     );
     earningsFetches.push(earnings);
     await sleep(Math.min(400, SLEEP_MS));

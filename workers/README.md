@@ -1,4 +1,4 @@
-# Yahoo EOD proxy (Cloudflare Worker)
+# Yahoo proxy (Cloudflare Worker)
 
 Source of truth for the Worker behind Settings → Yahoo proxy URL
 (e.g. `https://signal-desk-bars.…workers.dev`).
@@ -10,14 +10,16 @@ Source of truth for the Worker behind Settings → Yahoo proxy URL
 3. Save and Deploy.
 4. Optional: set `PROXY_TOKEN` and the same token in Signal Desk Settings.
 
-## What changed
+## Routes
 
-OHLC is scaled by Yahoo `adjclose / close` so bars are **split + dividend
-adjusted**. The JSON includes `adjusted: "adjusted"` when enough bars had
-`adjclose`; the app then scores Yahoo as adjusted (not `adj?`).
+- `GET /eod?symbol=AAPL&range=2y` — daily bars scaled by Yahoo `adjclose / close`
+  (`adjusted: "adjusted"` when enough bars had adjclose).
+- `GET /earnings?symbol=AAPL&from=2024-01-01&to=2026-08-01` — announcement dates from
+  Yahoo’s earnings calendar + quoteSummary (last-resort blackout backup when
+  Finnhub / FMP / Alpha Vantage miss).
 
-Until you redeploy, the live Worker still returns unscaled quote OHLC and the
-app treats Yahoo as `unknown`.
+Until you redeploy, the live Worker may lack `/earnings` (app falls through to
+fail-closed for that symbol) and may still return unscaled quote OHLC.
 
 ---
 

@@ -581,11 +581,12 @@ export default function PortfolioBacktestScreen() {
       const hasEarningsKey = Boolean(
         settings.finnhubApiKey?.trim() ||
           settings.fmpApiKey?.trim() ||
-          settings.alphaVantageApiKey?.trim()
+          settings.alphaVantageApiKey?.trim() ||
+          settings.yahooProxyUrl?.trim()
       );
       if (!hasEarningsKey) {
         warnings.push(
-          'No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed on every symbol (expect ~0 trades). Add a key in Settings.'
+          'No Finnhub / FMP / Alpha Vantage / Yahoo proxy — earnings blackout fails closed on every symbol (expect ~0 trades). Add a key or Yahoo proxy in Settings.'
         );
       }
 
@@ -690,7 +691,10 @@ export default function PortfolioBacktestScreen() {
           earnFrom,
           earnTo,
           settings.fmpApiKey || undefined,
-          settings.alphaVantageApiKey || undefined
+          settings.alphaVantageApiKey || undefined,
+          settings.yahooProxyUrl?.trim()
+            ? { url: settings.yahooProxyUrl, token: settings.yahooProxyToken || undefined }
+            : undefined
         );
         earningsBySymbol.set(symbol, earnings);
         earningsFetches.push(earnings);
@@ -883,20 +887,22 @@ export default function PortfolioBacktestScreen() {
         </Text>
         {!settings.finnhubApiKey?.trim() &&
         !settings.fmpApiKey?.trim() &&
-        !settings.alphaVantageApiKey?.trim() ? (
+        !settings.alphaVantageApiKey?.trim() &&
+        !settings.yahooProxyUrl?.trim() ? (
           <View style={styles.losingBanner}>
             <Text style={styles.losingBannerText}>
-              No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed, so a run will
-              take almost no trades. Add a key in Settings (Finnhub → FMP → Alpha Vantage) before
-              trusting portfolio results.
+              No Finnhub / FMP / Alpha Vantage / Yahoo proxy — earnings blackout fails closed, so a
+              run will take almost no trades. Add a key or Yahoo proxy in Settings (Finnhub → FMP →
+              Alpha Vantage → Yahoo) before trusting portfolio results.
             </Text>
           </View>
         ) : !settings.finnhubApiKey?.trim() ? (
           <View style={styles.losingBanner}>
             <Text style={styles.losingBannerText}>
               No Finnhub key — earnings calendars use FMP
-              {settings.alphaVantageApiKey?.trim() ? ' / Alpha Vantage' : ''} backup only. Finnhub
-              is preferred when available.
+              {settings.alphaVantageApiKey?.trim() ? ' / Alpha Vantage' : ''}
+              {settings.yahooProxyUrl?.trim() ? ' / Yahoo' : ''} backup only. Finnhub is preferred
+              when available.
             </Text>
           </View>
         ) : null}

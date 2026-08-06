@@ -9,8 +9,14 @@ const keys = {
   fmpApiKey: process.env.FMP_API_KEY || undefined,
   finnhubApiKey: process.env.FINNHUB_API_KEY || undefined,
   alphaVantageApiKey: process.env.ALPHA_VANTAGE_API_KEY || undefined,
+  yahooProxyUrl: process.env.YAHOO_PROXY_URL || undefined,
+  yahooProxyToken: process.env.YAHOO_PROXY_TOKEN || undefined,
   days: 140,
 };
+
+const yahooProxy = keys.yahooProxyUrl
+  ? { url: keys.yahooProxyUrl, token: keys.yahooProxyToken }
+  : undefined;
 
 function fmt(ts: number) {
   return new Date(ts * 1000).toISOString().slice(0, 10);
@@ -39,7 +45,8 @@ async function main() {
       from,
       to,
       keys.fmpApiKey,
-      keys.alphaVantageApiKey
+      keys.alphaVantageApiKey,
+      yahooProxy
     );
 
     console.log(

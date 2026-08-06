@@ -7,6 +7,20 @@ export type YahooCandleResult = {
   adjusted?: 'adjusted' | 'unknown';
 };
 
+export type YahooEarningsResult = {
+  dates: string[];
+  status: 'ok' | 'empty' | 'error' | 'no_key';
+  detail: string;
+};
+
+type YahooEarningsResponse = {
+  symbol?: string;
+  source?: string;
+  dates?: string[];
+  warning?: string;
+  error?: string;
+};
+
 type YahooEodResponse = {
   symbol?: string;
   source?: string;
@@ -137,6 +151,127 @@ export async function fetchYahooDailyCandles(
     return {
       candles: [],
       warning: `Yahoo proxy failed (${msg}).`,
+    };
+  }
+}
+
+/**
+ * Earnings announcement dates via Cloudflare Worker (Yahoo calendar + quoteSummary).
+ * Last-resort blackout backup when Finnhub / FMP / Alpha Vantage miss.
+ */
+export async function fetchYahooEarningsDates(
+  symbol: string,
+  proxyBaseUrl: string | undefined,
+  fromDate: string,
+  toDate: string,
+  proxyToken?: string
+): Promise<YahooEarningsResult> {
+  const upper = symbol.toUpperCase().trim();
+  const base = normalizeBaseUrl(proxyBaseUrl ?? '');
+  if (!base) {
+    return {
+      dates: [],
+      status: 'no_key',
+      detail: 'No Yahoo proxy URL — earnings calendar unavailable.',
+    };
+  }
+  if (!upper) {
+    return { dates: [], status: 'empty', detail: 'Missing symbol for Yahoo earnings.' };
+  }
+
+  try {
+    const params = new URLSearchParams({
+      symbol: upper,
+      from: fromDate.slice(0, 10),
+      to: toDate.slice(0, 10),
+    });
+    if (proxyToken?.trim()) params.set('token', proxyToken.trim());
+
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (proxyToken?.trim()) headers['X-Proxy-Token'] = proxyToken.trim();
+
+    const res = await fetch(`${base}/earnings?${params.toString()}`, { headers });
+    const body = await res.text();
+
+    if (res.status === 401 || res.status === 403) {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `Yahoo earnings proxy auth failed (HTTP ${res.status}) — check proxy token.`,
+      };
+    }
+    if (res.status === 429) {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `Yahoo earnings proxy rate-limited (HTTP 429) — blackout fails closed for ${upper}.`,
+      };
+    }
+    if (!res.ok) {
+      let detail = body.slice(0, 120);
+      try {
+        const parsed = JSON.parse(body) as YahooEarningsResponse;
+        detail = parsed.error || parsed.warning || detail;
+      } catch {
+        /* keep raw */
+      }
+      return {
+        dates: [],
+        status: 'error',
+        detail: `Yahoo earnings proxy HTTP ${res.status}: ${detail} — blackout fails closed for ${upper}.`,
+      };
+    }
+
+    let data: YahooEarningsResponse;
+    try {
+      data = JSON.parse(body) as YahooEarningsResponse;
+    } catch {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `Yahoo earnings proxy returned non-JSON — blackout fails closed for ${upper}.`,
+      };
+    }
+
+    if (data.error && !(data.dates?.length)) {
+      return {
+        dates: [],
+        status: 'error',
+        detail: `Yahoo earnings: ${data.error} — blackout fails closed for ${upper}.`,
+      };
+    }
+
+    const from = fromDate.slice(0, 10);
+    const to = toDate.slice(0, 10);
+    const dates = [
+      ...new Set(
+        (data.dates ?? [])
+          .map((d) => String(d).slice(0, 10))
+          .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= from && d <= to)
+      ),
+    ].sort();
+
+    if (!dates.length) {
+      return {
+        dates: [],
+        status: 'empty',
+        detail:
+          data.warning ||
+          `Yahoo returned no earnings dates for ${upper} in ${from}…${to} — blackout fails closed.`,
+      };
+    }
+
+    return {
+      dates,
+      status: 'ok',
+      detail: `${dates.length} earnings date${dates.length === 1 ? '' : 's'} via Yahoo.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      dates: [],
+      status: 'error',
+      detail: `Yahoo earnings request failed (${msg.slice(0, 80)}) — blackout fails closed for ${upper}.`,
     };
   }
 }

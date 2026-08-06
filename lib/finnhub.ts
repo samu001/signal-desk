@@ -8,7 +8,7 @@ import {
 } from '@/lib/candles';
 import { fetchFmpEarningsDates, fetchFmpFundamentalsBundle } from '@/lib/fmp';
 import { createInflightMap } from '@/lib/ttlCache';
-import { fetchYahooDailyCandles } from '@/lib/yahoo';
+import { fetchYahooDailyCandles, fetchYahooEarningsDates } from '@/lib/yahoo';
 import { Candle, FundamentalSnapshot, NewsItem, Quote } from '@/types/trading';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
@@ -214,7 +214,7 @@ export type EarningsFetchResult = {
 /** Fail-closed gate copy when dates are empty (shared by rules + UI). */
 export function earningsFailClosedDetail(status: EarningsFetchStatus): string {
   if (status === 'no_key') {
-    return 'No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed (add a key in Settings)';
+    return 'No Finnhub / FMP / Alpha Vantage / Yahoo proxy — earnings blackout fails closed (add a key or Yahoo proxy in Settings)';
   }
   if (status === 'error') {
     return 'Earnings calendar fetch failed — blackout fails closed for this symbol';
@@ -255,7 +255,7 @@ export function summarizeEarningsFetches(
   if (!total) {
     headline = 'No earnings calendars requested.';
   } else if (noKey === total) {
-    headline = `No Finnhub / FMP / Alpha Vantage key — earnings blackout fails closed on all ${total} symbols (almost no trades). Add a key in Settings.`;
+    headline = `No Finnhub / FMP / Alpha Vantage / Yahoo proxy — earnings blackout fails closed on all ${total} symbols (almost no trades). Add a key or Yahoo proxy in Settings.`;
   } else if (ok === total) {
     headline = `Earnings calendars loaded for all ${total} symbols.`;
   } else if (ok === 0) {
@@ -284,7 +284,7 @@ export function summarizeEarningsFetches(
 
 /**
  * Historical earnings dates (YYYY-MM-DD) for Playbook blackout.
- * Chain: Finnhub → FMP → Alpha Vantage (last resort; free AV is ~25 calls/day).
+ * Chain: Finnhub → FMP → Alpha Vantage → Yahoo proxy (last resort; no paid quota).
  */
 export async function fetchEarningsDates(
   symbol: string,
@@ -292,7 +292,8 @@ export async function fetchEarningsDates(
   fromDate: string,
   toDate: string,
   fmpApiKey?: string,
-  alphaVantageApiKey?: string
+  alphaVantageApiKey?: string,
+  yahooProxy?: { url?: string; token?: string }
 ): Promise<EarningsFetchResult> {
   const upper = symbol.toUpperCase().trim();
   const providers: Array<{
@@ -316,6 +317,19 @@ export async function fetchEarningsDates(
     providers.push({
       name: 'Alpha Vantage',
       run: () => fetchAlphaVantageEarningsDates(upper, alphaVantageApiKey, fromDate, toDate),
+    });
+  }
+  if (yahooProxy?.url?.trim()) {
+    providers.push({
+      name: 'Yahoo',
+      run: () =>
+        fetchYahooEarningsDates(
+          upper,
+          yahooProxy.url,
+          fromDate,
+          toDate,
+          yahooProxy.token
+        ),
     });
   }
 
@@ -433,10 +447,11 @@ export async function fetchEarningsWindow(
   symbol: string,
   apiKey?: string,
   fmpApiKey?: string,
-  alphaVantageApiKey?: string
+  alphaVantageApiKey?: string,
+  yahooProxy?: { url?: string; token?: string }
 ): Promise<EarningsWindow | null> {
   const upper = symbol.toUpperCase().trim();
-  if (!apiKey && !fmpApiKey && !alphaVantageApiKey) return null;
+  if (!apiKey && !fmpApiKey && !alphaVantageApiKey && !yahooProxy?.url?.trim()) return null;
 
   try {
     const today = new Date();
@@ -449,7 +464,8 @@ export async function fetchEarningsWindow(
       fmt(from),
       fmt(to),
       fmpApiKey,
-      alphaVantageApiKey
+      alphaVantageApiKey,
+      yahooProxy
     );
     if (result.status !== 'ok' || !result.dates.length) return null;
     const next = result.dates[0];
@@ -615,7 +631,10 @@ async function fetchMarketBundleUncached(
         symbol,
         apiKey,
         options?.fmpApiKey,
-        options?.alphaVantageApiKey
+        options?.alphaVantageApiKey,
+        options?.yahooProxyUrl
+          ? { url: options.yahooProxyUrl, token: options.yahooProxyToken }
+          : undefined
       );
       return [symbol, window?.date ? [window.date] : []] as const;
     })

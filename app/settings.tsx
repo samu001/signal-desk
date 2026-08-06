@@ -203,12 +203,13 @@ export default function SettingsScreen() {
         <View style={styles.help}>
           <Text style={styles.helpTitle}>Where each key helps</Text>
           <Text style={styles.helpBody}>
-            EOD order: Tiingo → Yahoo proxy → FMP adjusted. Tiingo: best free adjusted history
-            (web: proxy Worker; native: token). Yahoo: adjclose-scaled Worker (no FMP quota).
-            FMP: dividend-adjusted EOD fallback + fundamentals. Finnhub:
-            live quotes + headlines. Alpha Vantage: last-resort short history (~25 calls/day).
-            Without working EOD, Desk and backtests show No data — they will not invent Soft/Strong
-            or levels.
+            EOD order: Tiingo → Yahoo proxy → FMP adjusted. Earnings blackout: Finnhub → FMP →
+            Alpha Vantage → Yahoo proxy. Tiingo: best free adjusted history (web: proxy Worker;
+            native: token). Yahoo Worker: adjclose-scaled EOD + /earnings calendar backup (no FMP
+            quota). FMP: dividend-adjusted EOD fallback + fundamentals. Finnhub: live quotes +
+            headlines + preferred earnings calendar. Alpha Vantage: last-resort short history
+            (~25 calls/day). Without working EOD, Desk and backtests show No data — they will not
+            invent Soft/Strong or levels.
           </Text>
         </View>
 

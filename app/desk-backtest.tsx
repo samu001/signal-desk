@@ -108,7 +108,10 @@ export default function DeskBacktestScreen() {
         from,
         to,
         settings.fmpApiKey || undefined,
-        settings.alphaVantageApiKey || undefined
+        settings.alphaVantageApiKey || undefined,
+        settings.yahooProxyUrl?.trim()
+          ? { url: settings.yahooProxyUrl, token: settings.yahooProxyToken || undefined }
+          : undefined
       );
       const next = runDeskBacktest({
         symbol: upper,
