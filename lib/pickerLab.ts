@@ -245,12 +245,10 @@ function mulberry32(seed: number) {
   };
 }
 
-function withScores(trades: PickerTrade[], score: (t: PickerTrade) => number): CapacityTrade[] {
+function withScores(trades: PickerTrade[], score: (t: PickerTrade) => number): PickerTrade[] {
+  // Keep setupId / rs20 / entry / stop — capacity only needs a new priorityScore.
   return trades.map((t) => ({
-    symbol: t.symbol,
-    entryTime: t.entryTime,
-    exitTime: t.exitTime,
-    r: t.r,
+    ...t,
     priorityScore: score(t),
   }));
 }

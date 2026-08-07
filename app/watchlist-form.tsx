@@ -12,7 +12,7 @@ export default function WatchlistFormScreen() {
   const router = useRouter();
   const {
     watchlist,
-    setups,
+    enabledSetups,
     settings,
     trades,
     upsertWatchlistItem,
@@ -54,7 +54,7 @@ export default function WatchlistFormScreen() {
           [ticker],
           settings,
           {
-            setups,
+            setups: enabledSetups,
             trades,
             market: marketBundle,
             marketFetchedAt: quotesUpdatedAt,

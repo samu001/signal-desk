@@ -73,6 +73,7 @@ export default function DashboardScreen() {
     quotesUpdatedAt,
     fundamentals,
     setups,
+    enabledSetups,
     signalsStale,
   } = useTrading();
 
@@ -129,7 +130,7 @@ export default function DashboardScreen() {
         unique,
         settings,
         {
-          setups,
+          setups: enabledSetups,
           trades,
           market: marketBundle,
           marketFetchedAt: quotesUpdatedAt,
@@ -151,21 +152,46 @@ export default function DashboardScreen() {
   };
 
   const addTicker = () => {
-    const ticker = symbolDraft.trim();
-    if (!ticker) {
-      Alert.alert('Symbol required', 'Enter a ticker like AAPL.');
+    const tickers = [
+      ...new Set(
+        symbolDraft
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean)
+      ),
+    ];
+    if (!tickers.length) {
+      Alert.alert('Symbol required', 'Enter a ticker like AAPL, or several like AAPL, MSFT, GOOG.');
       return;
     }
     try {
-      const { created, id } = addWatchlistSymbol(ticker);
-      setSymbolDraft('');
-      if (!created) {
-        Alert.alert('Already on list', `${ticker.toUpperCase()} is already saved.`);
-        setExpandedId(id);
-        return;
+      const created: string[] = [];
+      const already: string[] = [];
+      let lastId = '';
+      for (const ticker of tickers) {
+        const { created: isNew, id } = addWatchlistSymbol(ticker);
+        lastId = id;
+        if (isNew) created.push(ticker);
+        else already.push(ticker);
       }
-      setExpandedId(id);
-      void signalSymbols([ticker]);
+      setSymbolDraft('');
+      if (lastId) setExpandedId(lastId);
+      if (created.length) {
+        void signalSymbols(created);
+      }
+      if (already.length && !created.length) {
+        Alert.alert(
+          'Already on list',
+          already.length === 1
+            ? `${already[0]} is already saved.`
+            : `${already.join(', ')} are already saved.`
+        );
+      } else if (already.length) {
+        Alert.alert(
+          'Partially added',
+          `Added ${created.join(', ')}. Already on list: ${already.join(', ')}.`
+        );
+      }
     } catch (e) {
       Alert.alert('Could not add', e instanceof Error ? e.message : 'Unknown error');
     }
@@ -194,7 +220,7 @@ export default function DashboardScreen() {
         [symbol],
         settings,
         {
-          setups,
+          setups: enabledSetups,
           trades,
           market: marketBundle,
           marketFetchedAt: quotesUpdatedAt,
@@ -262,7 +288,7 @@ export default function DashboardScreen() {
               onChangeText={(t) => setSymbolDraft(t.toUpperCase())}
               autoCapitalize="characters"
               autoCorrect={false}
-              placeholder="Add ticker e.g. AAPL"
+              placeholder="Add tickers e.g. AAPL, MSFT"
               placeholderTextColor={palette.muted}
               style={styles.addInput}
               onSubmitEditing={addTicker}
@@ -375,6 +401,21 @@ export default function DashboardScreen() {
                     ) : null}
                   </View>
                   <View style={styles.actions}>
+                    <Pressable
+                      hitSlop={8}
+                      disabled={loadingSignals}
+                      accessibilityLabel={`Refresh signals for ${item.symbol}`}
+                      onPress={() => void signalSymbols([item.symbol])}>
+                      {signalingThis ? (
+                        <ActivityIndicator size="small" color={palette.moss} />
+                      ) : (
+                        <FontAwesome
+                          name="refresh"
+                          size={16}
+                          color={loadingSignals ? palette.muted : palette.moss}
+                        />
+                      )}
+                    </Pressable>
                     <Pressable hitSlop={8} onPress={() => void toggleResearch(item.id, item.symbol)}>
                       <Text style={styles.researchBtn}>{expanded ? 'Hide Desk' : 'Desk'}</Text>
                     </Pressable>
@@ -438,6 +479,7 @@ export default function DashboardScreen() {
                   ) : rec ? (
                     <DeskSignalDetail
                       recommendation={rec}
+                      watchlistId={item.id}
                       onUseSetup={(option) => useSetupLevels(item.id, option, rec.tradeable)}
                     />
                   ) : (

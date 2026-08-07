@@ -16,7 +16,7 @@ import { fetchMarketBundle, fetchQuotes, MarketBundle, clearMarketBundleInflight
 import { clearFundamentalsCache } from '@/lib/fmp';
 import { Recommendation } from '@/lib/recommend';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
-import { createId, loadAppState, saveAppState } from '@/lib/storage';
+import { createId, enabledSetupsOf, loadAppState, saveAppState } from '@/lib/storage';
 import {
   AppSettings,
   AppState,
@@ -32,7 +32,10 @@ import {
 type TradingContextValue = {
   ready: boolean;
   settings: AppSettings;
+  /** Full Playbook roster (including toggled-off setups). */
   setups: Setup[];
+  /** Setups currently on — Desk, candidates, and combined backtests use only these. */
+  enabledSetups: Setup[];
   watchlist: WatchlistItem[];
   trades: Trade[];
   quotes: Record<string, Quote>;
@@ -74,6 +77,7 @@ type TradingContextValue = {
   applyDeskSignals: (recommendations: Recommendation[]) => void;
   removeWatchlistItem: (id: string) => void;
   updateSetup: (setup: Setup) => void;
+  setSetupEnabled: (id: string, enabled: boolean) => void;
   addTrade: (trade: Omit<Trade, 'id'>) => string;
   updateTrade: (id: string, patch: Partial<Trade>) => void;
   getSetup: (id: string | null | undefined) => Setup | null;
@@ -280,7 +284,8 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
             fundamentals: { ...prev.fundamentals, ...bundle.fundamentals },
             earningsDates: { ...prev.earningsDates, ...bundle.earningsDates },
             sourceSummary: bundle.sourceSummary,
-            warnings: [...new Set([...prev.warnings, ...bundle.warnings])],
+            // Latest fetch wins — do not accumulate stale other-ticker provider noise.
+            warnings: bundle.warnings,
           }
         : bundle
     );
@@ -422,6 +427,17 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     );
   }, []);
 
+  const setSetupEnabled = useCallback((id: string, enabled: boolean) => {
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            setups: prev.setups.map((s) => (s.id === id ? { ...s, enabled } : s)),
+          }
+        : prev
+    );
+  }, []);
+
   const addTrade = useCallback((trade: Omit<Trade, 'id'>) => {
     const id = createId('tr');
     setState((prev) =>
@@ -454,16 +470,21 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     [state]
   );
 
+  const enabledSetups = useMemo(
+    () => (state ? enabledSetupsOf(state.setups) : []),
+    [state]
+  );
+
   const candidates = useMemo(() => {
     if (!state) return [];
-    return buildCandidates(state.watchlist, state.setups, quotes, {
+    return buildCandidates(state.watchlist, enabledSetups, quotes, {
       candles,
       news,
       earningsDates,
       trades: state.trades,
       session,
     });
-  }, [state, quotes, candles, news, earningsDates, session]);
+  }, [state, enabledSetups, quotes, candles, news, earningsDates, session]);
 
   const actionable = useMemo(() => actionableCandidates(candidates), [candidates]);
 
@@ -500,6 +521,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       ready,
       settings: state?.settings ?? emptySettings,
       setups: state?.setups ?? [],
+      enabledSetups,
       watchlist: state?.watchlist ?? [],
       trades: state?.trades ?? [],
       quotes,
@@ -527,6 +549,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       applyDeskSignals,
       removeWatchlistItem,
       updateSetup,
+      setSetupEnabled,
       addTrade,
       updateTrade,
       getSetup,
@@ -534,6 +557,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   }, [
     ready,
     state,
+    enabledSetups,
     quotes,
     candles,
     news,
@@ -559,6 +583,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     applyDeskSignals,
     removeWatchlistItem,
     updateSetup,
+    setSetupEnabled,
     addTrade,
     updateTrade,
     getSetup,

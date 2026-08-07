@@ -1,5 +1,6 @@
 import { Stack } from 'expo-router';
-import { useMemo, useState } from 'react';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -50,6 +51,13 @@ import {
 } from '@/lib/pickerLab';
 import { runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
 import { CapacityTrade } from '@/lib/portfolioCapacity';
+import {
+  SETUP_ATTRIBUTION_MIN_N,
+  aggregateSetupAttribution,
+  bestSetupByTotalR,
+  bestSetupByWinRate,
+  SetupAttributionRow,
+} from '@/lib/setupAttribution';
 import { Candle } from '@/types/trading';
 
 /** Same roster as scripts/run-deep-backtest.ts — picked on demonstrated combined R. */
@@ -120,6 +128,8 @@ type PortfolioSummary = {
   excludedSymbols: number;
   /** Earnings calendar rollup for the scored basket. */
   earningsSummary: ReturnType<typeof summarizeEarningsFetches> | null;
+  /** Setup names included in this run. */
+  setupsUsed: string[];
   warnings: string[];
 };
 
@@ -356,7 +366,7 @@ function verdictBannerStyles(tone: PickerVerdictTone) {
 }
 
 export default function PortfolioBacktestScreen() {
-  const { settings, setups, updateSettings } = useTrading();
+  const { settings, setups, enabledSetups, updateSettings } = useTrading();
   const [symbolsText, setSymbolsText] = useState(DEFAULT_SYMBOLS);
   const [days, setDays] = useState('400');
   const [maxOpen, setMaxOpen] = useState('3');
@@ -373,6 +383,39 @@ export default function PortfolioBacktestScreen() {
   const [activePicker, setActivePicker] = useState<SelectablePickerRuleId>('priority');
   /** Active exit variant from the sweep (null = production / main run). */
   const [activeParamId, setActiveParamId] = useState<string | null>(null);
+  /** Compact Playbook picker — null until hydrated from enabled setups. */
+  const [selectedSetupIds, setSelectedSetupIds] = useState<Set<string> | null>(null);
+  const [setupsOpen, setSetupsOpen] = useState(false);
+  /** Post-constraint attribution lens — Taken answers "what got through". */
+  const [setupAttrLens, setSetupAttrLens] = useState<'taken' | 'all'>('taken');
+  const [perSymbolFiltersOpen, setPerSymbolFiltersOpen] = useState(false);
+
+  useEffect(() => {
+    if (selectedSetupIds != null || !setups.length) return;
+    setSelectedSetupIds(new Set(enabledSetups.map((s) => s.id)));
+  }, [setups, enabledSetups, selectedSetupIds]);
+
+  const runSetups = useMemo(() => {
+    const ids = selectedSetupIds ?? new Set(enabledSetups.map((s) => s.id));
+    return setups.filter((s) => ids.has(s.id));
+  }, [setups, selectedSetupIds, enabledSetups]);
+
+  const setupSelectionMatchesPlaybook =
+    runSetups.length === enabledSetups.length &&
+    enabledSetups.every((s) => runSetups.some((r) => r.id === s.id));
+
+  const toggleSetupId = (id: string) => {
+    setSelectedSetupIds((prev) => {
+      const next = new Set(prev ?? enabledSetups.map((s) => s.id));
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllSetups = () => setSelectedSetupIds(new Set(setups.map((s) => s.id)));
+  const selectNoneSetups = () => setSelectedSetupIds(new Set());
+  const selectPlaybookOn = () => setSelectedSetupIds(new Set(enabledSetups.map((s) => s.id)));
 
   /**
    * The trade universe driving every stat below: the main run's trades when no
@@ -443,11 +486,46 @@ export default function PortfolioBacktestScreen() {
         avgPriorityTaken: sim.avgPriorityTaken,
         avgPrioritySkipped: sim.avgPrioritySkipped,
       },
-      taken: sim.taken,
+      // Same object refs as effectiveTrades — setupId is preserved at runtime.
+      taken: sim.taken as PickerTrade[],
       cappedRows: aggregateCappedRows(effectiveRows, sim.taken, sim.skippedTrades),
       pickerName: pickerLabel(activePicker),
     };
   }, [summary, effectiveTrades, effectiveRows, activePicker]);
+
+  const setupAttribution = useMemo(() => {
+    if (!summary || !cappedView) return null;
+    const catalog = summary.setupsUsed
+      .map((name) => {
+        const setup = setups.find((s) => s.name === name);
+        return setup ? { id: setup.id, name: setup.name } : null;
+      })
+      .filter((x): x is { id: string; name: string } => Boolean(x));
+    // Also include any setupId that appeared in trades but isn't in the name list.
+    const seen = new Set(catalog.map((c) => c.id));
+    for (const t of effectiveTrades) {
+      if (!t.setupId || seen.has(t.setupId)) continue;
+      const setup = setups.find((s) => s.id === t.setupId);
+      catalog.push({ id: t.setupId, name: setup?.name ?? t.setupId });
+      seen.add(t.setupId);
+    }
+    const byKey = new Map(
+      effectiveTrades.map((t) => [`${t.symbol}|${t.entryTime}`, t] as const)
+    );
+    const takenTrades = cappedView.taken
+      .map((t) => byKey.get(`${t.symbol}|${t.entryTime}`) ?? (t.setupId ? t : null))
+      .filter((t): t is PickerTrade => Boolean(t?.setupId));
+    const trades =
+      setupAttrLens === 'taken'
+        ? takenTrades.map((t) => ({ setupId: t.setupId, r: t.r }))
+        : effectiveTrades.map((t) => ({ setupId: t.setupId, r: t.r }));
+    const rows = aggregateSetupAttribution(trades, catalog);
+    return {
+      rows,
+      bestR: bestSetupByTotalR(rows, SETUP_ATTRIBUTION_MIN_N),
+      bestWin: bestSetupByWinRate(rows, SETUP_ATTRIBUTION_MIN_N),
+    };
+  }, [summary, cappedView, effectiveTrades, setups, setupAttrLens]);
 
   const buyingPower = useMemo<BuyingPowerReport | null>(() => {
     if (!cappedView?.taken.length) return null;
@@ -496,6 +574,13 @@ export default function PortfolioBacktestScreen() {
   }, [summary, cappedView, effectiveRows, perSymbolMode, coverageFilter, resultFilter, symbolSort]);
 
   const run = async () => {
+    if (!runSetups.length) {
+      setProgress('');
+      setSummary(null);
+      setLoading(false);
+      setSetupsOpen(true);
+      return;
+    }
     setLoading(true);
     setSummary(null);
     setActiveParamId(null);
@@ -705,7 +790,7 @@ export default function PortfolioBacktestScreen() {
         const symbolCosts = costsForSymbol(symbol, bars.candles);
         const combined = runCombinedPlaybookBacktest({
           symbol,
-          setups,
+          setups: runSetups,
           candles: bars.candles,
           spyCandles: spy.candles,
           qqqCandles: qqq.candles,
@@ -785,7 +870,7 @@ export default function PortfolioBacktestScreen() {
       if (sweepTickers.length) {
         setProgress('Sweeping exit parameters…');
         paramSweep = runParameterSweep({
-          setups,
+          setups: runSetups,
           tickers: sweepTickers,
           spyCandles: spy.candles,
           qqqCandles: qqq.candles,
@@ -812,6 +897,7 @@ export default function PortfolioBacktestScreen() {
         usableSymbols: usableSymbolCount,
         excludedSymbols: excludedSymbolCount,
         earningsSummary,
+        setupsUsed: runSetups.map((s) => s.name),
         warnings,
       });
     } finally {
@@ -885,6 +971,76 @@ export default function PortfolioBacktestScreen() {
         <Text style={styles.riskNote}>
           1R = ${riskPerTrade.toFixed(0)} per trade at these settings (saved to Settings on run).
         </Text>
+
+        <View style={styles.setupPicker}>
+          <Pressable
+            style={styles.setupPickerHead}
+            onPress={() => setSetupsOpen((o) => !o)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: setupsOpen }}>
+            <View style={styles.setupPickerTitleCol}>
+              <Text style={styles.setupPickerTitle}>Playbook setups</Text>
+              <Text style={styles.setupPickerSub}>
+                {runSetups.length === 0
+                  ? 'Select at least one setup'
+                  : setupSelectionMatchesPlaybook
+                    ? `${runSetups.length} selected · matches Playbook “on”`
+                    : `${runSetups.length} of ${setups.length} selected for this run`}
+              </Text>
+            </View>
+            <FontAwesome
+              name={setupsOpen ? 'chevron-up' : 'chevron-down'}
+              size={14}
+              color={palette.muted}
+            />
+          </Pressable>
+
+          {setupsOpen ? (
+            <View style={styles.setupPickerBody}>
+              <View style={styles.setupQuickRow}>
+                <Pressable onPress={selectPlaybookOn} hitSlop={6}>
+                  <Text style={styles.setupQuickLink}>Match Playbook</Text>
+                </Pressable>
+                <Text style={styles.setupQuickDot}>·</Text>
+                <Pressable onPress={selectAllSetups} hitSlop={6}>
+                  <Text style={styles.setupQuickLink}>All</Text>
+                </Pressable>
+                <Text style={styles.setupQuickDot}>·</Text>
+                <Pressable onPress={selectNoneSetups} hitSlop={6}>
+                  <Text style={styles.setupQuickLink}>None</Text>
+                </Pressable>
+              </View>
+              {setups.map((setup) => {
+                const on = runSetups.some((s) => s.id === setup.id);
+                return (
+                  <Pressable
+                    key={setup.id}
+                    style={styles.setupCheckRow}
+                    onPress={() => toggleSetupId(setup.id)}>
+                    <FontAwesome
+                      name={on ? 'check-square' : 'square-o'}
+                      size={18}
+                      color={on ? palette.moss : palette.muted}
+                    />
+                    <Text style={[styles.setupCheckName, !on && styles.setupCheckNameOff]} numberOfLines={1}>
+                      {setup.name}
+                    </Text>
+                    {setup.enabled === false ? (
+                      <Text style={styles.setupOffTag}>off in Playbook</Text>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+        </View>
+
+        {!runSetups.length ? (
+          <Text style={styles.setupEmptyWarn}>
+            Pick at least one setup above before running.
+          </Text>
+        ) : null}
+
         {!settings.finnhubApiKey?.trim() &&
         !settings.fmpApiKey?.trim() &&
         !settings.alphaVantageApiKey?.trim() &&
@@ -907,7 +1063,11 @@ export default function PortfolioBacktestScreen() {
           </View>
         ) : null}
 
-        <Button label={loading ? 'Running…' : 'Run portfolio backtest'} onPress={() => run()} disabled={loading} />
+        <Button
+          label={loading ? 'Running…' : 'Run portfolio backtest'}
+          onPress={() => run()}
+          disabled={loading || runSetups.length === 0}
+        />
 
         {loading ? (
           <View style={styles.loading}>
@@ -922,8 +1082,8 @@ export default function PortfolioBacktestScreen() {
               title="Portfolio"
               subtitle={
                 summary.excludedSymbols
-                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out.`
-                  : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD).`
+                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out. Setups: ${summary.setupsUsed.join(', ') || 'none'}.`
+                  : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD). Setups: ${summary.setupsUsed.join(', ') || 'none'}.`
               }
             />
             <View style={styles.stats}>
@@ -1053,6 +1213,101 @@ export default function PortfolioBacktestScreen() {
                   : ''}
               </Text>
             </View>
+
+            {setupAttribution ? (
+              <>
+                <SectionTitle
+                  title="Setup attribution (after constraints)"
+                  subtitle={
+                    setupAttrLens === 'taken'
+                      ? `Of the trades that filled a max-${summary.maxOpen} slot under ${cappedView.pickerName}${
+                          activeParam ? ` · ${activeParam.label}` : ''
+                        }, which setups delivered the best win rate and R. Not a solo setup backtest.`
+                      : `All usable signals before the max-open slot filter${
+                          activeParam ? ` · ${activeParam.label}` : ''
+                        }. Compare with Taken to see what capacity kept.`
+                  }
+                />
+                <View style={styles.chipRow}>
+                  <Pressable
+                    onPress={() => setSetupAttrLens('taken')}
+                    style={[styles.chip, setupAttrLens === 'taken' && styles.chipOn]}>
+                    <Text
+                      style={[styles.chipText, setupAttrLens === 'taken' && styles.chipTextOn]}>
+                      Taken (max-open)
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setSetupAttrLens('all')}
+                    style={[styles.chip, setupAttrLens === 'all' && styles.chipOn]}>
+                    <Text style={[styles.chipText, setupAttrLens === 'all' && styles.chipTextOn]}>
+                      All signals
+                    </Text>
+                  </Pressable>
+                </View>
+                <Text style={styles.filterMeta}>
+                  Best badges need n≥{SETUP_ATTRIBUTION_MIN_N}. Sorted by total R.
+                </Text>
+                {setupAttribution.rows.length === 0 ? (
+                  <EmptyState
+                    title="No setups to attribute"
+                    body="Re-run with at least one Playbook setup selected."
+                  />
+                ) : (
+                  <View style={styles.attrTable}>
+                    <View style={styles.attrHeader}>
+                      <Text style={[styles.attrCellSetup, styles.attrHeaderText]}>Setup</Text>
+                      <Text style={[styles.attrCellN, styles.attrHeaderText]}>n</Text>
+                      <Text style={[styles.attrCellWin, styles.attrHeaderText]}>Win%</Text>
+                      <Text style={[styles.attrCellR, styles.attrHeaderText]}>Total R</Text>
+                      <Text style={[styles.attrCellAvg, styles.attrHeaderText]}>Avg R</Text>
+                    </View>
+                    {setupAttribution.rows.map((row: SetupAttributionRow) => (
+                      <View key={row.setupId} style={styles.attrRow}>
+                        <View style={styles.attrCellSetup}>
+                          <Text style={styles.attrName} numberOfLines={2}>
+                            {row.name}
+                          </Text>
+                          <View style={styles.pillRow}>
+                            {setupAttribution.bestR === row.setupId ? (
+                              <Pill label="Best R" tone="good" />
+                            ) : null}
+                            {setupAttribution.bestWin === row.setupId ? (
+                              <Pill label="Best win%" tone="warn" />
+                            ) : null}
+                          </View>
+                        </View>
+                        <Text style={styles.attrCellN}>{row.trades}</Text>
+                        <Text style={styles.attrCellWin}>
+                          {row.winRate == null ? '—' : `${Math.round(row.winRate * 100)}%`}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.attrCellR,
+                            {
+                              color:
+                                row.trades === 0
+                                  ? palette.muted
+                                  : row.totalR >= 0
+                                    ? palette.leaf
+                                    : palette.danger,
+                            },
+                          ]}>
+                          {row.trades === 0
+                            ? '—'
+                            : `${row.totalR >= 0 ? '+' : ''}${row.totalR.toFixed(1)}`}
+                        </Text>
+                        <Text style={styles.attrCellAvg}>
+                          {row.avgR == null
+                            ? '—'
+                            : `${row.avgR >= 0 ? '+' : ''}${row.avgR.toFixed(2)}`}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </>
+            ) : null}
 
             <SectionTitle
               title="Picker lab"
@@ -1318,88 +1573,152 @@ export default function PortfolioBacktestScreen() {
                   : 'Every signal per ticker with no portfolio capacity limit — same as All signals (usable).'
               }
             />
-            <View style={styles.chipRow}>
+
+            <View style={styles.filterBar}>
               <Pressable
-                onPress={() => setPerSymbolMode('capped')}
-                style={[styles.chip, perSymbolMode === 'capped' && styles.chipOn]}>
-                <Text style={[styles.chipText, perSymbolMode === 'capped' && styles.chipTextOn]}>
-                  Max {summary.maxOpen} open
+                style={styles.filterBarHead}
+                onPress={() => setPerSymbolFiltersOpen((o) => !o)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: perSymbolFiltersOpen }}>
+                <Text style={styles.filterBarSummary} numberOfLines={1}>
+                  {perSymbolMode === 'capped' ? `Max ${summary.maxOpen}` : 'All signals'}
+                  {' · '}
+                  {coverageFilter === 'all'
+                    ? 'All coverage'
+                    : coverageFilter === 'ok'
+                      ? 'Full only'
+                      : 'Issues'}
+                  {' · '}
+                  {resultFilter === 'all'
+                    ? 'All results'
+                    : resultFilter === 'winners'
+                      ? 'Winners'
+                      : resultFilter === 'losers'
+                        ? 'Losers'
+                        : 'Flat'}
+                  {' · '}
+                  {chipLabel(symbolSort)}
                 </Text>
+                <FontAwesome
+                  name={perSymbolFiltersOpen ? 'chevron-up' : 'chevron-down'}
+                  size={12}
+                  color={palette.muted}
+                />
               </Pressable>
-              <Pressable
-                onPress={() => {
-                  setPerSymbolMode('all');
-                  if (symbolSort === 'skipped_desc') setSymbolSort('totalR_desc');
-                }}
-                style={[styles.chip, perSymbolMode === 'all' && styles.chipOn]}>
-                <Text style={[styles.chipText, perSymbolMode === 'all' && styles.chipTextOn]}>
-                  All signals
-                </Text>
-              </Pressable>
-            </View>
 
-            <Text style={styles.filterLabel}>Coverage</Text>
-            <View style={styles.chipRow}>
-              {(
-                [
-                  ['all', 'All'],
-                  ['ok', 'Full only'],
-                  ['issues', 'Issues only'],
-                ] as const
-              ).map(([id, label]) => (
-                <Pressable
-                  key={id}
-                  onPress={() => setCoverageFilter(id)}
-                  style={[styles.chip, coverageFilter === id && styles.chipOn]}>
-                  <Text style={[styles.chipText, coverageFilter === id && styles.chipTextOn]}>
-                    {label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
+              {perSymbolFiltersOpen ? (
+                <View style={styles.filterBarBody}>
+                  <View style={styles.filterInline}>
+                    <Text style={styles.filterInlineLabel}>Mode</Text>
+                    <View style={styles.filterChips}>
+                      <Pressable
+                        onPress={() => setPerSymbolMode('capped')}
+                        style={[styles.chipSm, perSymbolMode === 'capped' && styles.chipOn]}>
+                        <Text
+                          style={[
+                            styles.chipTextSm,
+                            perSymbolMode === 'capped' && styles.chipTextOn,
+                          ]}>
+                          Max {summary.maxOpen}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          setPerSymbolMode('all');
+                          if (symbolSort === 'skipped_desc') setSymbolSort('totalR_desc');
+                        }}
+                        style={[styles.chipSm, perSymbolMode === 'all' && styles.chipOn]}>
+                        <Text
+                          style={[
+                            styles.chipTextSm,
+                            perSymbolMode === 'all' && styles.chipTextOn,
+                          ]}>
+                          All signals
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
 
-            <Text style={styles.filterLabel}>Result</Text>
-            <View style={styles.chipRow}>
-              {(
-                [
-                  ['all', 'All'],
-                  ['winners', 'Winners'],
-                  ['losers', 'Losers'],
-                  ['flat', 'Flat / no trades'],
-                ] as const
-              ).map(([id, label]) => (
-                <Pressable
-                  key={id}
-                  onPress={() => setResultFilter(id)}
-                  style={[styles.chip, resultFilter === id && styles.chipOn]}>
-                  <Text style={[styles.chipText, resultFilter === id && styles.chipTextOn]}>
-                    {label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
+                  <View style={styles.filterInline}>
+                    <Text style={styles.filterInlineLabel}>Cover</Text>
+                    <View style={styles.filterChips}>
+                      {(
+                        [
+                          ['all', 'All'],
+                          ['ok', 'Full'],
+                          ['issues', 'Issues'],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <Pressable
+                          key={id}
+                          onPress={() => setCoverageFilter(id)}
+                          style={[styles.chipSm, coverageFilter === id && styles.chipOn]}>
+                          <Text
+                            style={[
+                              styles.chipTextSm,
+                              coverageFilter === id && styles.chipTextOn,
+                            ]}>
+                            {label}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
 
-            <Text style={styles.filterLabel}>Sort</Text>
-            <View style={styles.chipRow}>
-              {(
-                [
-                  'totalR_desc',
-                  'totalR_asc',
-                  'winRate_desc',
-                  'trades_desc',
-                  ...(perSymbolMode === 'capped' ? (['skipped_desc'] as const) : []),
-                  'symbol_asc',
-                ] as SymbolSort[]
-              ).map((id) => (
-                <Pressable
-                  key={id}
-                  onPress={() => setSymbolSort(id)}
-                  style={[styles.chip, symbolSort === id && styles.chipOn]}>
-                  <Text style={[styles.chipText, symbolSort === id && styles.chipTextOn]}>
-                    {chipLabel(id)}
-                  </Text>
-                </Pressable>
-              ))}
+                  <View style={styles.filterInline}>
+                    <Text style={styles.filterInlineLabel}>Result</Text>
+                    <View style={styles.filterChips}>
+                      {(
+                        [
+                          ['all', 'All'],
+                          ['winners', 'Win'],
+                          ['losers', 'Lose'],
+                          ['flat', 'Flat'],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <Pressable
+                          key={id}
+                          onPress={() => setResultFilter(id)}
+                          style={[styles.chipSm, resultFilter === id && styles.chipOn]}>
+                          <Text
+                            style={[
+                              styles.chipTextSm,
+                              resultFilter === id && styles.chipTextOn,
+                            ]}>
+                            {label}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+
+                  <View style={styles.filterInline}>
+                    <Text style={styles.filterInlineLabel}>Sort</Text>
+                    <View style={styles.filterChips}>
+                      {(
+                        [
+                          'totalR_desc',
+                          'totalR_asc',
+                          'winRate_desc',
+                          'trades_desc',
+                          ...(perSymbolMode === 'capped' ? (['skipped_desc'] as const) : []),
+                          'symbol_asc',
+                        ] as SymbolSort[]
+                      ).map((id) => (
+                        <Pressable
+                          key={id}
+                          onPress={() => setSymbolSort(id)}
+                          style={[styles.chipSm, symbolSort === id && styles.chipOn]}>
+                          <Text
+                            style={[styles.chipTextSm, symbolSort === id && styles.chipTextOn]}>
+                            {chipLabel(id)}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                </View>
+              ) : null}
             </View>
 
             <Text style={styles.filterMeta}>
@@ -1563,6 +1882,189 @@ const styles = StyleSheet.create({
     color: palette.muted,
     fontSize: 12,
     marginBottom: spacing.sm,
+  },
+  filterBar: {
+    backgroundColor: palette.white,
+    borderWidth: 1,
+    borderColor: palette.line,
+    borderRadius: 10,
+    marginBottom: 6,
+    overflow: 'hidden',
+  },
+  filterBarHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  filterBarSummary: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: palette.ink,
+  },
+  filterBarBody: {
+    borderTopWidth: 1,
+    borderTopColor: palette.line,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    gap: 4,
+  },
+  filterInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  filterInlineLabel: {
+    width: 44,
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  filterChips: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  chipSm: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.mist,
+  },
+  chipTextSm: {
+    color: palette.ink,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  setupPicker: {
+    backgroundColor: palette.white,
+    borderWidth: 1,
+    borderColor: palette.line,
+    borderRadius: 12,
+    marginBottom: spacing.md,
+    overflow: 'hidden',
+  },
+  setupPickerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 12,
+  },
+  setupPickerTitleCol: { flex: 1, gap: 2 },
+  setupPickerTitle: { fontWeight: '700', color: palette.ink, fontSize: 15 },
+  setupPickerSub: { color: palette.muted, fontSize: 12, lineHeight: 16 },
+  setupPickerBody: {
+    borderTopWidth: 1,
+    borderTopColor: palette.line,
+    paddingBottom: 8,
+  },
+  setupQuickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  setupQuickLink: { color: palette.moss, fontWeight: '700', fontSize: 13 },
+  setupQuickDot: { color: palette.muted },
+  setupCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  setupCheckName: { flex: 1, color: palette.ink, fontSize: 14, fontWeight: '600' },
+  setupCheckNameOff: { color: palette.muted, fontWeight: '500' },
+  setupOffTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: palette.warn,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  setupEmptyWarn: {
+    color: palette.danger,
+    fontWeight: '600',
+    fontSize: 13,
+    marginBottom: spacing.sm,
+    marginTop: -8,
+  },
+  attrTable: {
+    backgroundColor: palette.white,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.line,
+    overflow: 'hidden',
+    marginBottom: spacing.sm,
+  },
+  attrHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: palette.mist,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.line,
+    gap: 4,
+  },
+  attrHeaderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  attrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: palette.line,
+    gap: 4,
+  },
+  attrCellSetup: { flex: 1.6, gap: 4, minWidth: 0 },
+  attrName: { fontWeight: '700', color: palette.ink, fontSize: 13 },
+  attrCellN: {
+    width: 28,
+    textAlign: 'right',
+    fontFamily: 'SpaceMono',
+    fontSize: 12,
+    color: palette.ink,
+  },
+  attrCellWin: {
+    width: 44,
+    textAlign: 'right',
+    fontFamily: 'SpaceMono',
+    fontSize: 12,
+    color: palette.ink,
+  },
+  attrCellR: {
+    width: 52,
+    textAlign: 'right',
+    fontFamily: 'SpaceMono',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  attrCellAvg: {
+    width: 48,
+    textAlign: 'right',
+    fontFamily: 'SpaceMono',
+    fontSize: 12,
+    color: palette.muted,
   },
   loading: {
     marginTop: spacing.md,

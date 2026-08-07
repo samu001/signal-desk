@@ -60,6 +60,7 @@ describe('runBacktest', () => {
       entryChecks: ['session_tradable'],
       exitRules: ['stop'],
       checklist: [],
+      enabled: true,
     };
     const noGates = {
       marketRegime: false,

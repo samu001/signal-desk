@@ -4,31 +4,57 @@ import {
   defaultSettings,
   defaultSetups,
   defaultWatchlist,
+  playbookCatalog,
   retiredSetupIds,
 } from '@/constants/seed';
 import { AppSettings, AppState, Setup, Trade, WatchlistItem } from '@/types/trading';
 
 const STORAGE_KEY = 'personal_trading_guide_v1';
 
+/** Setups Desk / candidates / combined labs actually evaluate. */
+export function enabledSetupsOf(setups: Setup[]): Setup[] {
+  return setups.filter((s) => s.enabled !== false);
+}
+
 function migrateSetups(raw: Setup[] | undefined): Setup[] {
-  if (!raw?.length) return defaultSetups;
-  const defaultsById = Object.fromEntries(defaultSetups.map((s) => [s.id, s]));
-  const merged = raw
-    .filter((setup) => !retiredSetupIds.has(setup.id))
-    .map((setup) => {
-      const fallback = defaultsById[setup.id];
-      return {
-        ...setup,
-        entryChecks: setup.entryChecks?.length
-          ? setup.entryChecks
-          : fallback?.entryChecks ?? ['near_or_in_buy_zone', 'session_tradable'],
-      };
+  const catalogById = Object.fromEntries(playbookCatalog.map((s) => [s.id, s]));
+  const rawById = Object.fromEntries((raw ?? []).map((s) => [s.id, s]));
+
+  const merged = playbookCatalog.map((catalogSetup) => {
+    const existing = rawById[catalogSetup.id];
+    if (!existing) return { ...catalogSetup };
+    const enabled =
+      typeof existing.enabled === 'boolean'
+        ? existing.enabled
+        : // Legacy rows: former actives stay on; formerly stripped retired default off.
+          !retiredSetupIds.has(catalogSetup.id);
+    return {
+      ...catalogSetup,
+      name: existing.name?.trim() ? existing.name : catalogSetup.name,
+      summary: existing.summary ?? catalogSetup.summary,
+      entryRules: existing.entryRules?.length ? existing.entryRules : catalogSetup.entryRules,
+      exitRules: existing.exitRules?.length ? existing.exitRules : catalogSetup.exitRules,
+      checklist: existing.checklist?.length ? existing.checklist : catalogSetup.checklist,
+      entryChecks: existing.entryChecks?.length
+        ? existing.entryChecks
+        : catalogSetup.entryChecks,
+      enabled,
+    };
+  });
+
+  const catalogIds = new Set(playbookCatalog.map((s) => s.id));
+  for (const setup of raw ?? []) {
+    if (catalogIds.has(setup.id)) continue;
+    merged.push({
+      ...setup,
+      entryChecks: setup.entryChecks?.length
+        ? setup.entryChecks
+        : ['near_or_in_buy_zone', 'session_tradable'],
+      enabled: setup.enabled !== false,
     });
-  const existingIds = new Set(merged.map((s) => s.id));
-  for (const setup of defaultSetups) {
-    if (!existingIds.has(setup.id)) merged.push(setup);
   }
-  return merged;
+
+  return merged.length ? merged : defaultSetups;
 }
 
 export async function loadAppState(): Promise<AppState> {
@@ -37,7 +63,7 @@ export async function loadAppState(): Promise<AppState> {
     if (!raw) {
       return {
         settings: defaultSettings,
-        setups: defaultSetups,
+        setups: playbookCatalog,
         watchlist: defaultWatchlist,
         trades: [],
       };
@@ -53,7 +79,7 @@ export async function loadAppState(): Promise<AppState> {
   } catch {
     return {
       settings: defaultSettings,
-      setups: defaultSetups,
+      setups: playbookCatalog,
       watchlist: defaultWatchlist,
       trades: [],
     };

@@ -17,9 +17,9 @@ export const defaultSettings: AppSettings = {
 
 /**
  * Active Playbook setups (stronger in Must backtests).
- * Weak setups are preserved in `retiredSetups` below — not deleted.
+ * Weaker setups live in `retiredSetups` — shown in Playbook below actives, off by default.
  */
-export const defaultSetups: Setup[] = [
+const defaultSetupsSeed = [
   {
     id: 'setup-mean-reversion',
     name: 'Oversold Bounce',
@@ -204,10 +204,10 @@ export const defaultSetups: Setup[] = [
 ];
 
 /**
- * Retired for now (weak / flat / negative in Must backtests). Code kept so we can re-enable later.
- * Not loaded into the live Playbook via `defaultSetups`.
+ * Formerly retired (weak / flat / negative in Must backtests).
+ * Included in Playbook below actives with `enabled: false` until the user turns them on.
  */
-export const retiredSetups: Setup[] = [
+const retiredSetupsSeed = [
   {
     id: 'setup-rsi-oversold',
     name: 'RSI Oversold Bounce',
@@ -455,6 +455,16 @@ export const retiredSetups: Setup[] = [
   },
 ];
 
+export const defaultSetups: Setup[] = defaultSetupsSeed.map((s) => ({
+  ...s,
+  enabled: true,
+})) as Setup[];
+export const retiredSetups: Setup[] = retiredSetupsSeed.map((s) => ({
+  ...s,
+  enabled: false,
+})) as Setup[];
+/** Full roster: former Must actives first, then optional/off-by-default setups. */
+export const playbookCatalog: Setup[] = [...defaultSetups, ...retiredSetups];
 export const retiredSetupIds = new Set(retiredSetups.map((s) => s.id));
 
 export const defaultWatchlist: WatchlistItem[] = [

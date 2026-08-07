@@ -2,32 +2,37 @@ import { Link } from 'expo-router';
 import { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { CompactDeskScorecard, stanceTone } from '@/components/DeskScorecard';
 import { SetupOptionCard } from '@/components/SetupOptionCard';
 import { Button, formatMoney, Pill } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
-import { Recommendation, SetupOption, Stance } from '@/lib/recommend';
-
-function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
-  if (stance === 'strong_buy') return 'good';
-  if (stance === 'soft_buy') return 'warn';
-  if (stance === 'avoid') return 'bad';
-  return 'neutral';
-}
+import { Recommendation, SetupOption } from '@/lib/recommend';
 
 /**
- * Consolidated Desk view: overall stance + ranked Playbook signals,
- * each with its own buy / stop / target.
+ * Consolidated Desk view: overall stance + compact scorecard + ranked Playbook signals.
+ * Full factor / gate breakdown lives on the Desk detail route.
  */
 export function DeskSignalDetail({
   recommendation,
+  watchlistId,
   onUseSetup,
   footer,
 }: {
   recommendation: Recommendation;
+  /** When set, full Desk can apply setup levels back onto this watchlist row. */
+  watchlistId?: string;
   /** Apply this setup's levels onto the watchlist row (and optionally act). */
   onUseSetup?: (option: SetupOption) => void;
   footer?: ReactNode;
 }) {
+  const deskHref = {
+    pathname: '/desk-detail' as const,
+    params: {
+      symbol: recommendation.symbol,
+      ...(watchlistId ? { watchlistId } : {}),
+    },
+  };
+
   return (
     <View style={styles.card}>
       <Text style={styles.sectionEyebrow}>Desk verdict</Text>
@@ -60,7 +65,7 @@ export function DeskSignalDetail({
       <Text style={styles.summary}>{recommendation.summary}</Text>
       <Text style={styles.confidence}>
         Confidence {recommendation.confidence}%
-        {recommendation.rewardToRisk != null
+        {recommendation.bestSetupName && recommendation.rewardToRisk != null
           ? ` · ~${recommendation.rewardToRisk.toFixed(1)}R on primary`
           : ''}
       </Text>
@@ -72,21 +77,31 @@ export function DeskSignalDetail({
         </Text>
       ) : null}
 
+      <CompactDeskScorecard recommendation={recommendation} />
+
       {recommendation.candleSource !== 'none' && recommendation.label !== 'No data' ? (
-      <View style={styles.primaryBox}>
-        <Text style={styles.sectionEyebrow}>Primary levels (strongest signal)</Text>
-        <Text style={styles.levels}>
-          Buy {formatMoney(recommendation.levels.entryLow)}–
-          {formatMoney(recommendation.levels.entryHigh)} · Stop{' '}
-          {formatMoney(recommendation.levels.stop)} · Target{' '}
-          {formatMoney(recommendation.levels.target)}
-        </Text>
-        {recommendation.bestSetupName ? (
+        <Link href={deskHref} asChild>
+          <Pressable style={styles.fullDeskLink}>
+            <Text style={styles.fullDeskText}>Open full Desk scorecard →</Text>
+          </Pressable>
+        </Link>
+      ) : null}
+
+      {/* Primary levels only when a Playbook setup matched — otherwise Desk still
+          computes generic structure levels internally, but they are not a signal. */}
+      {recommendation.candleSource !== 'none' &&
+      recommendation.label !== 'No data' &&
+      recommendation.bestSetupName ? (
+        <View style={styles.primaryBox}>
+          <Text style={styles.sectionEyebrow}>Primary levels (strongest signal)</Text>
+          <Text style={styles.levels}>
+            Buy {formatMoney(recommendation.levels.entryLow)}–
+            {formatMoney(recommendation.levels.entryHigh)} · Stop{' '}
+            {formatMoney(recommendation.levels.stop)} · Target{' '}
+            {formatMoney(recommendation.levels.target)}
+          </Text>
           <Text style={styles.setup}>From · {recommendation.bestSetupName}</Text>
-        ) : (
-          <Text style={styles.setupWarn}>No Playbook setup matched — Soft/Strong blocked</Text>
-        )}
-      </View>
+        </View>
       ) : null}
 
       {recommendation.candleSource === 'none' || recommendation.label === 'No data' ? null : (
@@ -206,6 +221,11 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 4,
   },
+  fullDeskLink: {
+    alignSelf: 'flex-start',
+    paddingVertical: 4,
+  },
+  fullDeskText: { color: palette.moss, fontWeight: '700', fontSize: 14 },
   backtestLink: { marginTop: 4 },
   backtestText: { color: palette.moss, fontWeight: '700', fontSize: 13 },
 });

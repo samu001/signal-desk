@@ -42,7 +42,7 @@ function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
 
 export default function DeskBacktestScreen() {
   const { symbol: symbolParam } = useLocalSearchParams<{ symbol?: string }>();
-  const { settings, setups } = useTrading();
+  const { settings, enabledSetups } = useTrading();
   const [symbol, setSymbol] = useState((symbolParam || 'AAPL').toUpperCase());
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DeskBacktestResult | null>(null);
@@ -125,7 +125,7 @@ export default function DeskBacktestScreen() {
           ...(earnings.status !== 'ok' ? [earnings.detail] : []),
         ],
         evalBars: 30,
-        setups,
+        setups: enabledSetups,
       });
       setResult(next);
     } finally {

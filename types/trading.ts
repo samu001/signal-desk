@@ -46,6 +46,11 @@ export type Setup = {
   entryChecks: RuleCheckId[];
   exitRules: string[];
   checklist: string[];
+  /**
+   * When false, Desk / candidates / combined backtests ignore this setup.
+   * Still listed in Playbook so it can be toggled back on. Defaults to true when missing.
+   */
+  enabled: boolean;
 };
 
 export type WatchlistItem = {

@@ -37,6 +37,7 @@ export default function SetupDetailScreen() {
       ...setup,
       name: name.trim() || setup.name,
       summary: summary.trim(),
+      enabled: setup.enabled,
     });
     Alert.alert('Saved', 'Playbook setup updated on this device.');
   };

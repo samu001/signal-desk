@@ -212,6 +212,16 @@ describe('interpretPickerLab', () => {
 });
 
 describe('applyPickerRule', () => {
+  it('preserves setupId on taken trades (needed for setup attribution)', () => {
+    const trades = [
+      trade({ entryDay: 1, r: 1, setupId: 'setup-flush', priorityScore: 2 }),
+      trade({ entryDay: 1, r: -1, setupId: 'setup-other', symbol: 'BBB', priorityScore: 1 }),
+    ];
+    const sim = applyPickerRule(trades, 'priority', 1);
+    expect(sim.taken).toHaveLength(1);
+    expect((sim.taken[0] as PickerTrade).setupId).toBe('setup-flush');
+  });
+
   it('matches comparePickerRules totals for each ranking rule', () => {
     const winner = trade({ entryDay: 0, r: 3, symbol: 'WIN', priorityScore: 0.5, rs20: 0.2 });
     const loser = trade({ entryDay: 0, r: -1, symbol: 'LOSE', priorityScore: 5, rs20: -0.2 });

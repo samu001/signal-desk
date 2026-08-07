@@ -37,7 +37,7 @@ function fmtR(n: number): string {
 }
 
 export default function ParameterLabScreen() {
-  const { setups, settings } = useTrading();
+  const { enabledSetups, settings } = useTrading();
   const [symbolsText, setSymbolsText] = useState(DEFAULT_SYMBOLS);
   const [days, setDays] = useState('400');
   const [loading, setLoading] = useState(false);
@@ -104,7 +104,7 @@ export default function ParameterLabScreen() {
 
       setProgress(`Sweeping parameters across ${tickers.length} tickers…`);
       const lab = runParameterLab({
-        setups,
+        setups: enabledSetups,
         tickers,
         spyCandles: spy.candles,
         qqqCandles: qqq.candles,

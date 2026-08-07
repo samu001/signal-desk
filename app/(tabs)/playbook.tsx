@@ -1,20 +1,25 @@
 import { Link } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { EmptyState, Screen, SectionTitle } from '@/components/ui';
+import { retiredSetupIds } from '@/constants/seed';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
+import { Setup } from '@/types/trading';
 
 export default function PlaybookScreen() {
-  const { setups, setupExpectancy } = useTrading();
+  const { setups, enabledSetups, setupExpectancy, setSetupEnabled } = useTrading();
   const expectancyById = Object.fromEntries(setupExpectancy.map((e) => [e.setupId, e]));
+
+  const active = setups.filter((s) => s.enabled !== false);
+  const inactive = setups.filter((s) => s.enabled === false);
 
   return (
     <Screen>
       <ScrollView contentContainerStyle={styles.content}>
         <SectionTitle
           title="Playbook"
-          subtitle="Machine auto-checks that score Dashboard readiness. Lab runs backtests."
+          subtitle={`${enabledSetups.length} on · Desk and Dashboard only score enabled setups. Lab can still backtest any row.`}
         />
 
         <Link href="/lab" asChild>
@@ -29,40 +34,98 @@ export default function PlaybookScreen() {
         {setups.length === 0 ? (
           <EmptyState title="No setups yet" body="Seed data should load on first launch." />
         ) : (
-          setups.map((setup) => {
-            const edge = expectancyById[setup.id];
-            return (
-              <View key={setup.id} style={styles.card}>
-                <Text style={styles.name}>{setup.name}</Text>
-                <Text style={styles.summary}>{setup.summary}</Text>
-                <View style={styles.counts}>
-                  <Text style={styles.count}>{setup.entryChecks.length} machine checks</Text>
-                </View>
-                <Text style={styles.edge}>
-                  {edge && edge.sampleSize > 0
-                    ? `Journal edge ${edge.avgR?.toFixed(2) ?? '—'}R · win ${
-                        edge.winRate == null ? '—' : `${Math.round(edge.winRate * 100)}%`
-                      } · n=${edge.sampleSize}`
-                    : 'Journal edge: not enough closed trades yet'}
+          <>
+            <Text style={styles.groupLabel}>On ({active.length})</Text>
+            {active.length === 0 ? (
+              <Text style={styles.groupHint}>Turn on at least one setup for Desk Soft/Strong.</Text>
+            ) : (
+              active.map((setup) => (
+                <SetupCard
+                  key={setup.id}
+                  setup={setup}
+                  edge={expectancyById[setup.id]}
+                  onToggle={(on) => setSetupEnabled(setup.id, on)}
+                />
+              ))
+            )}
+
+            {inactive.length ? (
+              <>
+                <Text style={[styles.groupLabel, styles.groupLabelSpaced]}>
+                  Off ({inactive.length})
                 </Text>
-                <View style={styles.actions}>
-                  <Link href={{ pathname: '/setup-detail', params: { id: setup.id } }} asChild>
-                    <Pressable style={styles.actionBtn}>
-                      <Text style={styles.actionText}>Edit</Text>
-                    </Pressable>
-                  </Link>
-                  <Link href={{ pathname: '/backtest', params: { setupId: setup.id } }} asChild>
-                    <Pressable style={StyleSheet.flatten([styles.actionBtn, styles.actionPrimary])}>
-                      <Text style={[styles.actionText, styles.actionPrimaryText]}>Backtest</Text>
-                    </Pressable>
-                  </Link>
-                </View>
-              </View>
-            );
-          })
+                <Text style={styles.groupHint}>
+                  Optional / formerly retired setups — enable to include them in Desk matching.
+                </Text>
+                {inactive.map((setup) => (
+                  <SetupCard
+                    key={setup.id}
+                    setup={setup}
+                    edge={expectancyById[setup.id]}
+                    onToggle={(on) => setSetupEnabled(setup.id, on)}
+                    dimmed
+                  />
+                ))}
+              </>
+            ) : null}
+          </>
         )}
       </ScrollView>
     </Screen>
+  );
+}
+
+function SetupCard({
+  setup,
+  edge,
+  onToggle,
+  dimmed,
+}: {
+  setup: Setup;
+  edge?: { avgR: number | null; winRate: number | null; sampleSize: number };
+  onToggle: (enabled: boolean) => void;
+  dimmed?: boolean;
+}) {
+  const optional = retiredSetupIds.has(setup.id);
+  return (
+    <View style={[styles.card, dimmed && styles.cardDimmed]}>
+      <View style={styles.cardTop}>
+        <View style={styles.titleCol}>
+          <Text style={[styles.name, dimmed && styles.nameDimmed]}>{setup.name}</Text>
+          {optional ? <Text style={styles.optionalTag}>Optional</Text> : null}
+        </View>
+        <Switch
+          value={setup.enabled !== false}
+          onValueChange={onToggle}
+          trackColor={{ false: palette.line, true: palette.mossSoft }}
+          thumbColor={setup.enabled !== false ? palette.moss : palette.muted}
+          accessibilityLabel={`${setup.enabled !== false ? 'Disable' : 'Enable'} ${setup.name}`}
+        />
+      </View>
+      <Text style={styles.summary}>{setup.summary}</Text>
+      <View style={styles.counts}>
+        <Text style={styles.count}>{setup.entryChecks.length} machine checks</Text>
+      </View>
+      <Text style={styles.edge}>
+        {edge && edge.sampleSize > 0
+          ? `Journal edge ${edge.avgR?.toFixed(2) ?? '—'}R · win ${
+              edge.winRate == null ? '—' : `${Math.round(edge.winRate * 100)}%`
+            } · n=${edge.sampleSize}`
+          : 'Journal edge: not enough closed trades yet'}
+      </Text>
+      <View style={styles.actions}>
+        <Link href={{ pathname: '/setup-detail', params: { id: setup.id } }} asChild>
+          <Pressable style={styles.actionBtn}>
+            <Text style={styles.actionText}>Edit</Text>
+          </Pressable>
+        </Link>
+        <Link href={{ pathname: '/backtest', params: { setupId: setup.id } }} asChild>
+          <Pressable style={StyleSheet.flatten([styles.actionBtn, styles.actionPrimary])}>
+            <Text style={[styles.actionText, styles.actionPrimaryText]}>Backtest</Text>
+          </Pressable>
+        </Link>
+      </View>
+    </View>
   );
 }
 
@@ -88,6 +151,24 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.8)',
     lineHeight: 20,
   },
+  groupLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.sm,
+  },
+  groupLabelSpaced: {
+    marginTop: spacing.lg,
+  },
+  groupHint: {
+    color: palette.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: spacing.sm,
+    marginTop: -4,
+  },
   card: {
     backgroundColor: palette.white,
     borderWidth: 1,
@@ -97,10 +178,32 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     gap: 8,
   },
+  cardDimmed: {
+    backgroundColor: palette.sand,
+    opacity: 0.95,
+  },
+  cardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  titleCol: { flex: 1, gap: 4 },
   name: {
     fontSize: 20,
     fontWeight: '700',
     color: palette.ink,
+  },
+  nameDimmed: {
+    color: palette.muted,
+  },
+  optionalTag: {
+    alignSelf: 'flex-start',
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.warn,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   summary: {
     color: palette.muted,

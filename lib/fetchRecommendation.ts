@@ -1,4 +1,5 @@
 import { expectancyMap } from '@/lib/expectancy';
+import { filterDeskDataWarnings } from '@/lib/deskWarnings';
 import {
   fetchMarketBundle,
   MarketBundle,
@@ -73,8 +74,14 @@ function buildFromBundle(
     const candleSource = bundle.candleSources[symbol] ?? 'none';
     const earningsDates = bundle.earningsDates[symbol] ?? [];
     const earnings = earningsFromDates(earningsDates);
+    const fundamentals = bundle.fundamentals[symbol] ?? null;
+    const scopedWarnings = filterDeskDataWarnings(symbol, bundle.warnings, candleSource, {
+      hasFundamentals: Boolean(fundamentals),
+      // Stance lines are added inside buildRecommendation when relevant.
+      includeStance: false,
+    });
     if (!candles.length || candleSource === 'none' || candleSource === 'demo') {
-      return buildNoDataRecommendation(symbol, bundle.warnings, bundle.quotes[symbol] ?? null);
+      return buildNoDataRecommendation(symbol, scopedWarnings, bundle.quotes[symbol] ?? null);
     }
     const recent =
       setups.length && candles.length
@@ -96,9 +103,9 @@ function buildFromBundle(
       spyCandles: bundle.candles.SPY ?? [],
       qqqCandles: bundle.candles.QQQ ?? [],
       news: bundle.news[symbol] ?? [],
-      fundamentals: bundle.fundamentals[symbol] ?? null,
+      fundamentals,
       candleSource,
-      warnings: bundle.warnings,
+      warnings: scopedWarnings,
       setups,
       expectancy,
       earnings,
