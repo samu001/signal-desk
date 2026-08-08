@@ -1,4 +1,5 @@
 import { expectancyMap, SetupExpectancy } from '@/lib/expectancy';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import { lastCompletedCandle } from '@/lib/indicators';
 import { evaluateSetupRules, RuleResult, scoreRuleResults, setupSignalPasses } from '@/lib/rules';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
@@ -139,6 +140,7 @@ export function buildCandidates(
     candles?: Record<string, Candle[]>;
     news?: Record<string, NewsItem[]>;
     earningsDates?: Record<string, string[]>;
+    earningsCalendarStatus?: Record<string, EarningsFetchStatus>;
     trades?: Trade[];
     session?: SessionInfo;
   }
@@ -147,6 +149,7 @@ export function buildCandidates(
   const candles = options?.candles ?? {};
   const news = options?.news ?? {};
   const earningsDates = options?.earningsDates ?? {};
+  const earningsCalendarStatus = options?.earningsCalendarStatus ?? {};
   const trades = options?.trades ?? [];
   const session = options?.session ?? getUsEquitySession();
   const expectancies = expectancyMap(setups, trades);
@@ -165,14 +168,20 @@ export function buildCandidates(
     const referenceClose = completed?.close ?? quote?.previousClose ?? null;
     const zone = zoneStatus(item, quote?.price ?? null, referenceClose);
     const setup = item.setupId ? setupMap[item.setupId] ?? null : null;
+    const upper = item.symbol.toUpperCase();
+    const dates = earningsDates[upper];
+    // Omit calendar (soft-unknown) when context has not loaded one yet — bare []
+    // without status would fail-closed and block Ready forever.
+    const calendarStatus = earningsCalendarStatus[upper];
     const rules = evaluateSetupRules(setup, {
       item,
       quote,
       candles: symbolCandles,
       spyCandles,
       qqqCandles,
-      news: news[item.symbol.toUpperCase()] ?? [],
-      earningsDates: earningsDates[item.symbol.toUpperCase()] ?? [],
+      news: news[upper] ?? [],
+      earningsDates: dates,
+      earningsCalendarStatus: calendarStatus,
       session,
     });
     const scored = scoreRuleResults(rules);

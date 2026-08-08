@@ -1,5 +1,6 @@
 import { CandleSource } from '@/lib/candles';
 import { SetupExpectancy } from '@/lib/expectancy';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import {
   atr,
   avgVolume,
@@ -311,14 +312,16 @@ function scoreFundamentals(fundamentals: FundamentalSnapshot | null): {
 } {
   const factors: RecommendFactor[] = [];
   if (!fundamentals) {
+    // Pass-neutral vs Strong gate (Company ≥ 55) so a missing FMP key does not
+    // silently cap Soft/Strong-eligible charts at Soft forever.
     return {
-      score: 50,
+      score: 55,
       factors: [
         {
           name: 'Company data',
           pillar: 'company',
           verdict: 'unknown',
-          detail: 'No fundamentals available',
+          detail: 'No fundamentals available (neutral — add FMP key for company score)',
         },
       ],
     };
@@ -818,6 +821,8 @@ export function buildRecommendation(input: {
   earnings?: EarningsRisk | null;
   /** Full YYYY-MM-DD earnings calendar for Playbook ±1 day blackout. */
   earningsDates?: string[];
+  /** Why the calendar is missing/present (verified-empty `ok` vs fail-closed). */
+  earningsCalendarStatus?: EarningsFetchStatus;
   /**
    * Historical replay mode: company/news are treated as neutral placeholders
    * (not point-in-time), so stance is driven mainly by technicals + Playbook match.
@@ -873,6 +878,15 @@ export function buildRecommendation(input: {
           earningsDates:
             input.earningsDates ??
             (input.earnings?.date ? [input.earnings.date] : undefined),
+          earningsCalendarStatus:
+            input.earningsCalendarStatus ??
+            (input.earningsDates != null
+              ? input.earningsDates.length
+                ? 'ok'
+                : 'empty'
+              : input.earnings?.date
+                ? 'ok'
+                : undefined),
           historicalMode: historical,
           expectancy: input.expectancy,
         })

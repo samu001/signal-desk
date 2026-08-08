@@ -1,4 +1,5 @@
 import { SetupExpectancy } from '@/lib/expectancy';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import { evaluateSetupRules, MIN_SETUP_PASS_RATE, setupSignalPasses } from '@/lib/rules';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { levelsForSetup } from '@/lib/setupLevels';
@@ -30,6 +31,8 @@ export function matchPlaybookSetups(input: {
   session?: SessionInfo;
   /** YYYY-MM-DD earnings dates for ±1 day blackout. */
   earningsDates?: string[];
+  /** Why the calendar is missing/present — required for verified-empty vs fail-closed. */
+  earningsCalendarStatus?: EarningsFetchStatus;
   /** When true, also skip news catalyst checks (Desk historical mode). */
   historicalMode?: boolean;
   expectancy?: Record<string, SetupExpectancy>;
@@ -58,6 +61,7 @@ export function matchPlaybookSetups(input: {
       qqqCandles: input.qqqCandles,
       news: input.news ?? [],
       earningsDates: input.earningsDates,
+      earningsCalendarStatus: input.earningsCalendarStatus,
       session,
     });
     const usable = results.filter((r) => !skip.has(r.id));

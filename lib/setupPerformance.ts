@@ -35,7 +35,7 @@ function setupPasses(
   symbol: string,
   history: Candle[],
   spyHistory: Candle[],
-  options?: { qqqCandles?: Candle[]; earningsDates?: string[] }
+  options?: { qqqCandles?: Candle[] }
 ): boolean {
   if (history.length < 40) return false;
   const levels = levelsForSetup(setup, history);
@@ -58,8 +58,9 @@ function setupPasses(
     candles: history,
     spyCandles: spyHistory,
     qqqCandles: qqqHistory,
-    earningsDates: options?.earningsDates,
-    asOfTime: candle.time,
+    // Omit earnings calendar: the live near-term window is not point-in-time
+    // for this lookback (past report days are absent; verified-empty [] would
+    // zero every signal). Soft-unknown keeps earnings_clear out of the score.
     news: [],
     session: {
       phase: 'rth',
@@ -70,7 +71,7 @@ function setupPasses(
   });
   return setupSignalPasses(setup, results, {
     minPassRate: MIN_SETUP_PASS_RATE,
-    skipCheckIds: ['session_tradable', 'no_negative_catalyst'],
+    skipCheckIds: ['session_tradable', 'no_negative_catalyst', 'earnings_clear'],
   }).pass;
 }
 
@@ -84,7 +85,6 @@ export function scoreRecentSetupPerformance(input: {
   candles: Candle[];
   spyCandles: Candle[];
   qqqCandles?: Candle[];
-  earningsDates?: string[];
 }): RecentSetupPerf[] {
   const { symbol, setups, candles, spyCandles } = input;
   const end = candles.length - FORWARD - 1;
@@ -101,7 +101,6 @@ export function scoreRecentSetupPerformance(input: {
       if (
         !setupPasses(setup, symbol, history, spyHistory, {
           qqqCandles: input.qqqCandles,
-          earningsDates: input.earningsDates,
         })
       )
         continue;

@@ -1,6 +1,7 @@
 import {
   earningsFailClosedDetail,
   fetchEarningsDates,
+  fetchEarningsWindow,
   summarizeEarningsFetches,
   type EarningsFetchResult,
 } from '@/lib/finnhub';
@@ -109,6 +110,16 @@ describe('earnings calendar status (honesty UX)', () => {
       earningsCalendarStatus: 'empty',
     });
     expect(empty.find((r) => r.id === 'earnings_clear')?.detail).toMatch(/empty/i);
+    expect(empty.find((r) => r.id === 'earnings_clear')?.verdict).toBe('fail');
+
+    // Live Desk near-term: verified-empty window must pass (not fail-closed).
+    const clear = evaluateSetupRules(setup, {
+      ...base,
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+    });
+    expect(clear.find((r) => r.id === 'earnings_clear')?.verdict).toBe('pass');
+    expect(clear.find((r) => r.id === 'earnings_clear')?.detail).toMatch(/No earnings/i);
   });
 });
 
@@ -288,5 +299,40 @@ AAPL,Apple,2024-08-01,2024-06-30,1.6,USD`;
     expect(r.status).toBe('ok');
     expect(r.dates).toEqual(['2024-05-29', '2024-09-05', '2025-03-12']);
     expect(r.detail).toMatch(/Yahoo/i);
+  });
+});
+
+describe('fetchEarningsWindow (live Desk near-term)', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('remaps provider empty → ok so verified-clear does not fail-closed', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('finnhub.io') && url.includes('calendar/earnings')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({ earningsCalendar: [] }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const r = await fetchEarningsWindow('AAPL', 'fh-key');
+    expect(r.status).toBe('ok');
+    expect(r.dates).toEqual([]);
+    expect(r.window).toBeNull();
+    expect(r.detail).toMatch(/No earnings in the near-term/i);
+  });
+
+  it('returns no_key when no calendar providers are configured', async () => {
+    const r = await fetchEarningsWindow('AAPL');
+    expect(r.status).toBe('no_key');
+    expect(r.dates).toEqual([]);
   });
 });

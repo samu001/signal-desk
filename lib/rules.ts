@@ -379,8 +379,9 @@ export function evaluateCheck(
     }
     case 'earnings_clear': {
       // undefined = caller did not supply a calendar (soft unknown for legacy
-      // call sites). [] = fetch attempted / key missing → fail closed so a
-      // missing Finnhub key / empty window cannot silently allow entries.
+      // call sites). [] + status:
+      //   'ok'   → verified-empty loaded window (live Desk near-term) → pass
+      //   empty / error / no_key / omitted → fail closed (backtests, missing key)
       if (ctx.earningsDates == null) {
         return {
           id,
@@ -391,6 +392,14 @@ export function evaluateCheck(
       }
       if (!ctx.earningsDates.length) {
         const status = ctx.earningsCalendarStatus ?? 'empty';
+        if (status === 'ok') {
+          return {
+            id,
+            label: LABELS[id],
+            verdict: 'pass',
+            detail: 'No earnings in the loaded calendar window',
+          };
+        }
         return {
           id,
           label: LABELS[id],

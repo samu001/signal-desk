@@ -1,5 +1,6 @@
 import { defaultSetups, demoCandles, demoQuotes, getDemoFundamentals, getDemoNews } from '@/constants/seed';
 import { buildRecommendation, clampLevelsRisk, computeTradeLevels } from '@/lib/recommend';
+import { matchPlaybookSetups } from '@/lib/setupMatch';
 
 describe('computeTradeLevels', () => {
   it('returns ordered entry/stop/target from fixture AAPL history', () => {
@@ -167,5 +168,58 @@ describe('buildRecommendation', () => {
     });
     expect(rec.stance).toBe('wait');
     expect(rec.summary).toMatch(/earnings/i);
+  });
+
+  it('REGRESSION: verified-empty earnings window does not veto Playbook matches', () => {
+    const base = {
+      symbol: 'AAPL',
+      setups: defaultSetups,
+      quote: fixture.quote,
+      candles: fixture.candles,
+      spyCandles: fixture.spyCandles,
+      qqqCandles: fixture.qqqCandles,
+      historicalMode: true as const,
+    };
+    const blocked = matchPlaybookSetups({ ...base, earningsDates: [] });
+    const clear = matchPlaybookSetups({
+      ...base,
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+    });
+    const softUnknown = matchPlaybookSetups(base);
+
+    // Bare [] fail-closes earnings on every setup.
+    expect(blocked.every((m) => m.failedChecks.some((c) => /earnings/i.test(c)))).toBe(true);
+    expect(blocked.filter((m) => m.pass)).toHaveLength(0);
+
+    // Verified-empty matches soft-unknown (live Desk must not invent a veto).
+    expect(clear.filter((m) => m.pass).length).toBe(softUnknown.filter((m) => m.pass).length);
+    expect(clear.every((m) => !m.failedChecks.some((c) => /earnings/i.test(c)))).toBe(true);
+
+    // End-to-end stance path: fail-closed [] cannot Soft/Strong; ok+[] can if setups match.
+    const blockedRec = buildRecommendation({
+      symbol: 'AAPL',
+      ...fixture,
+      setups: defaultSetups,
+      historicalMode: true,
+      earningsDates: [],
+    });
+    expect(blockedRec.matchedSetups).toHaveLength(0);
+    expect(['wait', 'avoid']).toContain(blockedRec.stance);
+  });
+
+  it('missing fundamentals score is pass-neutral for Strong gate (≥ 55)', () => {
+    const rec = buildRecommendation({
+      symbol: 'AAPL',
+      ...fixture,
+      fundamentals: null,
+      setups: defaultSetups,
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+    });
+    expect(rec.fundamentalScore).toBeGreaterThanOrEqual(55);
+    expect(rec.factors.some((f) => f.name === 'Company data' && f.verdict === 'unknown')).toBe(
+      true
+    );
   });
 });

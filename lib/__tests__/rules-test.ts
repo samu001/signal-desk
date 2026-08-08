@@ -62,6 +62,28 @@ describe('evaluateSetupRules', () => {
     expect(results.find((r) => r.id === 'earnings_clear')?.verdict).toBe('fail');
   });
 
+  it('passes earnings_clear for a verified-empty near-term window (status ok)', () => {
+    const setup = defaultSetups.find((s) => s.id === 'setup-prior-day-high')!;
+    const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;
+    const results = evaluateSetupRules(setup, {
+      item,
+      quote: null,
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
+      news: [],
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+      session: {
+        phase: 'rth',
+        label: 'RTH open',
+        tradable: true,
+        detail: 'ok',
+      },
+    });
+    expect(results.find((r) => r.id === 'earnings_clear')?.verdict).toBe('pass');
+  });
+
   it('fails earnings_clear inside the blackout window', () => {
     const setup = defaultSetups.find((s) => s.id === 'setup-prior-day-high')!;
     const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;

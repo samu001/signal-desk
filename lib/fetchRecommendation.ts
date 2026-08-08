@@ -1,6 +1,7 @@
 import { expectancyMap } from '@/lib/expectancy';
 import { filterDeskDataWarnings } from '@/lib/deskWarnings';
 import {
+  EarningsFetchStatus,
   fetchMarketBundle,
   MarketBundle,
   shouldReuseMarketBundle,
@@ -61,6 +62,17 @@ function earningsFromDates(dates: string[] | undefined): EarningsRisk | null {
   };
 }
 
+function calendarStatusFor(
+  symbol: string,
+  bundle: MarketBundle,
+  dates: string[]
+): EarningsFetchStatus {
+  const fromBundle = bundle.earningsCalendarStatus?.[symbol];
+  if (fromBundle) return fromBundle;
+  // Legacy / partial bundles: dates present ⇒ ok; bare [] ⇒ fail-closed empty.
+  return dates.length ? 'ok' : 'empty';
+}
+
 function buildFromBundle(
   unique: string[],
   bundle: MarketBundle,
@@ -73,6 +85,7 @@ function buildFromBundle(
     const candles = bundle.candles[symbol] ?? [];
     const candleSource = bundle.candleSources[symbol] ?? 'none';
     const earningsDates = bundle.earningsDates[symbol] ?? [];
+    const earningsCalendarStatus = calendarStatusFor(symbol, bundle, earningsDates);
     const earnings = earningsFromDates(earningsDates);
     const fundamentals = bundle.fundamentals[symbol] ?? null;
     const scopedWarnings = filterDeskDataWarnings(symbol, bundle.warnings, candleSource, {
@@ -83,6 +96,8 @@ function buildFromBundle(
     if (!candles.length || candleSource === 'none' || candleSource === 'demo') {
       return buildNoDataRecommendation(symbol, scopedWarnings, bundle.quotes[symbol] ?? null);
     }
+    // Near-term Desk calendar must not score historical setup performance —
+    // past earnings days are absent, and a verified-empty [] would zero every signal.
     const recent =
       setups.length && candles.length
         ? scoreRecentSetupPerformance({
@@ -91,7 +106,6 @@ function buildFromBundle(
             candles,
             spyCandles: bundle.candles.SPY ?? [],
             qqqCandles: bundle.candles.QQQ ?? [],
-            earningsDates,
           })
         : [];
     const expectancy = setups.length ? blendSetupScores(setups, journal, recent) : undefined;
@@ -110,6 +124,7 @@ function buildFromBundle(
       expectancy,
       earnings,
       earningsDates,
+      earningsCalendarStatus,
     });
   });
 }
@@ -133,6 +148,7 @@ export async function fetchRecommendationsWithBundle(
         news: {},
         fundamentals: {},
         earningsDates: {},
+        earningsCalendarStatus: {},
         sourceSummary: 'none',
         warnings: [],
       },

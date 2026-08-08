@@ -88,7 +88,9 @@ function strongGates(rec: Recommendation): GateRow[] {
     {
       label: 'Company ≥ 55',
       met: rec.fundamentalScore >= 55,
-      detail: `${rec.fundamentalScore}`,
+      detail: rec.fundamentals
+        ? `${rec.fundamentalScore}`
+        : `${rec.fundamentalScore} (no data — neutral)`,
     },
     {
       label: 'Near / in zone',

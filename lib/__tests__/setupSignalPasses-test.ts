@@ -56,6 +56,23 @@ describe('setupSignalPasses (fail closed)', () => {
     expect(setupSignalPasses(setup, results).pass).toBe(false);
   });
 
+  it('passes earnings_clear when status is ok with an empty near-term window', () => {
+    const setup = defaultSetups.find((s) => s.id === 'setup-prior-day-high')!;
+    const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;
+    const results = evaluateSetupRules(setup, {
+      item,
+      quote: null,
+      candles: demoCandles.AAPL,
+      spyCandles: demoCandles.SPY,
+      qqqCandles: demoCandles.QQQ,
+      news: [],
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+      session,
+    });
+    expect(results.find((r) => r.id === 'earnings_clear')?.verdict).toBe('pass');
+  });
+
   it('allows a signal when core passes and earnings are clear', () => {
     const setup = defaultSetups.find((s) => s.id === 'setup-prior-day-high')!;
     const item = defaultWatchlist.find((w) => w.symbol === 'AAPL')!;

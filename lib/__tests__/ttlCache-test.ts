@@ -117,6 +117,7 @@ describe('market bundle reuse helpers', () => {
       news: {},
       fundamentals: {},
       earningsDates: {},
+      earningsCalendarStatus: {},
       sourceSummary: 'demo',
       warnings: [],
     };

@@ -146,4 +146,29 @@ describe('buildCandidates', () => {
     expect(candidate.status).toBe('watching');
     expect(candidate.label).toMatch(/research only/i);
   });
+
+  it('REGRESSION: verified-empty earnings calendar does not block Ready via fail-closed', () => {
+    const session = {
+      phase: 'rth' as const,
+      label: 'RTH open',
+      tradable: true,
+      detail: 'ok',
+    };
+    const blocked = buildCandidates([item], defaultSetups, { AAPL: quote(205) }, {
+      candles: demoCandles,
+      earningsDates: { AAPL: [] },
+      // omitted status → fail closed on earnings_clear
+      session,
+    });
+    const clear = buildCandidates([item], defaultSetups, { AAPL: quote(205) }, {
+      candles: demoCandles,
+      earningsDates: { AAPL: [] },
+      earningsCalendarStatus: { AAPL: 'ok' },
+      session,
+    });
+    const earnBlocked = blocked[0].rules.find((r) => r.id === 'earnings_clear');
+    const earnClear = clear[0].rules.find((r) => r.id === 'earnings_clear');
+    expect(earnBlocked?.verdict).toBe('fail');
+    expect(earnClear?.verdict).toBe('pass');
+  });
 });

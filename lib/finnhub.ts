@@ -442,16 +442,36 @@ async function fetchFinnhubEarningsDates(
   }
 }
 
-/** Next earnings date near today. Finnhub → FMP → Alpha Vantage. Blocks Desk buys inside ±1 day. */
+/**
+ * Near-term earnings window for live Desk (−2…+14 calendar days).
+ * Preserves fetch status so a verified-empty window is not confused with
+ * no-key / fetch-error (those still fail closed on earnings_clear).
+ */
+export type EarningsWindowResult = {
+  dates: string[];
+  status: EarningsFetchStatus;
+  detail: string;
+  /** Populated when at least one date falls in the near-term window. */
+  window: EarningsWindow | null;
+};
+
+/** Next earnings date near today. Finnhub → FMP → Alpha Vantage → Yahoo. */
 export async function fetchEarningsWindow(
   symbol: string,
   apiKey?: string,
   fmpApiKey?: string,
   alphaVantageApiKey?: string,
   yahooProxy?: { url?: string; token?: string }
-): Promise<EarningsWindow | null> {
+): Promise<EarningsWindowResult> {
   const upper = symbol.toUpperCase().trim();
-  if (!apiKey && !fmpApiKey && !alphaVantageApiKey && !yahooProxy?.url?.trim()) return null;
+  if (!apiKey && !fmpApiKey && !alphaVantageApiKey && !yahooProxy?.url?.trim()) {
+    return {
+      dates: [],
+      status: 'no_key',
+      detail: earningsFailClosedDetail('no_key'),
+      window: null,
+    };
+  }
 
   try {
     const today = new Date();
@@ -467,21 +487,49 @@ export async function fetchEarningsWindow(
       alphaVantageApiKey,
       yahooProxy
     );
-    if (result.status !== 'ok' || !result.dates.length) return null;
+    // Near-term empty is the normal verified-clear case (most names most weeks).
+    // Remap provider `empty` → `ok` + [] so earnings_clear can pass.
+    if (result.status === 'empty') {
+      return {
+        dates: [],
+        status: 'ok',
+        detail: 'No earnings in the near-term window (−2…+14d).',
+        window: null,
+      };
+    }
+    if (result.status !== 'ok' || !result.dates.length) {
+      return {
+        dates: [],
+        status: result.status,
+        detail: result.detail,
+        window: null,
+      };
+    }
     const next = result.dates[0];
     const earnDate = new Date(`${next}T12:00:00Z`);
     const daysUntil = Math.round((earnDate.getTime() - today.getTime()) / 86400000);
     const blocked = daysUntil >= -1 && daysUntil <= 1;
     return {
-      date: next,
-      daysUntil,
-      blocked,
-      detail: blocked
-        ? `Earnings ${next} is inside the ±1 day blackout`
-        : `Next earnings ${next} (~${daysUntil}d)`,
+      dates: result.dates,
+      status: 'ok',
+      detail: result.detail,
+      window: {
+        date: next,
+        daysUntil,
+        blocked,
+        detail: blocked
+          ? `Earnings ${next} is inside the ±1 day blackout`
+          : `Next earnings ${next} (~${daysUntil}d)`,
+      },
     };
-  } catch {
-    return null;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      dates: [],
+      status: 'error',
+      detail: `Earnings window request failed (${msg.slice(0, 80)}) — blackout fails closed for ${upper}.`,
+      window: null,
+    };
   }
 }
 
@@ -537,6 +585,8 @@ export type MarketBundle = {
   fundamentals: Record<string, FundamentalSnapshot>;
   /** Near-term earnings dates per symbol (YYYY-MM-DD) for Playbook blackout. */
   earningsDates: Record<string, string[]>;
+  /** Why each symbol's near-term calendar is present/empty (drives fail-closed copy). */
+  earningsCalendarStatus: Record<string, EarningsFetchStatus>;
   sourceSummary: CandleSource | 'mixed';
   warnings: string[];
 };
@@ -627,7 +677,7 @@ async function fetchMarketBundleUncached(
 
   const earningsEntries = await Promise.all(
     equitySymbols.map(async (symbol) => {
-      const window = await fetchEarningsWindow(
+      const result = await fetchEarningsWindow(
         symbol,
         apiKey,
         options?.fmpApiKey,
@@ -636,10 +686,21 @@ async function fetchMarketBundleUncached(
           ? { url: options.yahooProxyUrl, token: options.yahooProxyToken }
           : undefined
       );
-      return [symbol, window?.date ? [window.date] : []] as const;
+      return [symbol, result] as const;
     })
   );
-  const earningsDates = Object.fromEntries(earningsEntries);
+  const earningsDates = Object.fromEntries(
+    earningsEntries.map(([symbol, r]) => [symbol, r.dates])
+  );
+  const earningsCalendarStatus = Object.fromEntries(
+    earningsEntries.map(([symbol, r]) => [symbol, r.status])
+  );
+  for (const [symbol, r] of earningsEntries) {
+    if (r.status === 'no_key' || r.status === 'error') {
+      const note = `${symbol}: ${r.detail}`;
+      if (!warnings.includes(note)) warnings.push(note);
+    }
+  }
 
   let fundamentals: Record<string, FundamentalSnapshot> = {};
   if (options?.fmpApiKey) {
@@ -668,6 +729,7 @@ async function fetchMarketBundleUncached(
     news,
     fundamentals,
     earningsDates,
+    earningsCalendarStatus,
     sourceSummary,
     warnings,
   };

@@ -12,7 +12,13 @@ import { AWAITING_DESK_THESIS } from '@/constants/watchlist';
 import { actionableCandidates, buildCandidates, Candidate } from '@/lib/candidates';
 import { computeSetupExpectancy, SetupExpectancy } from '@/lib/expectancy';
 import { preferLiveCandleQuotes, clearCandleCache, CandleSource } from '@/lib/candles';
-import { fetchMarketBundle, fetchQuotes, MarketBundle, clearMarketBundleInflight } from '@/lib/finnhub';
+import {
+  clearMarketBundleInflight,
+  EarningsFetchStatus,
+  fetchMarketBundle,
+  fetchQuotes,
+  MarketBundle,
+} from '@/lib/finnhub';
 import { clearFundamentalsCache } from '@/lib/fmp';
 import { Recommendation } from '@/lib/recommend';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
@@ -93,6 +99,9 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const [news, setNews] = useState<Record<string, NewsItem[]>>({});
   const [fundamentals, setFundamentals] = useState<Record<string, FundamentalSnapshot>>({});
   const [earningsDates, setEarningsDates] = useState<Record<string, string[]>>({});
+  const [earningsCalendarStatus, setEarningsCalendarStatus] = useState<
+    Record<string, EarningsFetchStatus>
+  >({});
   const [marketBundle, setMarketBundle] = useState<MarketBundle | null>(null);
   const [dataSource, setDataSource] = useState<CandleSource | 'mixed'>('none');
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
@@ -241,6 +250,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       setNews(bundle.news);
       setFundamentals(bundle.fundamentals);
       setEarningsDates(bundle.earningsDates);
+      setEarningsCalendarStatus(bundle.earningsCalendarStatus ?? {});
       setMarketBundle(bundle);
       setDataSource(bundle.sourceSummary);
       setDataWarnings(bundle.warnings);
@@ -274,6 +284,10 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     setNews((prev) => ({ ...prev, ...bundle.news }));
     setFundamentals((prev) => ({ ...prev, ...bundle.fundamentals }));
     setEarningsDates((prev) => ({ ...prev, ...bundle.earningsDates }));
+    setEarningsCalendarStatus((prev) => ({
+      ...prev,
+      ...(bundle.earningsCalendarStatus ?? {}),
+    }));
     setMarketBundle((prev) =>
       prev
         ? {
@@ -283,6 +297,10 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
             news: { ...prev.news, ...bundle.news },
             fundamentals: { ...prev.fundamentals, ...bundle.fundamentals },
             earningsDates: { ...prev.earningsDates, ...bundle.earningsDates },
+            earningsCalendarStatus: {
+              ...(prev.earningsCalendarStatus ?? {}),
+              ...(bundle.earningsCalendarStatus ?? {}),
+            },
             sourceSummary: bundle.sourceSummary,
             // Latest fetch wins — do not accumulate stale other-ticker provider noise.
             warnings: bundle.warnings,
@@ -302,6 +320,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     setNews({});
     setFundamentals({});
     setEarningsDates({});
+    setEarningsCalendarStatus({});
     setMarketBundle(null);
     setDataSource('none');
     setDataWarnings([]);
@@ -481,10 +500,20 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       candles,
       news,
       earningsDates,
+      earningsCalendarStatus,
       trades: state.trades,
       session,
     });
-  }, [state, enabledSetups, quotes, candles, news, earningsDates, session]);
+  }, [
+    state,
+    enabledSetups,
+    quotes,
+    candles,
+    news,
+    earningsDates,
+    earningsCalendarStatus,
+    session,
+  ]);
 
   const actionable = useMemo(() => actionableCandidates(candidates), [candidates]);
 
