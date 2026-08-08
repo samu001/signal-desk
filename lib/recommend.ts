@@ -1,4 +1,9 @@
 import { CandleSource } from '@/lib/candles';
+import {
+  deskNewsHardFail,
+  matchNegativeCatalysts,
+  matchPositiveCatalysts,
+} from '@/lib/catalysts';
 import { SetupExpectancy } from '@/lib/expectancy';
 import { EarningsFetchStatus } from '@/lib/finnhub';
 import {
@@ -102,11 +107,6 @@ export type Recommendation = {
   quoteSource: Quote['source'];
   warnings: string[];
 };
-
-const NEGATIVE_NEWS =
-  /\b(downgrade|miss(?:es|ed)?|lawsuit|probe|investigation|fraud|recall|bankrupt|sec charges|cuts guidance|plunge|crash)\b/i;
-const POSITIVE_NEWS =
-  /\b(upgrade|beat|beats|raises guidance|record|surge|partnership|win|approval|strong demand)\b/i;
 
 const STANCE_LABEL: Record<Stance, string> = {
   strong_buy: 'Strong buy',
@@ -357,8 +357,8 @@ function scoreFundamentals(fundamentals: FundamentalSnapshot | null): {
   if (fundamentals.profitMargin == null) {
     add('Profit margin', 'unknown', 'Margin unavailable', 20);
   } else {
-    const m = fundamentals.profitMargin;
-    const pct = m > 1 ? m : m * 100;
+    // Unit fraction from provider (0.24 = 24%) — normalized at FMP ingest.
+    const pct = fundamentals.profitMargin * 100;
     add(
       'Profit margin',
       pct >= 10 ? 'pass' : pct >= 3 ? 'unknown' : 'fail',
@@ -372,8 +372,7 @@ function scoreFundamentals(fundamentals: FundamentalSnapshot | null): {
   if (fundamentals.roe == null) {
     add('Return on equity', 'unknown', 'ROE unavailable', 20);
   } else {
-    // FMP / demo may store 0.38 (38%) or already-percent-like values.
-    const roePct = Math.abs(fundamentals.roe) <= 5 ? fundamentals.roe * 100 : fundamentals.roe;
+    const roePct = fundamentals.roe * 100;
     add(
       'Return on equity',
       roePct >= 12 ? 'pass' : roePct >= 5 ? 'unknown' : 'fail',
@@ -387,10 +386,7 @@ function scoreFundamentals(fundamentals: FundamentalSnapshot | null): {
   if (fundamentals.revenueGrowth == null) {
     add('Revenue growth', 'unknown', 'Growth unavailable', 20);
   } else {
-    const g =
-      Math.abs(fundamentals.revenueGrowth) <= 5
-        ? fundamentals.revenueGrowth * 100
-        : fundamentals.revenueGrowth;
+    const g = fundamentals.revenueGrowth * 100;
     add(
       'Revenue growth',
       g >= 5 ? 'pass' : g >= 0 ? 'unknown' : 'fail',
@@ -433,10 +429,17 @@ function scoreNews(news: NewsItem[]): { score: number; factors: RecommendFactor[
     };
   }
 
-  const negatives = news.filter((n) => NEGATIVE_NEWS.test(n.headline));
-  const positives = news.filter((n) => POSITIVE_NEWS.test(n.headline));
+  const negatives = matchNegativeCatalysts(news);
+  const positives = matchPositiveCatalysts(news);
+  const hardFail = deskNewsHardFail(negatives);
 
-  if (negatives.length) {
+  if (hardFail) {
+    const lead = negatives.find((n) => n.severity === 'hard') ?? negatives[0];
+    const softCount = negatives.filter((n) => n.severity === 'soft').length;
+    const detail =
+      lead.severity === 'hard'
+        ? `Red flag: ${lead.headline}`
+        : `${softCount} caution headlines (e.g. ${lead.headline})`;
     return {
       score: 18,
       hardFail: true,
@@ -445,7 +448,23 @@ function scoreNews(news: NewsItem[]): { score: number; factors: RecommendFactor[
           name: 'Catalyst screen',
           pillar: 'news',
           verdict: 'fail',
-          detail: negatives[0].headline,
+          detail,
+        },
+      ],
+    };
+  }
+
+  if (negatives.length) {
+    // Lone soft caution — score down, surface the headline, do not force Avoid.
+    return {
+      score: 42,
+      hardFail: false,
+      factors: [
+        {
+          name: 'Catalyst screen',
+          pillar: 'news',
+          verdict: 'fail',
+          detail: `Caution (not hard-fail): ${negatives[0].headline}`,
         },
       ],
     };
@@ -460,7 +479,7 @@ function scoreNews(news: NewsItem[]): { score: number; factors: RecommendFactor[
           name: 'Catalyst screen',
           pillar: 'news',
           verdict: 'pass',
-          detail: positives[0].headline,
+          detail: positives[0],
         },
       ],
     };
@@ -1069,13 +1088,14 @@ export function buildRecommendation(input: {
 
   const entryMid = (levels.entryLow + levels.entryHigh) / 2;
   const rr = rewardToRisk(entryMid, levels.stop, levels.target);
+  // Live EOD is guaranteed here (demo/none already returned buildNoDataRecommendation).
   const confidence = Math.max(
     20,
     Math.min(
       94,
       Math.round(
         overallScore * 0.8 +
-          (candleSource === 'none' ? -8 : 4) +
+          4 +
           (technical.nearEntry ? 4 : 0) +
           (playbookMatched ? 8 : -10) +
           (earningsBlocked ? -12 : 0) +
@@ -1144,7 +1164,8 @@ export function buildRecommendation(input: {
         : 'Interesting (research only)'
       : 'Not interesting',
     tradeable,
-    levelsSource: merged.source,
+    // Primary levels prefer #1 setup option; fall back to Desk/playbook blend.
+    levelsSource: setupOptions[0] ? 'playbook' : merged.source,
     relativeStrength20d: market.rs,
     dollarVolume20d: liquidity.dollarVolume,
     candleSource,

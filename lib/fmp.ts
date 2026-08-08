@@ -32,6 +32,21 @@ function toDate(d: Date) {
 }
 
 /**
+ * Normalize ratio-like fields to unit fractions (0.24 = 24%).
+ * FMP sometimes returns percents (24 / 38) and sometimes decimals (0.24).
+ * Values whose absolute magnitude exceeds `percentIfAbsAbove` are treated as
+ * percents and divided by 100. Thresholds: margin rarely >100% → 1; ROE/growth
+ * can exceed 100% as a fraction (e.g. AAPL ROE ~1.47) → 5.
+ */
+export function toUnitRatio(
+  value: number | null,
+  percentIfAbsAbove: number
+): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  return Math.abs(value) > percentIfAbsAbove ? value / 100 : value;
+}
+
+/**
  * Adjusted-endpoint availability.
  * Per-symbol blocklist: FMP rejects some symbols (e.g. index ETFs) with 402
  * even on plans where dividend-adjusted works for others — one symbol must not
@@ -384,9 +399,15 @@ export async function fetchFmpFundamentals(
         marketCap: num(profile?.mktCap) ?? num(profile?.marketCap),
         pe: num(ratios?.priceToEarningsRatioTTM) ?? num(metrics?.peRatioTTM),
         pb: num(ratios?.priceToBookRatioTTM) ?? num(metrics?.pbRatioTTM),
-        profitMargin: num(ratios?.netProfitMarginTTM) ?? num(metrics?.netProfitMarginTTM),
-        revenueGrowth: num(ratios?.revenueGrowthTTM) ?? num(metrics?.revenueGrowthTTM),
-        roe: num(ratios?.returnOnEquityTTM) ?? num(metrics?.roeTTM),
+        profitMargin: toUnitRatio(
+          num(ratios?.netProfitMarginTTM) ?? num(metrics?.netProfitMarginTTM),
+          1
+        ),
+        revenueGrowth: toUnitRatio(
+          num(ratios?.revenueGrowthTTM) ?? num(metrics?.revenueGrowthTTM),
+          5
+        ),
+        roe: toUnitRatio(num(ratios?.returnOnEquityTTM) ?? num(metrics?.roeTTM), 5),
         debtToEquity: num(ratios?.debtToEquityRatioTTM) ?? num(metrics?.debtToEquityTTM),
         source: 'fmp',
       };
@@ -438,7 +459,8 @@ export function fundamentalFlags(f: FundamentalSnapshot | null | undefined): {
   }
 
   if (f.profitMargin != null) {
-    const pct = f.profitMargin * (Math.abs(f.profitMargin) <= 1 ? 100 : 1);
+    // Snapshots store unit fractions (normalized at FMP ingest / demo seed).
+    const pct = f.profitMargin * 100;
     if (pct >= 15) flags.push({ label: `Margin ${pct.toFixed(0)}%`, tone: 'good', detail: 'Healthy margin' });
     else if (pct < 5)
       flags.push({ label: `Margin ${pct.toFixed(0)}%`, tone: 'warn', detail: 'Thin profitability' });
@@ -453,7 +475,7 @@ export function fundamentalFlags(f: FundamentalSnapshot | null | undefined): {
   }
 
   if (f.roe != null) {
-    const pct = f.roe * (Math.abs(f.roe) <= 1 ? 100 : 1);
+    const pct = f.roe * 100;
     if (pct >= 15) flags.push({ label: `ROE ${pct.toFixed(0)}%`, tone: 'good', detail: 'Solid ROE' });
   }
 

@@ -135,7 +135,7 @@ describe('buildRecommendation', () => {
     expect(rec.matchedSetups).toHaveLength(0);
   });
 
-  it('returns avoid when negative catalyst headlines appear', () => {
+  it('returns avoid when severe negative catalyst headlines appear', () => {
     const rec = buildRecommendation({
       symbol: 'AAPL',
       ...fixture,
@@ -152,6 +152,62 @@ describe('buildRecommendation', () => {
 
     expect(rec.stance).toBe('avoid');
     expect(rec.newsScore).toBeLessThan(30);
+    expect(rec.factors.find((f) => f.name === 'Catalyst screen')?.detail).toMatch(/Red flag:/i);
+  });
+
+  it('does not force Avoid on a lone soft caution headline', () => {
+    const rec = buildRecommendation({
+      symbol: 'AAPL',
+      ...fixture,
+      news: [
+        {
+          id: 'soft',
+          headline: 'Analyst downgrade hits chip sector',
+          datetime: Date.now() / 1000,
+          source: 'Test',
+        },
+      ],
+      setups: defaultSetups,
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+    });
+    expect(rec.stance).not.toBe('avoid');
+    expect(rec.newsScore).toBeGreaterThan(30);
+    expect(rec.factors.find((f) => f.name === 'Catalyst screen')?.detail).toMatch(/Caution/i);
+  });
+
+  it('ignores false-positive catalyst phrases (misses the point / record low)', () => {
+    const rec = buildRecommendation({
+      symbol: 'AAPL',
+      ...fixture,
+      news: [
+        {
+          id: 'noise',
+          headline: 'CEO misses the point as shares hit record low',
+          datetime: Date.now() / 1000,
+          source: 'Test',
+        },
+      ],
+      setups: defaultSetups,
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+    });
+    expect(rec.stance).not.toBe('avoid');
+    expect(rec.factors.find((f) => f.name === 'Catalyst screen')?.verdict).toBe('pass');
+  });
+
+  it('labels levelsSource playbook when a setup option supplies primary levels', () => {
+    const rec = buildRecommendation({
+      symbol: 'AAPL',
+      ...fixture,
+      setups: defaultSetups,
+      historicalMode: true,
+      earningsDates: [],
+      earningsCalendarStatus: 'ok',
+    });
+    if (rec.setupOptions.length) {
+      expect(rec.levelsSource).toBe('playbook');
+    }
   });
 
   it('waits when earnings are inside the blackout window', () => {

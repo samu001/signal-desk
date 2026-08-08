@@ -21,6 +21,7 @@ import {
   PlaybookGateFlags,
   gateChecksFromFlags,
 } from '@/lib/backtestProfile';
+import { hasNegativeCatalyst, matchNegativeCatalysts } from '@/lib/catalysts';
 import {
   assessSectorRelativeStrength,
   assessVolatilityBand,
@@ -46,9 +47,6 @@ export type RuleResult = {
   verdict: RuleVerdict;
   detail: string;
 };
-
-const NEGATIVE_NEWS =
-  /\b(downgrade|miss(?:es|ed)?|lawsuit|probe|investigation|fraud|recall|bankrupt|sec charges|cuts guidance|plunge|crash)\b/i;
 
 const LABELS: Record<RuleCheckId, string> = {
   above_sma_50: 'Above 50-day MA',
@@ -329,7 +327,6 @@ export function evaluateCheck(
       };
     }
     case 'no_negative_catalyst': {
-      const hits = news.filter((n) => NEGATIVE_NEWS.test(n.headline));
       if (!news.length) {
         return {
           id,
@@ -338,10 +335,11 @@ export function evaluateCheck(
           detail: 'No recent headlines (add Finnhub key for news)',
         };
       }
+      const hits = matchNegativeCatalysts(news);
       return {
         id,
         label: LABELS[id],
-        verdict: hits.length === 0 ? 'pass' : 'fail',
+        verdict: hasNegativeCatalyst(news) ? 'fail' : 'pass',
         detail: hits.length ? hits[0].headline : 'No red-flag headlines in lookback',
       };
     }
