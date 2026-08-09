@@ -77,12 +77,14 @@ export function scanUniverseAgainstPlaybook(input: {
   qqqCandles?: Candle[];
   /** When false, skip the live earnings gate entirely (saves earnings API calls). */
   earningsBlackout?: boolean;
+  /** Live behavior gate stack (defaults to live gates); earningsBlackout above still wins. */
+  gates?: PlaybookGateFlags;
   expectancy?: Record<string, SetupExpectancy>;
   scannedAt?: number;
 }): UniverseScanResult {
   const earningsBlackout = input.earningsBlackout !== false;
   const gates: PlaybookGateFlags = {
-    ...DEFAULT_LIVE_GATES,
+    ...(input.gates ?? DEFAULT_LIVE_GATES),
     earningsBlackout,
   };
   const historyDays = historyDaysForPlaybookScan(input.setups);

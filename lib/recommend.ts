@@ -1,5 +1,11 @@
-import { PlaybookGateFlags } from '@/lib/backtestProfile';
+import { DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
 import { CandleSource } from '@/lib/candles';
+import {
+  applyLiveExitTuning,
+  LIVE_ENTRY_ENGINE_LABELS,
+  StopCooldownStatus,
+} from '@/lib/liveBehavior';
+import { describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
 import {
   deskNewsHardFail,
   matchNegativeCatalysts,
@@ -27,7 +33,14 @@ import {
   SetupMatch,
 } from '@/lib/setupMatch';
 import { levelsForSetup } from '@/lib/setupLevels';
-import { Candle, FundamentalSnapshot, NewsItem, Quote, Setup } from '@/types/trading';
+import {
+  Candle,
+  FundamentalSnapshot,
+  LiveEntryEngine,
+  NewsItem,
+  Quote,
+  Setup,
+} from '@/types/trading';
 
 export type Stance = 'strong_buy' | 'soft_buy' | 'wait' | 'avoid';
 
@@ -639,16 +652,21 @@ function zoneForLevels(
 }
 
 /** Per-option levels from that setup only (not blended with Desk structure). */
-function levelsForSetupOption(setup: Setup, candles: Candle[]): TradeLevels {
+function levelsForSetupOption(
+  setup: Setup,
+  candles: Candle[],
+  exitTuning?: LevelTuning
+): TradeLevels {
   const raw = levelsForSetup(setup, candles);
   const atr14 = atr(candles, 14);
   const price = latestCandle(candles)?.close ?? raw.entryHigh;
   const atrFloor = atr14 != null ? price - 1.8 * atr14 : raw.stop;
   const stop = Math.min(raw.stop, atrFloor);
-  return clampLevelsRisk(
+  const clamped = clampLevelsRisk(
     { entryLow: raw.entryLow, entryHigh: raw.entryHigh, stop, target: raw.target },
     atr14
   );
+  return applyLiveExitTuning(clamped, atr14, exitTuning);
 }
 
 function buildSetupOptions(input: {
@@ -656,11 +674,12 @@ function buildSetupOptions(input: {
   setups: Setup[];
   candles: Candle[];
   price: number;
+  exitTuning?: LevelTuning;
 }): SetupOption[] {
   return input.matches.slice(0, MAX_SETUP_OPTIONS).map((match, index) => {
     const setup = input.setups.find((s) => s.id === match.setupId);
     const levels = setup
-      ? levelsForSetupOption(setup, input.candles)
+      ? levelsForSetupOption(setup, input.candles, input.exitTuning)
       : {
           entryLow: 0,
           entryHigh: 0,
@@ -706,14 +725,23 @@ function pickStance(input: {
   liquidityOk: boolean;
   marketWeak: boolean;
   marketOk: boolean;
+  engine: LiveEntryEngine;
+  cooldownBlocked: boolean;
 }): Stance {
+  const deskGated = input.engine !== 'playbook';
   if (input.newsHardFail || input.price <= input.stop) return 'avoid';
-  if (input.technical < 35) return 'avoid';
+  if (deskGated && input.technical < 35) return 'avoid';
   if (input.liquidityThin) return 'avoid';
-  if (input.marketWeak) return 'avoid';
+  if (deskGated && input.marketWeak) return 'avoid';
+  if (input.cooldownBlocked) return 'wait';
   if (input.earningsBlocked) return 'wait';
   // Desk is a confirmation layer: no buy stance without a Playbook match.
   if (!input.playbookMatched) return 'wait';
+  // Playbook engine: rules alone decide — Desk scores/zone shown but not gating.
+  // (Red-flag news, thin liquidity, cooldown, and stop risk still block above.)
+  if (input.engine === 'playbook') {
+    return input.inEntry ? 'strong_buy' : 'soft_buy';
+  }
   if (!input.liquidityOk || !input.marketOk) return 'wait';
 
   const strong =
@@ -748,12 +776,16 @@ function buildSummary(input: {
   weakTrend: boolean;
   stopRisk: boolean;
   newsDetail?: string | null;
+  cooldownDetail?: string | null;
 }): string {
   if (input.liquidityThin) {
     return `${input.symbol} looks too thin on liquidity — Desk avoids it for tradeable signals.`;
   }
   if (input.marketWeak) {
     return `${input.symbol} is lagging the market hard — Desk avoids buy labels until relative strength improves.`;
+  }
+  if (input.cooldownDetail) {
+    return `${input.symbol} is in post-stop cooldown — Live behavior holds re-entry. ${input.cooldownDetail}.`;
   }
   if (input.earningsBlocked) {
     return `${input.symbol} is too close to earnings — Desk waits even if the chart looks okay.`;
@@ -880,6 +912,12 @@ export function buildRecommendation(input: {
    * (not point-in-time), so stance is driven mainly by technicals + Playbook match.
    */
   historicalMode?: boolean;
+  /** Live entry engine (mirrors the Portfolio backtest engines). Default = production Desk gate. */
+  entryEngine?: LiveEntryEngine;
+  /** Exits-only stop/target overrides from Live behavior settings. */
+  exitTuning?: LevelTuning;
+  /** Post-stop cooldown for this symbol — forces Wait while active. */
+  stopCooldown?: StopCooldownStatus | null;
 }): Recommendation {
   const symbol = input.symbol.toUpperCase().trim();
   const candleSource = input.candleSource ?? 'none';
@@ -949,17 +987,24 @@ export function buildRecommendation(input: {
   const matchedSetups = rankMatchedSetups(allMatches).slice(0, MAX_SETUP_OPTIONS);
   const playbookBlockers =
     matchedSetups.length === 0 && allMatches.length ? commonPlaybookBlockers(allMatches) : [];
+  const engine: LiveEntryEngine = input.entryEngine ?? 'playbook_desk';
+  const exitTuning = input.exitTuning;
+  const atr14 = atr(candles, 14);
   const setupOptions = buildSetupOptions({
     matches: matchedSetups,
     setups,
     candles,
     price,
+    exitTuning,
   });
   const best = matchedSetups[0] ?? null;
   const bestSetup = best ? setups.find((s) => s.id === best.setupId) : undefined;
   const merged = mergeLevelsWithSetup(deskLevels, bestSetup, candles);
+  const mergedTuned = applyLiveExitTuning(merged.levels, atr14, exitTuning);
   // Primary levels: prefer #1 option's own levels; fall back to Desk blend.
-  const levels = setupOptions[0]?.levels ?? merged.levels;
+  // Desk engine anchors to the Desk blend instead (Desk card levels).
+  const levels =
+    engine === 'desk' ? mergedTuned : setupOptions[0]?.levels ?? mergedTuned;
 
   const technical = scoreTechnical({
     price,
@@ -997,7 +1042,11 @@ export function buildRecommendation(input: {
 
   const playbookMatched = matchedSetups.length > 0;
   const earnings = input.earnings ?? null;
-  const earningsBlocked = Boolean(earnings?.blocked);
+  // The stance-level earnings block honors the same gate flag the Playbook
+  // rule stack uses — turning the gate off in Live behavior disables both.
+  const earningsGateOn = (input.gates ?? DEFAULT_LIVE_GATES).earningsBlackout;
+  const earningsBlocked = earningsGateOn && Boolean(earnings?.blocked);
+  const cooldown = input.stopCooldown ?? null;
   const liquidity = assessLiquidity(candles, price);
   const market = assessMarketRelative(candles, input.spyCandles);
 
@@ -1038,6 +1087,8 @@ export function buildRecommendation(input: {
     liquidityOk: liquidity.ok,
     marketWeak: market.weak,
     marketOk: market.ok,
+    engine,
+    cooldownBlocked: Boolean(cooldown),
   });
 
   const tradeable = stance === 'soft_buy' || stance === 'strong_buy';
@@ -1082,8 +1133,38 @@ export function buildRecommendation(input: {
     factors.push({
       name: 'Earnings window',
       pillar: 'news',
-      verdict: earnings.blocked ? 'fail' : 'pass',
-      detail: earnings.detail,
+      verdict: earnings.blocked ? (earningsGateOn ? 'fail' : 'unknown') : 'pass',
+      detail:
+        earnings.blocked && !earningsGateOn
+          ? `${earnings.detail} (blackout gate off in Live behavior — not blocking)`
+          : earnings.detail,
+    });
+  }
+  if (cooldown) {
+    factors.push({
+      name: 'Stop cooldown',
+      pillar: 'technical',
+      verdict: 'fail',
+      detail: cooldown.detail,
+    });
+  }
+  if (!isProductionTuning(exitTuning)) {
+    factors.push({
+      name: 'Exit tuning',
+      pillar: 'technical',
+      verdict: 'pass',
+      detail: `${describeTuning(exitTuning)} (from Live behavior settings)`,
+    });
+  }
+  if (engine !== 'playbook_desk') {
+    factors.push({
+      name: 'Entry engine',
+      pillar: 'technical',
+      verdict: 'pass',
+      detail:
+        engine === 'playbook'
+          ? `${LIVE_ENTRY_ENGINE_LABELS.playbook} — Playbook rules alone decide Soft/Strong; Desk scores shown for context.`
+          : `${LIVE_ENTRY_ENGINE_LABELS.desk} — levels anchored to the Desk blend.`,
     });
   }
   if (merged.source === 'playbook' && best) {
@@ -1159,6 +1240,14 @@ export function buildRecommendation(input: {
   if (researchInteresting && !tradeable) {
     warnings.push('Research-interesting only — not a tradeable Soft/Strong buy.');
   }
+  if (cooldown) {
+    warnings.push(`${symbol}: post-stop cooldown active — ${cooldown.detail}.`);
+  }
+  if (engine === 'playbook' && tradeable) {
+    warnings.push(
+      'Playbook engine: Desk scores/zone shown for context but do not gate this signal.'
+    );
+  }
 
   return {
     symbol,
@@ -1182,6 +1271,7 @@ export function buildRecommendation(input: {
         news.factors.find((f) => f.verdict === 'fail')?.detail ??
         news.factors.find((f) => /catalyst|news/i.test(f.name))?.detail ??
         null,
+      cooldownDetail: cooldown?.detail ?? null,
     }),
     confidence,
     price,
@@ -1210,7 +1300,9 @@ export function buildRecommendation(input: {
       : 'Not interesting',
     tradeable,
     // Primary levels prefer #1 setup option; fall back to Desk/playbook blend.
-    levelsSource: setupOptions[0] ? 'playbook' : merged.source,
+    // Desk engine always reports the blend it anchors to.
+    levelsSource:
+      engine === 'desk' ? merged.source : setupOptions[0] ? 'playbook' : merged.source,
     relativeStrength20d: market.rs,
     dollarVolume20d: liquidity.dollarVolume,
     candleSource,

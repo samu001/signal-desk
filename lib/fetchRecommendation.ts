@@ -13,8 +13,9 @@ import {
   EarningsRisk,
   Recommendation,
 } from '@/lib/recommend';
+import { stopCooldownStatus } from '@/lib/liveBehavior';
 import { blendSetupScores, scoreRecentSetupPerformance } from '@/lib/setupPerformance';
-import { AppSettings, Setup, Trade } from '@/types/trading';
+import { AppSettings, LiveBehaviorConfig, Setup, Trade } from '@/types/trading';
 
 type ApiSettings = Pick<
   AppSettings,
@@ -37,6 +38,11 @@ export type RecommendOptions = {
    */
   market?: MarketBundle | null;
   marketFetchedAt?: number | null;
+  /**
+   * Live behavior config (entry engine, gates, exit tuning, stop cooldown).
+   * Omitted = production defaults (Playbook + Desk gate, earnings blackout only).
+   */
+  behavior?: LiveBehaviorConfig | null;
 };
 
 export type RecommendBatchResult = {
@@ -72,7 +78,8 @@ function buildFromBundle(
   unique: string[],
   bundle: MarketBundle,
   setups: Setup[],
-  trades: Trade[]
+  trades: Trade[],
+  behavior?: LiveBehaviorConfig | null
 ): Recommendation[] {
   const journal = setups.length ? expectancyMap(setups, trades) : undefined;
 
@@ -108,6 +115,15 @@ function buildFromBundle(
         : [];
     const expectancy = setups.length ? blendSetupScores(setups, journal, recent) : undefined;
 
+    const cooldown = behavior
+      ? stopCooldownStatus({
+          symbol,
+          trades,
+          candles,
+          stopCooldownBars: behavior.stopCooldownBars,
+        })
+      : null;
+
     return buildRecommendation({
       symbol,
       quote: bundle.quotes[symbol] ?? null,
@@ -123,6 +139,10 @@ function buildFromBundle(
       earnings,
       earningsDates,
       earningsCalendarStatus,
+      gates: behavior?.gates,
+      entryEngine: behavior?.entryEngine,
+      exitTuning: behavior?.exitTuning,
+      stopCooldown: cooldown,
     });
   });
 }
@@ -178,7 +198,7 @@ export async function fetchRecommendationsWithBundle(
   }
 
   return {
-    recommendations: buildFromBundle(unique, bundle, setups, trades),
+    recommendations: buildFromBundle(unique, bundle, setups, trades, options?.behavior),
     bundle,
     reusedMarket,
   };
