@@ -163,24 +163,21 @@ type EntryEngine = 'playbook' | 'playbook_desk' | 'desk';
 
 const ENTRY_ENGINE_BLURBS: Record<
   EntryEngine,
-  { entry: string; exitLevels: string; exits: string; extras: string }
+  { entry: string; exitLevels: string; extras: string }
 > = {
   playbook: {
     entry: 'Playbook setup rules only (one best setup per day).',
     exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
-    exits: 'Stop, target, or ~12-session time stop.',
     extras: 'Parameter lab on. Fastest.',
   },
   playbook_desk: {
     entry: 'Playbook setup rules + Desk Soft/Strong allow (in/near buy zone).',
     exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
-    exits: 'Stop, target, or ~12-session time stop.',
     extras: 'Parameter lab on. Slower (Desk check each bar).',
   },
   desk: {
     entry: 'Full Desk Soft/Strong replay (Playbook match + scores + in/near zone).',
     exitLevels: 'Desk card levels (~2R).',
-    exits: 'Stop, target, or ~12-session time stop.',
     extras: 'Parameter lab off. Slowest. Company/news neutralized.',
   },
 };
@@ -196,10 +193,6 @@ function EntryEngineBlurb({ engine }: { engine: EntryEngine }) {
       <Text style={styles.setupPickerSub}>
         <Text style={styles.engineBlurbKey}>Exit levels: </Text>
         {b.exitLevels}
-      </Text>
-      <Text style={styles.setupPickerSub}>
-        <Text style={styles.engineBlurbKey}>Exits on: </Text>
-        {b.exits}
       </Text>
       <Text style={styles.setupPickerSub}>{b.extras}</Text>
     </View>
