@@ -77,6 +77,74 @@ function shouldEnter(stance: Stance, nearEntry: boolean, inEntry: boolean): bool
   return false;
 }
 
+/**
+ * Signal-bar timestamps where Desk would allow a Soft/Strong entry
+ * (Playbook match + Soft/Strong stance + price in/near the entry zone).
+ * Used as an optional gate on the Playbook backtest engine — same confirmation
+ * layer as the live Dashboard, without switching to Desk levels/exits.
+ *
+ * Returns signal-bar times (the close that fires), not fill times. Company/news
+ * are neutralized (historicalMode), matching runDeskBacktest.
+ */
+export function collectDeskAllowSignalTimes(input: {
+  symbol: string;
+  candles: Candle[];
+  spyCandles: Candle[];
+  qqqCandles?: Candle[];
+  sectorCandles?: Candle[];
+  earningsDates?: string[];
+  earningsCalendarStatus?: EarningsFetchStatus;
+  gates?: PlaybookGateFlags;
+  sourceLabel: string;
+  setups?: Setup[];
+  /** Only evaluate the last N bars (earlier bars still warm Desk indicators). */
+  evalBars?: number;
+}): Set<number> {
+  const symbol = input.symbol.toUpperCase().trim();
+  const { candles, spyCandles, sourceLabel } = input;
+  const setups = input.setups?.length ? input.setups : defaultSetups;
+  const allowed = new Set<number>();
+  if (candles.length < WARMUP + 5) return allowed;
+
+  const evalBars = input.evalBars && input.evalBars > 0 ? input.evalBars : null;
+  const loopStart = evalBars
+    ? Math.max(WARMUP, candles.length - 1 - evalBars)
+    : WARMUP;
+  const candleSource = isLiveCandleSource(sourceLabel)
+    ? (sourceLabel as CandleSource)
+    : 'yahoo';
+
+  for (let i = loopStart; i < candles.length - 1; i++) {
+    const history = candles.slice(0, i + 1);
+    const asOf = candles[i].time;
+    const spyHistory = barsUpTo(spyCandles, asOf);
+    const qqqHistory = barsUpTo(input.qqqCandles ?? [], asOf);
+    const sectorHistory = input.sectorCandles?.length
+      ? barsUpTo(input.sectorCandles, asOf)
+      : undefined;
+    const candle = history[history.length - 1];
+    const prev = history[history.length - 2];
+    const rec = buildRecommendation({
+      symbol,
+      quote: quoteFromCandle(symbol, candle, prev),
+      candles: history,
+      spyCandles: spyHistory,
+      qqqCandles: qqqHistory,
+      sectorCandles: sectorHistory,
+      candleSource,
+      historicalMode: true,
+      setups,
+      earningsDates: input.earningsDates,
+      earningsCalendarStatus: input.earningsCalendarStatus,
+      gates: input.gates,
+    });
+    if (shouldEnter(rec.stance, rec.nearEntry, rec.inEntry)) {
+      allowed.add(asOf);
+    }
+  }
+  return allowed;
+}
+
 function statsFor(trades: DeskBacktestTrade[]): {
   winRate: number | null;
   avgR: number | null;
