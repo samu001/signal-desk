@@ -556,6 +556,11 @@ export default function PortfolioBacktestScreen() {
     const seen = new Set(catalog.map((c) => c.id));
     for (const t of effectiveTrades) {
       if (!t.setupId || seen.has(t.setupId)) continue;
+      if (t.setupId === 'desk') {
+        catalog.push({ id: 'desk', name: 'Desk (no setup tagged)' });
+        seen.add('desk');
+        continue;
+      }
       const setup = setups.find((s) => s.id === t.setupId);
       catalog.push({ id: t.setupId, name: setup?.name ?? t.setupId });
       seen.add(t.setupId);
@@ -1687,6 +1692,14 @@ export default function PortfolioBacktestScreen() {
                 </View>
               );
             })()}
+
+            {!summary.paramSweep && summary.entryEngine === 'desk' ? (
+              <Text style={styles.filterMeta}>
+                Parameter lab (exit sweep) is Playbook-only — Desk entries exit on Desk levels, so
+                Playbook stop/target tunings would not apply. Switch the entry engine back to
+                Playbook to compare exits.
+              </Text>
+            ) : null}
 
             {summary.paramSweep ? (
               <>
