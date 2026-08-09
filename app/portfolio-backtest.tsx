@@ -885,7 +885,10 @@ export default function PortfolioBacktestScreen() {
             candles: bars.candles,
             spyCandles: spy.candles,
             qqqCandles: qqq.candles,
+            sectorCandles,
             earningsDates: gates.earningsBlackout ? earnings?.dates : undefined,
+            earningsCalendarStatus: gates.earningsBlackout ? earnings?.status : undefined,
+            gates,
             sourceLabel: bars.source,
             // Score the whole fetched window after warmup (Desk Lab uses ~30).
             evalBars: bars.candles.length,
