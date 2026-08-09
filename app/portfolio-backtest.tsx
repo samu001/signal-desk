@@ -14,7 +14,14 @@ import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/compone
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { PROFILE_MUST, PROFILE_ALL8, PlaybookGateFlags, DEFAULT_PORTFOLIO_GATES, describeActiveExtras, isAll8Extras, isDefaultPortfolioExtras } from '@/lib/backtestProfile';
-import { costsForSymbol, slippageBpsLabel } from '@/lib/backtestCosts';
+import {
+  applyLongEntryFill,
+  applyLongExitFill,
+  costsForSymbol,
+  netLongR,
+  slippageBpsLabel,
+} from '@/lib/backtestCosts';
+import { runDeskBacktest } from '@/lib/deskBacktest';
 import {
   analyzeBuyingPower,
   buyingPowerNeedsWarning,
@@ -137,8 +144,18 @@ type PortfolioSummary = {
   /** Gate flags used for this run (for display). */
   gates: PlaybookGateFlags;
   stopCooldownBars: number;
+  /** Entry engine: combined Playbook rules, or Desk Soft/Strong confirmation. */
+  entryEngine: EntryEngine;
   warnings: string[];
 };
+
+/**
+ * How entries are generated. 'playbook' = combined Playbook rules (default).
+ * 'desk' = Desk Soft/Strong stance replay (like the live Dashboard: Playbook
+ * match + Desk confirmation + price in/near the entry zone; Desk levels for
+ * exits; company/news neutralized in history).
+ */
+type EntryEngine = 'playbook' | 'desk';
 
 type PerSymbolMode = 'all' | 'capped';
 
@@ -400,6 +417,8 @@ export default function PortfolioBacktestScreen() {
   const [gates, setGates] = useState<PlaybookGateFlags>({ ...DEFAULT_PORTFOLIO_GATES });
   const [stopCooldownBars, setStopCooldownBars] = useState(0);
   const [gatesOpen, setGatesOpen] = useState(false);
+  /** Entry engine: Playbook rules (default) or Desk Soft/Strong replay. */
+  const [entryEngine, setEntryEngine] = useState<EntryEngine>('playbook');
 
   useEffect(() => {
     if (selectedSetupIds != null || !setups.length) return;
@@ -853,32 +872,66 @@ export default function PortfolioBacktestScreen() {
         const etf = sectorEtfForSymbol(symbol);
         const sectorCandles = etf ? sectorBars.get(etf) : undefined;
         const symbolCosts = costsForSymbol(symbol, bars.candles);
-        const combined = runCombinedPlaybookBacktest({
-          symbol,
-          setups: runSetups,
-          candles: bars.candles,
-          spyCandles: spy.candles,
-          qqqCandles: qqq.candles,
-          sectorCandles,
-          earningsDates: earnings?.dates,
-          earningsCalendarStatus: earnings?.status,
-          sourceLabel: bars.source,
-          profile: { ...portfolioProfile, costs: symbolCosts },
-        });
-        for (const t of combined.trades) {
-          const trade: PickerTrade = {
+        const symbolTrades: PickerTrade[] = [];
+        if (entryEngine === 'desk') {
+          setProgress(`Desk replay ${symbol} (${rows.length + 1}/${symbols.length})…`);
+          const desk = runDeskBacktest({
             symbol,
-            entryTime: t.entryTime,
-            exitTime: t.exitTime,
-            r: t.rMultiple,
-            priorityScore: t.priorityScore,
-            setupId: t.setupId,
-            rs20: relativeStrength20(bars.candles, spy.candles, t.entryTime),
-            entry: t.entry,
-            stop: t.stop,
-          };
-          if (isUsableForTotals(coverage)) usableTrades.push(trade);
+            candles: bars.candles,
+            spyCandles: spy.candles,
+            qqqCandles: qqq.candles,
+            earningsDates: gates.earningsBlackout ? earnings?.dates : undefined,
+            sourceLabel: bars.source,
+            // Score the whole fetched window after warmup (Desk Lab uses ~30).
+            evalBars: bars.candles.length,
+            setups: runSetups,
+          });
+          for (const t of desk.trades) {
+            // Same friction semantics as the Playbook engine: stop/target hits
+            // on raw bars, ADV-tiered slip/spread applied at the fills.
+            const entryFill = applyLongEntryFill(t.entry, symbolCosts);
+            const exitFill = applyLongExitFill(t.exit, symbolCosts);
+            symbolTrades.push({
+              symbol,
+              entryTime: t.entryTime,
+              exitTime: t.exitTime,
+              r: netLongR({ entryFill, exitFill, stop: t.stop }),
+              priorityScore: t.priorityScore,
+              setupId: t.setupId ?? 'desk',
+              rs20: relativeStrength20(bars.candles, spy.candles, t.entryTime),
+              entry: entryFill,
+              stop: t.stop,
+            });
+          }
+        } else {
+          const combined = runCombinedPlaybookBacktest({
+            symbol,
+            setups: runSetups,
+            candles: bars.candles,
+            spyCandles: spy.candles,
+            qqqCandles: qqq.candles,
+            sectorCandles,
+            earningsDates: earnings?.dates,
+            earningsCalendarStatus: earnings?.status,
+            sourceLabel: bars.source,
+            profile: { ...portfolioProfile, costs: symbolCosts },
+          });
+          for (const t of combined.trades) {
+            symbolTrades.push({
+              symbol,
+              entryTime: t.entryTime,
+              exitTime: t.exitTime,
+              r: t.rMultiple,
+              priorityScore: t.priorityScore,
+              setupId: t.setupId,
+              rs20: relativeStrength20(bars.candles, spy.candles, t.entryTime),
+              entry: t.entry,
+              stop: t.stop,
+            });
+          }
         }
+        if (isUsableForTotals(coverage)) usableTrades.push(...symbolTrades);
+        const symbolWins = symbolTrades.filter((t) => t.r > 0).length;
         const rowNotes = [...notes];
         if (coverage === 'short') {
           rowNotes.unshift(
@@ -886,6 +939,11 @@ export default function PortfolioBacktestScreen() {
           );
         }
         rowNotes.push(`Slippage tier: ${slippageBpsLabel(symbol, bars.candles)} (ADV).`);
+        if (entryEngine === 'desk') {
+          rowNotes.push(
+            'Desk replay: Soft/Strong stance + in/near entry zone; Desk levels for exits; company/news neutralized.'
+          );
+        }
         if (earnings?.status === 'ok') {
           rowNotes.push(`Earnings calendar: ${earnings.dates.length} dates in window.`);
         }
@@ -902,9 +960,9 @@ export default function PortfolioBacktestScreen() {
           symbol,
           source: bars.source,
           bars: bars.candles.length,
-          trades: combined.trades.length,
-          winRate: combined.winRate,
-          totalR: combined.totalR ?? 0,
+          trades: symbolTrades.length,
+          winRate: symbolTrades.length ? symbolWins / symbolTrades.length : null,
+          totalR: symbolTrades.reduce((a, t) => a + t.r, 0),
           coverage,
           adjusted,
           earningsStatus: earnings?.status,
@@ -928,8 +986,10 @@ export default function PortfolioBacktestScreen() {
       setActiveParamId(null);
 
       // Exit-parameter sweep over the same basket, under the same cap.
+      // Playbook engine only — exit tunings are Playbook structure levels,
+      // so sweeping them against Desk-level trades would be apples-to-oranges.
       let paramSweep: ParameterSweepResult | null = null;
-      const sweepTickers = rows
+      const sweepTickers = (entryEngine === 'desk' ? [] : rows)
         .filter((r) => isUsableForTotals(r.coverage))
         .map((r) => {
           const earn = earningsBySymbol.get(r.symbol);
@@ -978,6 +1038,7 @@ export default function PortfolioBacktestScreen() {
         extrasLabel,
         gates: { ...gates },
         stopCooldownBars,
+        entryEngine,
         warnings,
       });
     } finally {
@@ -1120,6 +1181,40 @@ export default function PortfolioBacktestScreen() {
             Pick at least one setup above before running.
           </Text>
         ) : null}
+
+        <View style={styles.setupPicker}>
+          <View style={styles.setupPickerHead}>
+            <View style={styles.setupPickerTitleCol}>
+              <Text style={styles.setupPickerTitle}>Entry engine</Text>
+              <Text style={styles.setupPickerSub}>
+                {entryEngine === 'desk'
+                  ? 'Desk Soft/Strong replay — entries need Desk confirmation (like the live Dashboard); Desk levels for exits; company/news neutralized in history. Slower.'
+                  : 'Combined Playbook rules — one best setup per day, structure-based exits.'}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.engineChipRow}>
+            <Pressable
+              onPress={() => setEntryEngine('playbook')}
+              style={[styles.chipSm, entryEngine === 'playbook' && styles.chipOn]}>
+              <Text
+                style={[
+                  styles.chipTextSm,
+                  entryEngine === 'playbook' && styles.chipTextOn,
+                ]}>
+                Playbook (default)
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setEntryEngine('desk')}
+              style={[styles.chipSm, entryEngine === 'desk' && styles.chipOn]}>
+              <Text
+                style={[styles.chipTextSm, entryEngine === 'desk' && styles.chipTextOn]}>
+                Desk Soft/Strong
+              </Text>
+            </Pressable>
+          </View>
+        </View>
 
         <View style={styles.setupPicker}>
           <Pressable
@@ -1288,9 +1383,10 @@ export default function PortfolioBacktestScreen() {
             <SectionTitle
               title="Portfolio"
               subtitle={
-                summary.excludedSymbols
-                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out. Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
-                  : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD). Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
+                (summary.excludedSymbols
+                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out.`
+                  : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD).`) +
+                ` Engine: ${summary.entryEngine === 'desk' ? 'Desk Soft/Strong' : 'Playbook'}. Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
               }
             />
             <View style={styles.stats}>
@@ -2193,6 +2289,13 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     paddingHorizontal: 14,
     paddingBottom: 6,
+  },
+  engineChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
   },
   gateLabelCol: { flex: 1, gap: 2 },
   gateHint: { color: palette.muted, fontSize: 11, lineHeight: 14 },
