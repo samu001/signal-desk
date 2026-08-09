@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 
 import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/components/ui';
+import { CURATED_UNIVERSES, matchingUniversePresetId, normalizeSymbolList, symbolsToField } from '@/constants/universes';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
@@ -23,13 +24,13 @@ import {
   UniverseScanTicker,
 } from '@/lib/universeScan';
 
-const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
-
 type SkippedTicker = { symbol: string; reason: string };
 
 export default function UniverseScanScreen() {
-  const { enabledSetups, settings, setupExpectancy } = useTrading();
-  const [symbolsText, setSymbolsText] = useState(DEFAULT_SYMBOLS);
+  const { enabledSetups, settings, setupExpectancy, watchlist } = useTrading();
+  const [symbolsText, setSymbolsText] = useState(
+    symbolsToField(CURATED_UNIVERSES.find((u) => u.id === 'full')!.symbols)
+  );
   const [earningsBlackout, setEarningsBlackout] = useState(true);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState('');
@@ -37,6 +38,20 @@ export default function UniverseScanScreen() {
   const [skipped, setSkipped] = useState<SkippedTicker[]>([]);
   const [ranAt, setRanAt] = useState<string | null>(null);
   const [showUnmatched, setShowUnmatched] = useState(false);
+
+  const activePresetId = matchingUniversePresetId(symbolsText);
+  const watchlistSymbols = useMemo(
+    () =>
+      [
+        ...new Set(
+          watchlist.map((w) => w.symbol.toUpperCase().trim()).filter(Boolean)
+        ),
+      ],
+    [watchlist]
+  );
+  const watchlistActive =
+    watchlistSymbols.length > 0 &&
+    normalizeSymbolList(symbolsText) === normalizeSymbolList(symbolsToField(watchlistSymbols));
 
   const historyDays = useMemo(
     () => historyDaysForPlaybookScan(enabledSetups),
@@ -48,6 +63,10 @@ export default function UniverseScanScreen() {
     () => Object.fromEntries(setupExpectancy.map((e) => [e.setupId, e])),
     [setupExpectancy]
   );
+
+  const applyPreset = (symbols: string[]) => {
+    setSymbolsText(symbolsToField(symbols));
+  };
 
   const run = async () => {
     const symbols = [
@@ -182,6 +201,37 @@ export default function UniverseScanScreen() {
           multiline
         />
 
+        <View style={styles.presetRow}>
+          {CURATED_UNIVERSES.map((preset) => {
+            const active = activePresetId === preset.id;
+            return (
+              <Pressable
+                key={preset.id}
+                onPress={() => applyPreset(preset.symbols)}
+                style={[styles.presetChip, active && styles.presetChipActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`${preset.label} universe, ${preset.symbols.length} symbols`}>
+                <Text style={[styles.presetChipText, active && styles.presetChipTextActive]}>
+                  {preset.label} · {preset.symbols.length}
+                </Text>
+              </Pressable>
+            );
+          })}
+          {watchlistSymbols.length > 0 ? (
+            <Pressable
+              onPress={() => applyPreset(watchlistSymbols)}
+              style={[styles.presetChip, watchlistActive && styles.presetChipActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: watchlistActive }}
+              accessibilityLabel={`Watchlist universe, ${watchlistSymbols.length} symbols`}>
+              <Text
+                style={[styles.presetChipText, watchlistActive && styles.presetChipTextActive]}>
+                Watch · {watchlistSymbols.length}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
         <Pressable
           onPress={() => setEarningsBlackout((v) => !v)}
           style={styles.toggleRow}
@@ -328,6 +378,32 @@ const styles = StyleSheet.create({
   },
   noteTitle: { fontWeight: '700', color: palette.ink, fontSize: 13 },
   noteItem: { color: palette.muted, fontSize: 12.5, lineHeight: 18 },
+  presetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: -2,
+  },
+  presetChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.white,
+  },
+  presetChipActive: {
+    backgroundColor: palette.mossSoft,
+    borderColor: palette.moss,
+  },
+  presetChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: palette.muted,
+  },
+  presetChipTextActive: {
+    color: palette.moss,
+  },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
