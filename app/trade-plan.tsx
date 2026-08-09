@@ -16,7 +16,17 @@ import { ruleCheckLabel } from '@/lib/rules';
 export default function ActFromDeskScreen() {
   const router = useRouter();
   const { watchlistId } = useLocalSearchParams<{ watchlistId?: string }>();
-  const { watchlist, settings, quotes, addTrade, getSetup, candidates } = useTrading();
+  const {
+    watchlist,
+    settings,
+    quotes,
+    addTrade,
+    getSetup,
+    candidates,
+    liveBehavior,
+    openPositionCount,
+    maxOpenReached,
+  } = useTrading();
 
   const item = watchlist.find((w) => w.id === watchlistId);
   const candidate = candidates.find((c) => c.item.id === watchlistId);
@@ -106,6 +116,16 @@ export default function ActFromDeskScreen() {
           <View style={styles.warnBox}>
             <Text style={styles.warnText}>
               No Desk levels yet. Return to Dashboard and Refresh signals.
+            </Text>
+          </View>
+        ) : null}
+
+        {maxOpenReached ? (
+          <View style={styles.warnBox}>
+            <Text style={styles.warnText}>
+              Max open positions reached ({openPositionCount} of {liveBehavior.maxOpenPositions}{' '}
+              open/planned in Live behavior). Adding this trade exceeds your cap — close or drop a
+              position first, or raise the cap.
             </Text>
           </View>
         ) : null}

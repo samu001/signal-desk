@@ -82,6 +82,7 @@ export default function RootLayout() {
           }}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+          <Stack.Screen name="live-behavior" options={{ title: 'Live behavior' }} />
           <Stack.Screen name="trade-plan" options={{ title: 'Act from Desk', presentation: 'modal' }} />
           <Stack.Screen name="trade-detail" options={{ title: 'Trade' }} />
           <Stack.Screen name="setup-detail" options={{ title: 'Setup' }} />

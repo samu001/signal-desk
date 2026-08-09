@@ -57,6 +57,7 @@ export default function DeskDetailScreen() {
     applyDeskSignals,
     upsertWatchlistItem,
     watchlist,
+    liveBehavior,
   } = useTrading();
 
   const [rec, setRec] = useState<Recommendation | null>(null);
@@ -80,6 +81,7 @@ export default function DeskDetailScreen() {
           trades,
           market: marketBundle,
           marketFetchedAt: quotesUpdatedAt,
+          behavior: liveBehavior,
         }
       );
       const next = recommendations[0];
@@ -102,6 +104,7 @@ export default function DeskDetailScreen() {
     quotesUpdatedAt,
     ingestMarketBundle,
     applyDeskSignals,
+    liveBehavior,
   ]);
 
   useEffect(() => {
