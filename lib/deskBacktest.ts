@@ -5,7 +5,7 @@ import { EarningsFetchStatus } from '@/lib/finnhub';
 import { barsUpTo } from '@/lib/indicators';
 import { buildRecommendation, Stance } from '@/lib/recommend';
 import { plannedRewardToRisk, tradePriorityScore } from '@/lib/tradePriority';
-import { Candle, Quote, Setup } from '@/types/trading';
+import { Candle, LiveLevelAnchor, Quote, Setup } from '@/types/trading';
 
 export type DeskBacktestTrade = {
   stance: Stance;
@@ -190,6 +190,12 @@ export function runDeskBacktest(input: {
   warnings?: string[];
   evalBars?: number;
   setups?: Setup[];
+  /**
+   * Which structure anchors entry/stop/target in the replay. Default 'setup'
+   * (top setup structure — historical Desk Lab behavior); 'desk_blend' replays
+   * the Desk card levels the Live behavior blend anchor uses.
+   */
+  levelAnchor?: LiveLevelAnchor;
 }): DeskBacktestResult {
   const symbol = input.symbol.toUpperCase().trim();
   const { candles, spyCandles, sourceLabel } = input;
@@ -318,6 +324,7 @@ export function runDeskBacktest(input: {
       earningsDates: input.earningsDates,
       earningsCalendarStatus: input.earningsCalendarStatus,
       gates: input.gates,
+      levelAnchor: input.levelAnchor,
     });
     signals[rec.stance] += 1;
 

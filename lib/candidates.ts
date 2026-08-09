@@ -6,6 +6,7 @@ import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import {
   Candle,
   NewsItem,
+  PlaybookGateFlags,
   Quote,
   Setup,
   Trade,
@@ -143,6 +144,8 @@ export function buildCandidates(
     earningsCalendarStatus?: Record<string, EarningsFetchStatus>;
     trades?: Trade[];
     session?: SessionInfo;
+    /** Live behavior accuracy gates (defaults to earnings blackout only). */
+    gates?: PlaybookGateFlags;
   }
 ): Candidate[] {
   const setupMap = Object.fromEntries(setups.map((s) => [s.id, s]));
@@ -183,6 +186,7 @@ export function buildCandidates(
       earningsDates: dates,
       earningsCalendarStatus: calendarStatus,
       session,
+      gates: options?.gates,
     });
     const scored = scoreRuleResults(rules);
     const signal = setupSignalPasses(setup, rules);

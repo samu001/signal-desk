@@ -20,6 +20,10 @@ import {
   MarketBundle,
 } from '@/lib/finnhub';
 import { clearFundamentalsCache } from '@/lib/fmp';
+import {
+  committedPositionCount,
+  normalizeLiveBehavior,
+} from '@/lib/liveBehavior';
 import { Recommendation } from '@/lib/recommend';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { createId, enabledSetupsOf, loadAppState, saveAppState } from '@/lib/storage';
@@ -28,6 +32,7 @@ import {
   AppState,
   Candle,
   FundamentalSnapshot,
+  LiveBehaviorConfig,
   NewsItem,
   Quote,
   Setup,
@@ -38,6 +43,14 @@ import {
 type TradingContextValue = {
   ready: boolean;
   settings: AppSettings;
+  /** Live dashboard signal behavior — same knobs as the Portfolio backtest. */
+  liveBehavior: LiveBehaviorConfig;
+  /** Merge a patch into the persisted live behavior config. */
+  updateLiveBehavior: (patch: Partial<LiveBehaviorConfig>) => void;
+  /** Open + planned trades (counts toward the live max-open cap). */
+  openPositionCount: number;
+  /** True when the Live behavior max-open cap is reached (0 cap = never). */
+  maxOpenReached: boolean;
   /** Full Playbook roster (including toggled-off setups). */
   setups: Setup[];
   /** Setups currently on — Desk, candidates, and combined backtests use only these. */
@@ -331,6 +344,20 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => (prev ? { ...prev, settings: { ...prev.settings, ...patch } } : prev));
   }, []);
 
+  const updateLiveBehavior = useCallback((patch: Partial<LiveBehaviorConfig>) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const current = normalizeLiveBehavior(prev.settings.liveBehavior);
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          liveBehavior: normalizeLiveBehavior({ ...current, ...patch }),
+        },
+      };
+    });
+  }, []);
+
   const upsertWatchlistItem = useCallback(
     (item: Omit<WatchlistItem, 'id' | 'createdAt'> & { id?: string }) => {
       const id = item.id ?? createId('wl');
@@ -494,6 +521,19 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     [state]
   );
 
+  const liveBehavior = useMemo(
+    () => normalizeLiveBehavior(state?.settings.liveBehavior),
+    [state?.settings.liveBehavior]
+  );
+
+  const openPositionCount = useMemo(
+    () => committedPositionCount(state?.trades ?? []),
+    [state?.trades]
+  );
+
+  const maxOpenReached =
+    liveBehavior.maxOpenPositions > 0 && openPositionCount >= liveBehavior.maxOpenPositions;
+
   const candidates = useMemo(() => {
     if (!state) return [];
     return buildCandidates(state.watchlist, enabledSetups, quotes, {
@@ -503,6 +543,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       earningsCalendarStatus,
       trades: state.trades,
       session,
+      gates: liveBehavior.gates,
     });
   }, [
     state,
@@ -513,6 +554,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     earningsDates,
     earningsCalendarStatus,
     session,
+    liveBehavior.gates,
   ]);
 
   const actionable = useMemo(() => actionableCandidates(candidates), [candidates]);
@@ -544,11 +586,16 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       yahooProxyToken: '',
       marketBias: '',
       displayName: 'Trader',
+      liveBehavior: normalizeLiveBehavior(undefined),
     };
 
     return {
       ready,
       settings: state?.settings ?? emptySettings,
+      liveBehavior,
+      updateLiveBehavior,
+      openPositionCount,
+      maxOpenReached,
       setups: state?.setups ?? [],
       enabledSetups,
       watchlist: state?.watchlist ?? [],
@@ -586,6 +633,10 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   }, [
     ready,
     state,
+    liveBehavior,
+    updateLiveBehavior,
+    openPositionCount,
+    maxOpenReached,
     enabledSetups,
     quotes,
     candles,

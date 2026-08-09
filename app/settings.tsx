@@ -1,10 +1,11 @@
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Alert, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Field, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
+import { describeLiveBehavior } from '@/lib/liveBehavior';
 
 function notify(title: string, message?: string) {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -15,7 +16,8 @@ function notify(title: string, message?: string) {
 }
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, refreshQuotes, clearDataCaches } = useTrading();
+  const router = useRouter();
+  const { settings, updateSettings, refreshQuotes, clearDataCaches, liveBehavior } = useTrading();
   const [displayName, setDisplayName] = useState(settings.displayName);
   const [accountSize, setAccountSize] = useState(String(settings.accountSize));
   const [riskPercent, setRiskPercent] = useState(String(settings.riskPercent));
@@ -214,6 +216,19 @@ export default function SettingsScreen() {
         </View>
 
         <Button label="Save settings" onPress={save} />
+
+        <View style={styles.cacheBlock}>
+          <Text style={styles.section}>Live dashboard behavior</Text>
+          <Text style={styles.helpBody}>
+            Entry engine, accuracy gates, stop cooldown, exit tuning, and max open positions — the
+            same knobs as the Portfolio backtest. Current: {describeLiveBehavior(liveBehavior)}.
+          </Text>
+          <Button
+            label="Edit live behavior"
+            variant="ghost"
+            onPress={() => router.push('/live-behavior')}
+          />
+        </View>
 
         <View style={styles.cacheBlock}>
           <Text style={styles.section}>Data caches</Text>

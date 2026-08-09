@@ -21,6 +21,7 @@ export default function WatchlistFormScreen() {
     ingestMarketBundle,
     marketBundle,
     quotesUpdatedAt,
+    liveBehavior,
   } = useTrading();
   const existing = watchlist.find((w) => w.id === id);
   const editing = Boolean(existing);
@@ -58,6 +59,7 @@ export default function WatchlistFormScreen() {
             trades,
             market: marketBundle,
             marketFetchedAt: quotesUpdatedAt,
+            behavior: liveBehavior,
           }
         );
         const rec = recommendations[0];

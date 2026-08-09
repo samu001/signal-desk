@@ -1,14 +1,9 @@
 import { BacktestCostModel } from '@/lib/backtestCosts';
-import { RuleCheckId } from '@/types/trading';
+import { PlaybookGateFlags, RuleCheckId } from '@/types/trading';
 
-/** Optional Playbook accuracy gates appended on top of each setup's own checks. */
-export type PlaybookGateFlags = {
-  marketRegime: boolean;
-  earningsBlackout: boolean;
-  weeklyTrend: boolean;
-  sectorRs: boolean;
-  volatility: boolean;
-};
+// Defined in types/trading.ts (shared with LiveBehaviorConfig); re-exported so
+// existing imports from this module keep working.
+export type { PlaybookGateFlags };
 
 export type BacktestProfile = {
   id: 'must' | 'all8';

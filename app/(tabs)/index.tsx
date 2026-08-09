@@ -29,6 +29,7 @@ import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { fundamentalFlags } from '@/lib/fmp';
 import { fetchRecommendationsWithBundle } from '@/lib/fetchRecommendation';
+import { describeLiveBehavior } from '@/lib/liveBehavior';
 import { Recommendation, SetupOption, Stance } from '@/lib/recommend';
 
 function stanceTone(stance: Stance): 'good' | 'warn' | 'bad' | 'neutral' {
@@ -75,6 +76,9 @@ export default function DashboardScreen() {
     setups,
     enabledSetups,
     signalsStale,
+    liveBehavior,
+    openPositionCount,
+    maxOpenReached,
   } = useTrading();
 
   const [symbolDraft, setSymbolDraft] = useState('');
@@ -134,6 +138,7 @@ export default function DashboardScreen() {
           trades,
           market: marketBundle,
           marketFetchedAt: quotesUpdatedAt,
+          behavior: liveBehavior,
         }
       );
       if (!reusedMarket) {
@@ -224,6 +229,7 @@ export default function DashboardScreen() {
           trades,
           market: marketBundle,
           marketFetchedAt: quotesUpdatedAt,
+          behavior: liveBehavior,
         }
       );
       const rec = recommendations[0];
@@ -311,6 +317,15 @@ export default function DashboardScreen() {
           />
         </View>
 
+        <Link href="/live-behavior" asChild>
+          <Pressable style={styles.behaviorRow} accessibilityRole="button">
+            <Text style={styles.behaviorLabel}>Signal engine</Text>
+            <Text style={styles.behaviorValue} numberOfLines={2}>
+              {describeLiveBehavior(liveBehavior)} · edit
+            </Text>
+          </Pressable>
+        </Link>
+
         {signalsStale && !loadingSignals ? (
           <View style={styles.staleBox}>
             <Text style={styles.staleText}>
@@ -344,6 +359,14 @@ export default function DashboardScreen() {
               : 'In/near your zones, ranked by rule pass-rate and setup edge.'
           }
         />
+        {maxOpenReached ? (
+          <View style={styles.staleBox}>
+            <Text style={styles.staleText}>
+              Max open positions reached ({openPositionCount} of {liveBehavior.maxOpenPositions}{' '}
+              open/planned) — Live behavior holds new entries until a slot frees.
+            </Text>
+          </View>
+        ) : null}
         {actionable.length === 0 ? (
           <EmptyState
             title="No actionable setups"
@@ -567,6 +590,27 @@ const styles = StyleSheet.create({
   },
   signalCta: {
     marginBottom: spacing.sm,
+  },
+  behaviorRow: {
+    marginBottom: spacing.md,
+    backgroundColor: palette.mist,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 2,
+  },
+  behaviorLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  behaviorValue: {
+    color: palette.ink,
+    fontWeight: '600',
+    lineHeight: 18,
+    fontSize: 13,
   },
   staleBox: {
     marginBottom: spacing.md,

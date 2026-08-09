@@ -1,3 +1,5 @@
+import type { LevelTuning } from '@/lib/levelTuning';
+
 export type RuleCheckId =
   | 'above_sma_50'
   | 'above_sma_20'
@@ -92,6 +94,46 @@ export type Trade = {
   exitPrice: number | null;
 };
 
+/** Optional Playbook accuracy gates appended on top of each setup's own checks. */
+export type PlaybookGateFlags = {
+  marketRegime: boolean;
+  earningsBlackout: boolean;
+  weeklyTrend: boolean;
+  sectorRs: boolean;
+  volatility: boolean;
+};
+
+/**
+ * Which structure anchors the buy zone / stop / target.
+ * - setup: the top matched setup's own invalidation structure (production default).
+ * - desk_blend: the Desk chart read merged with the top setup (Desk card levels).
+ */
+export type LiveLevelAnchor = 'setup' | 'desk_blend';
+
+/**
+ * Live dashboard behavior — one engine with independent entry and exit
+ * toggles, mirroring the Portfolio backtest knobs. Persisted in Settings and
+ * consumed by the live Desk signal pipeline. Find a combination you like in
+ * the Lab and apply it here (or via the backtest's "Use these settings live"
+ * button).
+ */
+export type LiveBehaviorConfig = {
+  /**
+   * Entry: require Desk score/zone confirmation on top of Playbook rules
+   * (production default true). Off = Playbook rules alone decide Soft/Strong.
+   */
+  deskConfirmation: boolean;
+  gates: PlaybookGateFlags;
+  /** Trading days after a stop-out before re-entering that symbol (0 = off). */
+  stopCooldownBars: number;
+  /** Cap on concurrent open + planned trades before Desk holds new entries (0 = no cap). */
+  maxOpenPositions: number;
+  /** Exit: which structure anchors buy zone / stop / target. */
+  levelAnchor: LiveLevelAnchor;
+  /** Exits-only stop/target overrides ({} = production ~2R · min(2.5×ATR, 8%)). */
+  exitTuning: LevelTuning;
+};
+
 export type AppSettings = {
   accountSize: number;
   riskPercent: number;
@@ -119,6 +161,8 @@ export type AppSettings = {
   yahooProxyToken: string;
   marketBias: string;
   displayName: string;
+  /** Live dashboard signal behavior (entry engine, gates, exits, caps). */
+  liveBehavior: LiveBehaviorConfig;
 };
 
 export type Quote = {

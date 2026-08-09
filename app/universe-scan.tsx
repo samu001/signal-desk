@@ -27,7 +27,7 @@ import {
 type SkippedTicker = { symbol: string; reason: string };
 
 export default function UniverseScanScreen() {
-  const { enabledSetups, settings, setupExpectancy, watchlist } = useTrading();
+  const { enabledSetups, settings, setupExpectancy, watchlist, liveBehavior } = useTrading();
   const [symbolsText, setSymbolsText] = useState(
     symbolsToField(CURATED_UNIVERSES.find((u) => u.id === 'full')!.symbols)
   );
@@ -156,6 +156,7 @@ export default function UniverseScanScreen() {
         spyCandles: spy.candles,
         qqqCandles: qqq.candles,
         earningsBlackout,
+        gates: liveBehavior.gates,
         expectancy,
       });
       setResult(scan);
