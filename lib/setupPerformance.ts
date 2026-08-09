@@ -1,4 +1,5 @@
 import { SetupExpectancy } from '@/lib/expectancy';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import { barsUpTo } from '@/lib/indicators';
 import { evaluateSetupRules, MIN_SETUP_PASS_RATE, setupSignalPasses } from '@/lib/rules';
 import { levelsForSetup } from '@/lib/setupLevels';
@@ -13,8 +14,13 @@ export type RecentSetupPerf = {
   score: number;
 };
 
-const LOOKBACK = 28;
-const FORWARD = 5;
+/** ~6 months of sessions — Desk fetches ~400 calendar days of EOD. */
+export const RECENT_PERF_LOOKBACK = 120;
+export const RECENT_PERF_FORWARD = 5;
+/** Below this, recent edge is treated as noise (score forced to 0). */
+export const RECENT_PERF_MIN_SAMPLES = 4;
+/** Signals needed before recent edge gets full confidence weight. */
+export const RECENT_PERF_FULL_SAMPLES = 12;
 
 function quoteFrom(symbol: string, candle: Candle, prev?: Candle): Quote {
   return {
@@ -35,7 +41,11 @@ function setupPasses(
   symbol: string,
   history: Candle[],
   spyHistory: Candle[],
-  options?: { qqqCandles?: Candle[] }
+  options?: {
+    qqqCandles?: Candle[];
+    earningsDates?: string[];
+    earningsCalendarStatus?: EarningsFetchStatus;
+  }
 ): boolean {
   if (history.length < 40) return false;
   const levels = levelsForSetup(setup, history);
@@ -52,15 +62,16 @@ function setupPasses(
   const prev = history[history.length - 2];
   // Date-based truncation — index slicing could leak future QQQ bars.
   const qqqHistory = barsUpTo(options?.qqqCandles ?? [], candle.time);
+  const hasCalendar = options?.earningsDates != null;
   const results = evaluateSetupRules(setup, {
     item,
     quote: quoteFrom(symbol, candle, prev),
     candles: history,
     spyCandles: spyHistory,
     qqqCandles: qqqHistory,
-    // Omit earnings calendar: the live near-term window is not point-in-time
-    // for this lookback (past report days are absent; verified-empty [] would
-    // zero every signal). Soft-unknown keeps earnings_clear out of the score.
+    earningsDates: options?.earningsDates,
+    earningsCalendarStatus: options?.earningsCalendarStatus,
+    asOfTime: candle.time,
     news: [],
     session: {
       phase: 'rth',
@@ -69,15 +80,21 @@ function setupPasses(
       detail: 'perf',
     },
   });
+  const skip = ['session_tradable', 'no_negative_catalyst'];
+  // Without a point-in-time calendar, leave earnings soft-unknown (do not
+  // score the live near-term-only list against historical bars).
+  if (!hasCalendar) skip.push('earnings_clear');
   return setupSignalPasses(setup, results, {
     minPassRate: MIN_SETUP_PASS_RATE,
-    skipCheckIds: ['session_tradable', 'no_negative_catalyst', 'earnings_clear'],
+    skipCheckIds: skip,
   }).pass;
 }
 
 /**
- * Lightweight recent performance for each setup on this symbol:
+ * Recent performance for each setup on this symbol:
  * when the setup would have fired, measure forward move vs stop distance (~R).
+ * Tiny samples (< RECENT_PERF_MIN_SAMPLES) score as 0 so noise cannot steer
+ * Desk ranking / Strong edge.
  */
 export function scoreRecentSetupPerformance(input: {
   symbol: string;
@@ -85,10 +102,13 @@ export function scoreRecentSetupPerformance(input: {
   candles: Candle[];
   spyCandles: Candle[];
   qqqCandles?: Candle[];
+  /** Wide historical calendar (preferred). Omit to skip earnings in the replay. */
+  earningsDates?: string[];
+  earningsCalendarStatus?: EarningsFetchStatus;
 }): RecentSetupPerf[] {
   const { symbol, setups, candles, spyCandles } = input;
-  const end = candles.length - FORWARD - 1;
-  const start = Math.max(55, end - LOOKBACK);
+  const end = candles.length - RECENT_PERF_FORWARD - 1;
+  const start = Math.max(55, end - RECENT_PERF_LOOKBACK);
 
   return setups.map((setup) => {
     const forwards: number[] = [];
@@ -101,6 +121,8 @@ export function scoreRecentSetupPerformance(input: {
       if (
         !setupPasses(setup, symbol, history, spyHistory, {
           qqqCandles: input.qqqCandles,
+          earningsDates: input.earningsDates,
+          earningsCalendarStatus: input.earningsCalendarStatus,
         })
       )
         continue;
@@ -108,7 +130,7 @@ export function scoreRecentSetupPerformance(input: {
       const levels = levelsForSetup(setup, history);
       const entry = candles[i + 1]?.open ?? history[history.length - 1].close;
       const risk = Math.max(entry - levels.stop, entry * 0.01);
-      const future = candles.slice(i + 1, i + 1 + FORWARD);
+      const future = candles.slice(i + 1, i + 1 + RECENT_PERF_FORWARD);
       let exit = future[future.length - 1]?.close ?? entry;
       let reasonR = (exit - entry) / risk;
       for (const bar of future) {
@@ -129,9 +151,10 @@ export function scoreRecentSetupPerformance(input: {
       ? forwards.reduce((a, b) => a + b, 0) / forwards.length
       : null;
     const hitRate = signals ? hits / signals : null;
-    const confidence = Math.min(1, signals / 6);
+    const confidence = Math.min(1, signals / RECENT_PERF_FULL_SAMPLES);
+    // Under-powered samples are noise — neutral score, not a fake edge.
     const score =
-      signals === 0
+      signals < RECENT_PERF_MIN_SAMPLES
         ? 0
         : (avgForwardR ?? 0) * (0.5 + 0.5 * confidence) + (hitRate ?? 0) * 0.25;
 
@@ -159,7 +182,14 @@ export function blendSetupScores(
       const journalScore = j?.score ?? 0;
       const recentScore = r?.score ?? 0;
       const journalWeight = j && j.sampleSize > 0 ? Math.min(0.55, 0.2 + j.sampleSize / 20) : 0;
-      const recentWeight = r && r.sampleSize > 0 ? 1 - journalWeight : journalWeight > 0 ? 0 : 1;
+      const recentUsable = Boolean(r && r.sampleSize >= RECENT_PERF_MIN_SAMPLES);
+      // Tiny recent samples get no weight even when the journal is empty.
+      const recentWeight = recentUsable
+        ? Math.min(
+            1 - journalWeight,
+            0.2 + 0.8 * Math.min(1, r!.sampleSize / RECENT_PERF_FULL_SAMPLES)
+          )
+        : 0;
       const score =
         journalWeight + recentWeight === 0
           ? 0

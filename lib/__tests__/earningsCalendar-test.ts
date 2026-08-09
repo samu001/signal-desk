@@ -2,6 +2,7 @@ import {
   earningsFailClosedDetail,
   fetchEarningsDates,
   fetchEarningsWindow,
+  pickNearestEarnings,
   summarizeEarningsFetches,
   type EarningsFetchResult,
 } from '@/lib/finnhub';
@@ -302,14 +303,30 @@ AAPL,Apple,2024-08-01,2024-06-30,1.6,USD`;
   });
 });
 
-describe('fetchEarningsWindow (live Desk near-term)', () => {
+describe('pickNearestEarnings', () => {
+  it('picks the closest date to asOf, not the oldest in a wide window', () => {
+    const w = pickNearestEarnings(
+      ['2025-01-15', '2025-04-20', '2025-07-18', '2025-10-12'],
+      '2025-07-01'
+    );
+    expect(w?.date).toBe('2025-07-18');
+    expect(w?.blocked).toBe(false);
+  });
+
+  it('flags ±1 day blackout', () => {
+    const w = pickNearestEarnings(['2025-08-08'], '2025-08-09');
+    expect(w?.blocked).toBe(true);
+  });
+});
+
+describe('fetchEarningsWindow (live Desk lookback)', () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
     global.fetch = originalFetch;
   });
 
-  it('remaps provider empty → ok so verified-clear does not fail-closed', async () => {
+  it('keeps provider empty as fail-closed on the wide lookback window', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('finnhub.io') && url.includes('calendar/earnings')) {
@@ -324,10 +341,35 @@ describe('fetchEarningsWindow (live Desk near-term)', () => {
     }) as typeof fetch;
 
     const r = await fetchEarningsWindow('AAPL', 'fh-key');
-    expect(r.status).toBe('ok');
+    expect(r.status).toBe('empty');
     expect(r.dates).toEqual([]);
     expect(r.window).toBeNull();
-    expect(r.detail).toMatch(/No earnings in the near-term/i);
+  });
+
+  it('returns dates + nearest window when the calendar loads', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('finnhub.io') && url.includes('calendar/earnings')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({
+            earningsCalendar: [
+              { symbol: 'AAPL', date: '2025-01-30' },
+              { symbol: 'AAPL', date: '2025-05-01' },
+              { symbol: 'AAPL', date: '2025-08-01' },
+            ],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const r = await fetchEarningsWindow('AAPL', 'fh-key');
+    expect(r.status).toBe('ok');
+    expect(r.dates).toEqual(['2025-01-30', '2025-05-01', '2025-08-01']);
+    expect(r.window).not.toBeNull();
   });
 
   it('returns no_key when no calendar providers are configured', async () => {

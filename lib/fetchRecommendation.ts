@@ -4,6 +4,7 @@ import {
   EarningsFetchStatus,
   fetchMarketBundle,
   MarketBundle,
+  pickNearestEarnings,
   shouldReuseMarketBundle,
 } from '@/lib/finnhub';
 import {
@@ -46,19 +47,13 @@ export type RecommendBatchResult = {
 };
 
 function earningsFromDates(dates: string[] | undefined): EarningsRisk | null {
-  if (!dates?.length) return null;
-  const next = dates[0];
-  const today = new Date();
-  const earnDate = new Date(`${next}T12:00:00Z`);
-  const daysUntil = Math.round((earnDate.getTime() - today.getTime()) / 86400000);
-  const blocked = daysUntil >= -1 && daysUntil <= 1;
+  const nearest = pickNearestEarnings(dates ?? []);
+  if (!nearest) return null;
   return {
-    date: next,
-    daysUntil,
-    blocked,
-    detail: blocked
-      ? `Earnings ${next} is inside the ±1 day blackout`
-      : `Next earnings ${next} (~${daysUntil}d)`,
+    date: nearest.date,
+    daysUntil: nearest.daysUntil,
+    blocked: nearest.blocked,
+    detail: nearest.detail,
   };
 }
 
@@ -96,8 +91,8 @@ function buildFromBundle(
     if (!candles.length || candleSource === 'none' || candleSource === 'demo') {
       return buildNoDataRecommendation(symbol, scopedWarnings, bundle.quotes[symbol] ?? null);
     }
-    // Near-term Desk calendar must not score historical setup performance —
-    // past earnings days are absent, and a verified-empty [] would zero every signal.
+    // Wide Desk calendar (lookback…+14d) supports point-in-time earnings in the
+    // recent-performance replay; omit calendar when fetch failed closed.
     const recent =
       setups.length && candles.length
         ? scoreRecentSetupPerformance({
@@ -106,6 +101,9 @@ function buildFromBundle(
             candles,
             spyCandles: bundle.candles.SPY ?? [],
             qqqCandles: bundle.candles.QQQ ?? [],
+            ...(earningsCalendarStatus === 'ok' && earningsDates.length
+              ? { earningsDates, earningsCalendarStatus }
+              : {}),
           })
         : [];
     const expectancy = setups.length ? blendSetupScores(setups, journal, recent) : undefined;

@@ -443,19 +443,62 @@ async function fetchFinnhubEarningsDates(
 }
 
 /**
- * Near-term earnings window for live Desk (−2…+14 calendar days).
- * Preserves fetch status so a verified-empty window is not confused with
- * no-key / fetch-error (those still fail closed on earnings_clear).
+ * Live Desk earnings lookback: covers recent setup-performance replay
+ * (~120 sessions) plus a short forward window for the blackout badge.
+ * Empty on this wide window fails closed (unlike a ±16d near-term probe).
+ */
+export const DESK_EARNINGS_LOOKBACK_DAYS = 400;
+export const DESK_EARNINGS_FORWARD_DAYS = 14;
+
+/**
+ * Earnings calendar for live Desk (lookback…+forward).
+ * Preserves fetch status so no-key / fetch-error / empty stay distinct.
  */
 export type EarningsWindowResult = {
   dates: string[];
   status: EarningsFetchStatus;
   detail: string;
-  /** Populated when at least one date falls in the near-term window. */
+  /** Nearest earnings date to today (for Desk badge / stance blackout). */
   window: EarningsWindow | null;
 };
 
-/** Next earnings date near today. Finnhub → FMP → Alpha Vantage → Yahoo. */
+/** Pick the earnings date closest to `asOf` (YYYY-MM-DD or Date). */
+export function pickNearestEarnings(
+  dates: string[],
+  asOf: Date | string = new Date()
+): EarningsWindow | null {
+  if (!dates.length) return null;
+  const asOfKey = typeof asOf === 'string' ? asOf.slice(0, 10) : asOf.toISOString().slice(0, 10);
+  const t = Date.parse(`${asOfKey}T12:00:00Z`);
+  if (!Number.isFinite(t)) return null;
+  let nearest: string | null = null;
+  let nearestAbs = Infinity;
+  let nearestSigned = 0;
+  for (const d of dates) {
+    const e = Date.parse(`${d}T12:00:00Z`);
+    if (!Number.isFinite(e)) continue;
+    const signed = (e - t) / 86400000;
+    const abs = Math.abs(signed);
+    if (abs < nearestAbs) {
+      nearestAbs = abs;
+      nearest = d;
+      nearestSigned = signed;
+    }
+  }
+  if (nearest == null) return null;
+  const daysUntil = Math.round(nearestSigned);
+  const blocked = nearestAbs <= 1;
+  return {
+    date: nearest,
+    daysUntil,
+    blocked,
+    detail: blocked
+      ? `Earnings ${nearest} is inside the ±1 day blackout`
+      : `Next/nearest earnings ${nearest} (~${daysUntil}d)`,
+  };
+}
+
+/** Desk earnings calendar. Finnhub → FMP → Alpha Vantage → Yahoo. */
 export async function fetchEarningsWindow(
   symbol: string,
   apiKey?: string,
@@ -475,8 +518,8 @@ export async function fetchEarningsWindow(
 
   try {
     const today = new Date();
-    const from = new Date(today.getTime() - 2 * 86400000);
-    const to = new Date(today.getTime() + 14 * 86400000);
+    const from = new Date(today.getTime() - DESK_EARNINGS_LOOKBACK_DAYS * 86400000);
+    const to = new Date(today.getTime() + DESK_EARNINGS_FORWARD_DAYS * 86400000);
     const fmt = (d: Date) => d.toISOString().slice(0, 10);
     const result = await fetchEarningsDates(
       upper,
@@ -487,16 +530,6 @@ export async function fetchEarningsWindow(
       alphaVantageApiKey,
       yahooProxy
     );
-    // Near-term empty is the normal verified-clear case (most names most weeks).
-    // Remap provider `empty` → `ok` + [] so earnings_clear can pass.
-    if (result.status === 'empty') {
-      return {
-        dates: [],
-        status: 'ok',
-        detail: 'No earnings in the near-term window (−2…+14d).',
-        window: null,
-      };
-    }
     if (result.status !== 'ok' || !result.dates.length) {
       return {
         dates: [],
@@ -505,22 +538,11 @@ export async function fetchEarningsWindow(
         window: null,
       };
     }
-    const next = result.dates[0];
-    const earnDate = new Date(`${next}T12:00:00Z`);
-    const daysUntil = Math.round((earnDate.getTime() - today.getTime()) / 86400000);
-    const blocked = daysUntil >= -1 && daysUntil <= 1;
     return {
       dates: result.dates,
       status: 'ok',
       detail: result.detail,
-      window: {
-        date: next,
-        daysUntil,
-        blocked,
-        detail: blocked
-          ? `Earnings ${next} is inside the ±1 day blackout`
-          : `Next earnings ${next} (~${daysUntil}d)`,
-      },
+      window: pickNearestEarnings(result.dates, today),
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
