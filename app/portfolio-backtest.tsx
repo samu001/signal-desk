@@ -168,17 +168,17 @@ const ENTRY_ENGINE_BLURBS: Record<
   playbook: {
     entry: 'Playbook setup rules only (one best setup per day).',
     exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
-    extras: 'Parameter lab on. Fastest.',
+    extras: 'Parameter lab on.',
   },
   playbook_desk: {
     entry: 'Playbook setup rules + Desk Soft/Strong allow (in/near buy zone).',
     exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
-    extras: 'Parameter lab on. Slower (Desk check each bar).',
+    extras: 'Parameter lab on.',
   },
   desk: {
     entry: 'Full Desk Soft/Strong replay (Playbook match + scores + in/near zone).',
     exitLevels: 'Desk card levels (~2R).',
-    extras: 'Parameter lab off. Slowest. Company/news neutralized.',
+    extras: 'Parameter lab off. Company/news neutralized.',
   },
 };
 
