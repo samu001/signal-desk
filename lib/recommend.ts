@@ -1,3 +1,4 @@
+import { PlaybookGateFlags } from '@/lib/backtestProfile';
 import { CandleSource } from '@/lib/candles';
 import {
   deskNewsHardFail,
@@ -859,6 +860,8 @@ export function buildRecommendation(input: {
   candles: Candle[];
   spyCandles: Candle[];
   qqqCandles?: Candle[];
+  /** Sector ETF history for the sector RS gate (soft-unknown when absent). */
+  sectorCandles?: Candle[];
   news?: NewsItem[];
   fundamentals?: FundamentalSnapshot | null;
   candleSource?: CandleSource;
@@ -870,6 +873,8 @@ export function buildRecommendation(input: {
   earningsDates?: string[];
   /** Why the calendar is missing/present (verified-empty `ok` vs fail-closed). */
   earningsCalendarStatus?: EarningsFetchStatus;
+  /** Override the Playbook accuracy gate stack (defaults to live gates). */
+  gates?: PlaybookGateFlags;
   /**
    * Historical replay mode: company/news are treated as neutral placeholders
    * (not point-in-time), so stance is driven mainly by technicals + Playbook match.
@@ -921,6 +926,7 @@ export function buildRecommendation(input: {
           candles,
           spyCandles: input.spyCandles,
           qqqCandles: input.qqqCandles,
+          sectorCandles: input.sectorCandles,
           news: historical ? [] : input.news ?? [],
           earningsDates:
             input.earningsDates ??
@@ -936,6 +942,7 @@ export function buildRecommendation(input: {
                 : undefined),
           historicalMode: historical,
           expectancy: input.expectancy,
+          gates: input.gates,
         })
       : [];
   // Top Playbook matches per ticker (up to 5), ranked by edge then pass rate.

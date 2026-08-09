@@ -70,6 +70,8 @@ export function matchPlaybookSetups(input: {
   candles: Candle[];
   spyCandles: Candle[];
   qqqCandles?: Candle[];
+  /** Sector ETF history for the sector RS gate (soft-unknown when absent). */
+  sectorCandles?: Candle[];
   news?: NewsItem[];
   session?: SessionInfo;
   /** YYYY-MM-DD earnings dates for ±1 day blackout. */
@@ -104,6 +106,7 @@ export function matchPlaybookSetups(input: {
       candles: input.candles,
       spyCandles: input.spyCandles,
       qqqCandles: input.qqqCandles,
+      sectorCandles: input.sectorCandles,
       news: input.news ?? [],
       earningsDates: input.earningsDates,
       earningsCalendarStatus: input.earningsCalendarStatus,
