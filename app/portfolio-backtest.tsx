@@ -3,6 +3,8 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -59,6 +61,8 @@ import {
   relativeStrength20,
   SelectablePickerRuleId,
 } from '@/lib/pickerLab';
+import { LevelTuning } from '@/lib/levelTuning';
+import { describeLiveBehavior, normalizeLiveBehavior } from '@/lib/liveBehavior';
 import { runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
 import { sectorEtfForSymbol } from '@/lib/playbookExtras';
 import { CapacityTrade } from '@/lib/portfolioCapacity';
@@ -142,6 +146,8 @@ type PortfolioSummary = {
   earningsSummary: ReturnType<typeof summarizeEarningsFetches> | null;
   /** Setup names included in this run. */
   setupsUsed: string[];
+  /** Setup ids included in this run (for "Use these settings live"). */
+  setupIdsUsed: string[];
   /** Accuracy extras active for this run (beyond de-dupe + ADV costs). */
   extrasLabel: string;
   /** Gate flags used for this run (for display). */
@@ -432,7 +438,8 @@ function verdictBannerStyles(tone: PickerVerdictTone) {
 }
 
 export default function PortfolioBacktestScreen() {
-  const { settings, setups, enabledSetups, updateSettings } = useTrading();
+  const { settings, setups, enabledSetups, updateSettings, updateLiveBehavior, setSetupEnabled } =
+    useTrading();
   const [symbolsText, setSymbolsText] = useState(DEFAULT_SYMBOLS);
   const [days, setDays] = useState('400');
   const [maxOpen, setMaxOpen] = useState('3');
@@ -670,6 +677,52 @@ export default function PortfolioBacktestScreen() {
     const base = perSymbolMode === 'capped' ? cappedView.cappedRows : effectiveRows;
     return filterAndSortSymbolRows(base, coverageFilter, resultFilter, symbolSort);
   }, [summary, cappedView, effectiveRows, perSymbolMode, coverageFilter, resultFilter, symbolSort]);
+
+  /** What "Use these settings live" would persist, from this run + tapped exit variant. */
+  const pendingLiveConfig = useMemo(() => {
+    if (!summary) return null;
+    const variant = activeParamId
+      ? summary.paramSweep?.uncappedByVariant.find((v) => v.variant.id === activeParamId)?.variant
+      : null;
+    const exitTuning: LevelTuning =
+      variant && !variant.isProduction && variant.tuning ? { ...variant.tuning } : {};
+    return normalizeLiveBehavior({
+      entryEngine: summary.entryEngine,
+      gates: { ...summary.gates },
+      stopCooldownBars: summary.stopCooldownBars,
+      maxOpenPositions: summary.maxOpen,
+      exitTuning,
+    });
+  }, [summary, activeParamId]);
+
+  const applyRunToLive = () => {
+    if (!summary || !pendingLiveConfig) return;
+    const usedIds = new Set(summary.setupIdsUsed);
+    const detail =
+      `Dashboard / Desk signals will use:\n${describeLiveBehavior(pendingLiveConfig)}.\n\n` +
+      `Playbook setups will be toggled to match this run (${summary.setupsUsed.join(', ') || 'none'}).`;
+    const doApply = () => {
+      updateLiveBehavior(pendingLiveConfig);
+      for (const s of setups) {
+        setSetupEnabled(s.id, usedIds.has(s.id));
+      }
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('Live behavior updated. Applies on the next Refresh signals.');
+      } else {
+        Alert.alert('Live behavior updated', 'Applies on the next Refresh signals.');
+      }
+    };
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(`Use these settings live?\n\n${detail}`)) {
+        doApply();
+      }
+      return;
+    }
+    Alert.alert('Use these settings live?', detail, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Apply', onPress: doApply },
+    ]);
+  };
 
   const run = async () => {
     if (!runSetups.length) {
@@ -1116,6 +1169,7 @@ export default function PortfolioBacktestScreen() {
         excludedSymbols: excludedSymbolCount,
         earningsSummary,
         setupsUsed: runSetups.map((s) => s.name),
+        setupIdsUsed: runSetups.map((s) => s.id),
         extrasLabel,
         gates: { ...gates },
         stopCooldownBars,
@@ -1535,6 +1589,20 @@ export default function PortfolioBacktestScreen() {
             !summary.earningsSummary.anyBlocked &&
             summary.earningsSummary.ok > 0 ? (
               <Text style={styles.riskNote}>{summary.earningsSummary.headline}</Text>
+            ) : null}
+
+            {pendingLiveConfig ? (
+              <View style={styles.applyLiveBox}>
+                <Text style={styles.applyLiveTitle}>Like this combination?</Text>
+                <Text style={styles.applyLiveBody}>
+                  Apply it to the live Dashboard: {describeLiveBehavior(pendingLiveConfig)}. Setups
+                  toggle to match this run.
+                  {activeParam
+                    ? ` Exit variant "${activeParam.label}" from the sweep is included.`
+                    : ' Tap an exit variant below first to carry it over too.'}
+                </Text>
+                <Button label="Use these settings live" variant="ghost" onPress={applyRunToLive} />
+              </View>
             ) : null}
 
             {buyingPower && buyingPowerNeedsWarning(buyingPower) && dollarPnL?.scaled ? (
@@ -2572,6 +2640,24 @@ const styles = StyleSheet.create({
     borderColor: palette.danger,
     borderRadius: 12,
     padding: spacing.md,
+  },
+  applyLiveBox: {
+    backgroundColor: palette.mossSoft,
+    borderWidth: 1,
+    borderColor: palette.moss,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 8,
+  },
+  applyLiveTitle: {
+    fontWeight: '700',
+    color: palette.ink,
+    fontSize: 14,
+  },
+  applyLiveBody: {
+    color: palette.ink,
+    fontSize: 13,
+    lineHeight: 19,
   },
   losingBannerText: {
     color: palette.danger,
