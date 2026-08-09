@@ -161,6 +161,44 @@ type PortfolioSummary = {
  */
 type EntryEngine = 'playbook' | 'playbook_desk' | 'desk';
 
+const ENTRY_ENGINE_BLURBS: Record<
+  EntryEngine,
+  { entry: string; exitLevels: string; extras: string }
+> = {
+  playbook: {
+    entry: 'Playbook setup rules only (one best setup per day).',
+    exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
+    extras: 'Parameter lab on.',
+  },
+  playbook_desk: {
+    entry: 'Playbook setup rules + Desk Soft/Strong allow (in/near buy zone).',
+    exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
+    extras: 'Parameter lab on.',
+  },
+  desk: {
+    entry: 'Full Desk Soft/Strong replay (Playbook match + scores + in/near zone).',
+    exitLevels: 'Desk card levels (~2R).',
+    extras: 'Parameter lab off. Company/news neutralized.',
+  },
+};
+
+function EntryEngineBlurb({ engine }: { engine: EntryEngine }) {
+  const b = ENTRY_ENGINE_BLURBS[engine];
+  return (
+    <View style={styles.engineBlurb}>
+      <Text style={styles.setupPickerSub}>
+        <Text style={styles.engineBlurbKey}>Entry: </Text>
+        {b.entry}
+      </Text>
+      <Text style={styles.setupPickerSub}>
+        <Text style={styles.engineBlurbKey}>Exit levels: </Text>
+        {b.exitLevels}
+      </Text>
+      <Text style={styles.setupPickerSub}>{b.extras}</Text>
+    </View>
+  );
+}
+
 type PerSymbolMode = 'all' | 'capped';
 
 type CoverageFilter = 'all' | 'ok' | 'issues';
@@ -1229,13 +1267,7 @@ export default function PortfolioBacktestScreen() {
           <View style={styles.setupPickerHead}>
             <View style={styles.setupPickerTitleCol}>
               <Text style={styles.setupPickerTitle}>Entry engine</Text>
-              <Text style={styles.setupPickerSub}>
-                {entryEngine === 'desk'
-                  ? 'Full Desk Soft/Strong replay — Desk levels for exits; company/news neutralized. Parameter lab off. Slower.'
-                  : entryEngine === 'playbook_desk'
-                    ? 'Playbook rules + Desk Soft/Strong gate (like the live Dashboard). Exits stay Playbook structure levels — parameter lab works. Slower.'
-                    : 'Combined Playbook rules — one best setup per day, structure-based exits.'}
-              </Text>
+              <EntryEngineBlurb engine={entryEngine} />
             </View>
           </View>
           <View style={styles.engineChipRow}>
@@ -2367,6 +2399,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingBottom: 12,
   },
+  engineBlurb: { gap: 2, marginTop: 2 },
+  engineBlurbKey: { fontWeight: '700', color: palette.ink },
   gateLabelCol: { flex: 1, gap: 2 },
   gateHint: { color: palette.muted, fontSize: 11, lineHeight: 14 },
   setupCheckRow: {
