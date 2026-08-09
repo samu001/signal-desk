@@ -76,3 +76,56 @@ export const DEFAULT_LIVE_GATES: PlaybookGateFlags = {
   sectorRs: false,
   volatility: false,
 };
+
+/** Portfolio UI default: Must + live earnings blackout (cooldown off). */
+export const DEFAULT_PORTFOLIO_GATES: PlaybookGateFlags = {
+  ...PROFILE_MUST.gates,
+  earningsBlackout: true,
+};
+
+/** Human-readable list of active accuracy extras (beyond de-dupe + costs). */
+export function describeActiveExtras(
+  gates: PlaybookGateFlags,
+  stopCooldownBars: number
+): string[] {
+  const bits: string[] = [];
+  if (gates.earningsBlackout) bits.push('earnings blackout');
+  if (gates.marketRegime) bits.push('market regime');
+  if (gates.weeklyTrend) bits.push('weekly trend');
+  if (gates.sectorRs) bits.push('sector RS');
+  if (gates.volatility) bits.push('volatility band');
+  if (stopCooldownBars > 0) {
+    bits.push(
+      `${stopCooldownBars}-day stop cooldown`
+    );
+  }
+  return bits;
+}
+
+export function isAll8Extras(
+  gates: PlaybookGateFlags,
+  stopCooldownBars: number
+): boolean {
+  return (
+    gates.marketRegime &&
+    gates.earningsBlackout &&
+    gates.weeklyTrend &&
+    gates.sectorRs &&
+    gates.volatility &&
+    stopCooldownBars === PROFILE_ALL8.stopCooldownBars
+  );
+}
+
+export function isDefaultPortfolioExtras(
+  gates: PlaybookGateFlags,
+  stopCooldownBars: number
+): boolean {
+  return (
+    !gates.marketRegime &&
+    gates.earningsBlackout &&
+    !gates.weeklyTrend &&
+    !gates.sectorRs &&
+    !gates.volatility &&
+    stopCooldownBars === 0
+  );
+}

@@ -13,7 +13,7 @@ import {
 import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
-import { PROFILE_MUST } from '@/lib/backtestProfile';
+import { PROFILE_MUST, PROFILE_ALL8, PlaybookGateFlags, DEFAULT_PORTFOLIO_GATES, describeActiveExtras, isAll8Extras, isDefaultPortfolioExtras } from '@/lib/backtestProfile';
 import { costsForSymbol, slippageBpsLabel } from '@/lib/backtestCosts';
 import {
   analyzeBuyingPower,
@@ -50,6 +50,7 @@ import {
   SelectablePickerRuleId,
 } from '@/lib/pickerLab';
 import { runCombinedPlaybookBacktest } from '@/lib/playbookCombined';
+import { sectorEtfForSymbol } from '@/lib/playbookExtras';
 import { CapacityTrade } from '@/lib/portfolioCapacity';
 import {
   SETUP_ATTRIBUTION_MIN_N,
@@ -60,6 +61,7 @@ import {
 } from '@/lib/setupAttribution';
 import { Candle } from '@/types/trading';
 
+const DEFAULT_STOP_COOLDOWN = PROFILE_ALL8.stopCooldownBars;
 /** Same roster as scripts/run-deep-backtest.ts — picked on demonstrated combined R. */
 const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
 
@@ -130,6 +132,11 @@ type PortfolioSummary = {
   earningsSummary: ReturnType<typeof summarizeEarningsFetches> | null;
   /** Setup names included in this run. */
   setupsUsed: string[];
+  /** Accuracy extras active for this run (beyond de-dupe + ADV costs). */
+  extrasLabel: string;
+  /** Gate flags used for this run (for display). */
+  gates: PlaybookGateFlags;
+  stopCooldownBars: number;
   warnings: string[];
 };
 
@@ -389,6 +396,10 @@ export default function PortfolioBacktestScreen() {
   /** Post-constraint attribution lens — Taken answers "what got through". */
   const [setupAttrLens, setSetupAttrLens] = useState<'taken' | 'all'>('taken');
   const [perSymbolFiltersOpen, setPerSymbolFiltersOpen] = useState(false);
+  /** Optional All-8 accuracy extras on top of Must (de-dupe + ADV costs). */
+  const [gates, setGates] = useState<PlaybookGateFlags>({ ...DEFAULT_PORTFOLIO_GATES });
+  const [stopCooldownBars, setStopCooldownBars] = useState(0);
+  const [gatesOpen, setGatesOpen] = useState(false);
 
   useEffect(() => {
     if (selectedSetupIds != null || !setups.length) return;
@@ -403,6 +414,27 @@ export default function PortfolioBacktestScreen() {
   const setupSelectionMatchesPlaybook =
     runSetups.length === enabledSetups.length &&
     enabledSetups.every((s) => runSetups.some((r) => r.id === s.id));
+
+  const extrasPreview = useMemo(
+    () => describeActiveExtras(gates, stopCooldownBars),
+    [gates, stopCooldownBars]
+  );
+  const usingDefaultExtras = isDefaultPortfolioExtras(gates, stopCooldownBars);
+  const usingAll8Extras = isAll8Extras(gates, stopCooldownBars);
+
+  const toggleGate = (key: keyof PlaybookGateFlags) => {
+    setGates((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const applyMustEarningsPreset = () => {
+    setGates({ ...DEFAULT_PORTFOLIO_GATES });
+    setStopCooldownBars(0);
+  };
+
+  const applyAll8Preset = () => {
+    setGates({ ...PROFILE_ALL8.gates });
+    setStopCooldownBars(PROFILE_ALL8.stopCooldownBars);
+  };
 
   const toggleSetupId = (id: string) => {
     setSelectedSetupIds((prev) => {
@@ -654,25 +686,52 @@ export default function PortfolioBacktestScreen() {
 
       const rows: SymbolRow[] = [];
       const usableTrades: PickerTrade[] = [];
-      const candlesBySymbol = new Map<string, typeof spy.candles>();
+      const candlesBySymbol = new Map<string, Candle[]>();
       const earningsBySymbol = new Map<string, EarningsFetchResult>();
-      // Must realism + live earnings blackout (parity with Desk / DEFAULT_LIVE_GATES).
-      // Per-symbol tiered friction from trailing ADV (not hardcoded symbol lists).
+      // Must base (de-dupe) + ADV-tiered costs + optional All-8 extras from toggles.
       const portfolioProfile = {
         ...PROFILE_MUST,
-        gates: { ...PROFILE_MUST.gates, earningsBlackout: true },
-        description: `${PROFILE_MUST.description} Plus earnings blackout (live Desk parity). Tiered slippage by trailing ADV.`,
+        gates: { ...gates },
+        stopCooldownBars,
+        description: [
+          PROFILE_MUST.description,
+          'Tiered slippage by trailing ADV.',
+          ...describeActiveExtras(gates, stopCooldownBars).map((x) => `+ ${x}`),
+        ].join(' '),
       };
+      const extrasLabel = describeActiveExtras(gates, stopCooldownBars).join(', ') || 'none';
       const hasEarningsKey = Boolean(
         settings.finnhubApiKey?.trim() ||
           settings.fmpApiKey?.trim() ||
           settings.alphaVantageApiKey?.trim() ||
           settings.yahooProxyUrl?.trim()
       );
-      if (!hasEarningsKey) {
+      if (gates.earningsBlackout && !hasEarningsKey) {
         warnings.push(
-          'No Finnhub / FMP / Alpha Vantage / Yahoo proxy — earnings blackout fails closed on every symbol (expect ~0 trades). Add a key or Yahoo proxy in Settings.'
+          'No Finnhub / FMP / Alpha Vantage / Yahoo proxy — earnings blackout fails closed on every symbol (expect ~0 trades). Add a key or Yahoo proxy in Settings, or turn earnings blackout off.'
         );
+      }
+
+      // Prefetch sector ETF bars once when Sector RS is on (avoids inert unknown gate).
+      const sectorBars = new Map<string, Candle[]>();
+      if (gates.sectorRs) {
+        const etfs = [
+          ...new Set(
+            symbols
+              .map((s) => sectorEtfForSymbol(s))
+              .filter((e): e is string => Boolean(e))
+          ),
+        ];
+        for (const etf of etfs) {
+          setProgress(`Sector ETF ${etf}…`);
+          const etfBars = await fetchDailyCandlesResolved(etf, keys);
+          if (isLiveCandleSource(etfBars.source) && etfBars.candles.length >= 60) {
+            sectorBars.set(etf, etfBars.candles);
+          } else {
+            const msg = `${etf}: Sector RS history unavailable (${etfBars.source}, ${etfBars.candles.length} bars) — gate soft for mapped names.`;
+            if (!warnings.includes(msg)) warnings.push(msg);
+          }
+        }
       }
 
       const earningsFetches: EarningsFetchResult[] = [];
@@ -761,32 +820,38 @@ export default function PortfolioBacktestScreen() {
           continue;
         }
         candlesBySymbol.set(symbol, bars.candles);
-        const firstBar = bars.candles[0]?.time;
-        const lastBar = bars.candles[bars.candles.length - 1]?.time;
-        const earnFrom = firstBar
-          ? new Date(firstBar * 1000).toISOString().slice(0, 10)
-          : new Date(Date.now() - requestedDays * 86400000).toISOString().slice(0, 10);
-        const earnTo = lastBar
-          ? new Date(lastBar * 1000 + 2 * 86400000).toISOString().slice(0, 10)
-          : new Date().toISOString().slice(0, 10);
-        setProgress(`Earnings ${symbol} (${rows.length + 1}/${symbols.length})…`);
-        const earnings = await fetchEarningsDates(
-          symbol,
-          settings.finnhubApiKey || undefined,
-          earnFrom,
-          earnTo,
-          settings.fmpApiKey || undefined,
-          settings.alphaVantageApiKey || undefined,
-          settings.yahooProxyUrl?.trim()
-            ? { url: settings.yahooProxyUrl, token: settings.yahooProxyToken || undefined }
-            : undefined
-        );
-        earningsBySymbol.set(symbol, earnings);
-        earningsFetches.push(earnings);
-        if (earnings.status !== 'ok') {
-          notes.push(earnings.detail);
+
+        let earnings: EarningsFetchResult | null = null;
+        if (gates.earningsBlackout) {
+          const firstBar = bars.candles[0]?.time;
+          const lastBar = bars.candles[bars.candles.length - 1]?.time;
+          const earnFrom = firstBar
+            ? new Date(firstBar * 1000).toISOString().slice(0, 10)
+            : new Date(Date.now() - requestedDays * 86400000).toISOString().slice(0, 10);
+          const earnTo = lastBar
+            ? new Date(lastBar * 1000 + 2 * 86400000).toISOString().slice(0, 10)
+            : new Date().toISOString().slice(0, 10);
+          setProgress(`Earnings ${symbol} (${rows.length + 1}/${symbols.length})…`);
+          earnings = await fetchEarningsDates(
+            symbol,
+            settings.finnhubApiKey || undefined,
+            earnFrom,
+            earnTo,
+            settings.fmpApiKey || undefined,
+            settings.alphaVantageApiKey || undefined,
+            settings.yahooProxyUrl?.trim()
+              ? { url: settings.yahooProxyUrl, token: settings.yahooProxyToken || undefined }
+              : undefined
+          );
+          earningsBySymbol.set(symbol, earnings);
+          earningsFetches.push(earnings);
+          if (earnings.status !== 'ok') {
+            notes.push(earnings.detail);
+          }
         }
 
+        const etf = sectorEtfForSymbol(symbol);
+        const sectorCandles = etf ? sectorBars.get(etf) : undefined;
         const symbolCosts = costsForSymbol(symbol, bars.candles);
         const combined = runCombinedPlaybookBacktest({
           symbol,
@@ -794,8 +859,9 @@ export default function PortfolioBacktestScreen() {
           candles: bars.candles,
           spyCandles: spy.candles,
           qqqCandles: qqq.candles,
-          earningsDates: earnings.dates,
-          earningsCalendarStatus: earnings.status,
+          sectorCandles,
+          earningsDates: earnings?.dates,
+          earningsCalendarStatus: earnings?.status,
           sourceLabel: bars.source,
           profile: { ...portfolioProfile, costs: symbolCosts },
         });
@@ -820,8 +886,17 @@ export default function PortfolioBacktestScreen() {
           );
         }
         rowNotes.push(`Slippage tier: ${slippageBpsLabel(symbol, bars.candles)} (ADV).`);
-        if (earnings.status === 'ok') {
+        if (earnings?.status === 'ok') {
           rowNotes.push(`Earnings calendar: ${earnings.dates.length} dates in window.`);
+        }
+        if (gates.sectorRs) {
+          rowNotes.push(
+            etf
+              ? sectorCandles?.length
+                ? `Sector RS vs ${etf} (${sectorCandles.length} bars).`
+                : `Sector RS: ${etf} history missing — gate soft.`
+              : 'Sector RS: no sector ETF proxy for this symbol.'
+          );
         }
         rows.push({
           symbol,
@@ -832,7 +907,7 @@ export default function PortfolioBacktestScreen() {
           totalR: combined.totalR ?? 0,
           coverage,
           adjusted,
-          earningsStatus: earnings.status,
+          earningsStatus: earnings?.status,
           notes: rowNotes,
         });
       }
@@ -858,12 +933,14 @@ export default function PortfolioBacktestScreen() {
         .filter((r) => isUsableForTotals(r.coverage))
         .map((r) => {
           const earn = earningsBySymbol.get(r.symbol);
+          const etf = sectorEtfForSymbol(r.symbol);
           return {
             symbol: r.symbol,
             candles: candlesBySymbol.get(r.symbol)!,
-            earningsDates: earn?.dates ?? [],
-            earningsCalendarStatus: earn?.status,
+            earningsDates: gates.earningsBlackout ? earn?.dates : undefined,
+            earningsCalendarStatus: gates.earningsBlackout ? earn?.status : undefined,
             costs: costsForSymbol(r.symbol, candlesBySymbol.get(r.symbol)),
+            sectorCandles: etf ? sectorBars.get(etf) : undefined,
           };
         })
         .filter((t) => t.candles);
@@ -898,6 +975,9 @@ export default function PortfolioBacktestScreen() {
         excludedSymbols: excludedSymbolCount,
         earningsSummary,
         setupsUsed: runSetups.map((s) => s.name),
+        extrasLabel,
+        gates: { ...gates },
+        stopCooldownBars,
         warnings,
       });
     } finally {
@@ -915,7 +995,7 @@ export default function PortfolioBacktestScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionTitle
           title="Portfolio backtest"
-          subtitle="Runs the combined Playbook across a symbol list with gap-aware + gap-beyond stop fills, ADV-tiered slip/spread (≥$100M 5+1 / ≥$20M 10+2 / else 20+5 bps), earnings blackout (live Desk parity), then a max-open-positions capital cap. R is converted to dollars using your account settings — dollars scale down when peak open notional would exceed the account."
+          subtitle="Runs the combined Playbook across a symbol list with gap-aware + gap-beyond stop fills, ADV-tiered slip/spread, then a max-open-positions capital cap. Must base is always on (de-dupe + ADV costs). Optional All-8 accuracy extras below. R converts to dollars from your account settings — dollars scale down when peak open notional would exceed the account."
         />
 
         <Field
@@ -1041,7 +1121,134 @@ export default function PortfolioBacktestScreen() {
           </Text>
         ) : null}
 
-        {!settings.finnhubApiKey?.trim() &&
+        <View style={styles.setupPicker}>
+          <Pressable
+            style={styles.setupPickerHead}
+            onPress={() => setGatesOpen((o) => !o)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: gatesOpen }}>
+            <View style={styles.setupPickerTitleCol}>
+              <Text style={styles.setupPickerTitle}>Accuracy extras</Text>
+              <Text style={styles.setupPickerSub}>
+                {usingAll8Extras
+                  ? 'All 8 · full realism stack'
+                  : usingDefaultExtras
+                    ? 'Must + earnings (default)'
+                    : extrasPreview.length
+                      ? extrasPreview.join(' · ')
+                      : 'Must only · no extras'}
+              </Text>
+            </View>
+            <FontAwesome
+              name={gatesOpen ? 'chevron-up' : 'chevron-down'}
+              size={14}
+              color={palette.muted}
+            />
+          </Pressable>
+          {gatesOpen ? (
+            <View style={styles.setupPickerBody}>
+              <View style={styles.setupQuickRow}>
+                <Pressable onPress={applyMustEarningsPreset} hitSlop={6}>
+                  <Text
+                    style={[
+                      styles.setupQuickLink,
+                      usingDefaultExtras && styles.setupQuickLinkOn,
+                    ]}>
+                    Must + earnings
+                  </Text>
+                </Pressable>
+                <Text style={styles.setupQuickDot}>·</Text>
+                <Pressable onPress={applyAll8Preset} hitSlop={6}>
+                  <Text
+                    style={[
+                      styles.setupQuickLink,
+                      usingAll8Extras && styles.setupQuickLinkOn,
+                    ]}>
+                    All 8
+                  </Text>
+                </Pressable>
+              </View>
+              <Text style={styles.gateAlwaysOn}>
+                Always on: de-dupe + ADV-tiered costs. Extras change which signals fire.
+              </Text>
+              {(
+                [
+                  {
+                    key: 'earningsBlackout' as const,
+                    label: 'Earnings blackout',
+                    hint: 'No new entries ±1 day around earnings',
+                  },
+                  {
+                    key: 'marketRegime' as const,
+                    label: 'Market regime',
+                    hint: 'SPY/QQQ above SMA50 with rising SMA20',
+                  },
+                  {
+                    key: 'weeklyTrend' as const,
+                    label: 'Weekly trend',
+                    hint: 'Weekly close above rising SMA10',
+                  },
+                  {
+                    key: 'sectorRs' as const,
+                    label: 'Sector RS',
+                    hint: 'Fetches sector ETFs; skips names without a proxy',
+                  },
+                  {
+                    key: 'volatility' as const,
+                    label: 'Volatility band',
+                    hint: 'ATR% roughly 0.9–5.5%',
+                  },
+                ] as const
+              ).map((row) => {
+                const on = gates[row.key];
+                return (
+                  <Pressable
+                    key={row.key}
+                    style={styles.setupCheckRow}
+                    onPress={() => toggleGate(row.key)}>
+                    <FontAwesome
+                      name={on ? 'check-square' : 'square-o'}
+                      size={18}
+                      color={on ? palette.moss : palette.muted}
+                    />
+                    <View style={styles.gateLabelCol}>
+                      <Text style={[styles.setupCheckName, !on && styles.setupCheckNameOff]}>
+                        {row.label}
+                      </Text>
+                      <Text style={styles.gateHint}>{row.hint}</Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+              <Pressable
+                style={styles.setupCheckRow}
+                onPress={() =>
+                  setStopCooldownBars((v) => (v > 0 ? 0 : DEFAULT_STOP_COOLDOWN))
+                }>
+                <FontAwesome
+                  name={stopCooldownBars > 0 ? 'check-square' : 'square-o'}
+                  size={18}
+                  color={stopCooldownBars > 0 ? palette.moss : palette.muted}
+                />
+                <View style={styles.gateLabelCol}>
+                  <Text
+                    style={[
+                      styles.setupCheckName,
+                      stopCooldownBars <= 0 && styles.setupCheckNameOff,
+                    ]}>
+                    Stop cooldown ({DEFAULT_STOP_COOLDOWN}d)
+                  </Text>
+                  <Text style={styles.gateHint}>
+                    After a stop-out, wait before re-entering that setup
+                  </Text>
+                </View>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+
+        {gates.earningsBlackout &&
+        !settings.finnhubApiKey?.trim() &&
         !settings.fmpApiKey?.trim() &&
         !settings.alphaVantageApiKey?.trim() &&
         !settings.yahooProxyUrl?.trim() ? (
@@ -1052,7 +1259,7 @@ export default function PortfolioBacktestScreen() {
               Alpha Vantage → Yahoo) before trusting portfolio results.
             </Text>
           </View>
-        ) : !settings.finnhubApiKey?.trim() ? (
+        ) : gates.earningsBlackout && !settings.finnhubApiKey?.trim() ? (
           <View style={styles.losingBanner}>
             <Text style={styles.losingBannerText}>
               No Finnhub key — earnings calendars use FMP
@@ -1082,8 +1289,8 @@ export default function PortfolioBacktestScreen() {
               title="Portfolio"
               subtitle={
                 summary.excludedSymbols
-                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out. Setups: ${summary.setupsUsed.join(', ') || 'none'}.`
-                  : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD). Setups: ${summary.setupsUsed.join(', ') || 'none'}.`
+                  ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out. Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
+                  : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD). Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
               }
             />
             <View style={styles.stats}>
@@ -1978,7 +2185,17 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   setupQuickLink: { color: palette.moss, fontWeight: '700', fontSize: 13 },
+  setupQuickLinkOn: { textDecorationLine: 'underline' },
   setupQuickDot: { color: palette.muted },
+  gateAlwaysOn: {
+    color: palette.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 14,
+    paddingBottom: 6,
+  },
+  gateLabelCol: { flex: 1, gap: 2 },
+  gateHint: { color: palette.muted, fontSize: 11, lineHeight: 14 },
   setupCheckRow: {
     flexDirection: 'row',
     alignItems: 'center',
