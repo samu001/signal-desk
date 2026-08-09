@@ -179,6 +179,12 @@ export function runBacktest(input: {
   stopCooldownBars?: number;
   gates?: PlaybookGateFlags;
   /**
+   * Optional Desk Soft/Strong gate: only enter when this returns true for the
+   * signal-bar timestamp (the close that fired). Fill still uses next-bar open.
+   * See collectDeskAllowSignalTimes.
+   */
+  allowEntryAtSignalTime?: (signalBarTime: number) => boolean;
+  /**
    * Parameter lab: exits-only stop/target overrides applied at the fill.
    * Undefined = production structure-based levels (unchanged behavior).
    */
@@ -212,6 +218,11 @@ export function runBacktestVariants(
     costs?: BacktestCostModel;
     stopCooldownBars?: number;
     gates?: PlaybookGateFlags;
+    /**
+     * Optional Desk Soft/Strong gate on the signal bar (see runBacktest).
+     * Shared across all exit variants — stance is evaluated once by the caller.
+     */
+    allowEntryAtSignalTime?: (signalBarTime: number) => boolean;
   },
   tunings: Array<LevelTuning | undefined>
 ): BacktestResult[] {
@@ -222,6 +233,7 @@ export function runBacktestVariants(
     input.stopCooldownBars != null && input.stopCooldownBars >= 0
       ? input.stopCooldownBars
       : DEFAULT_STOP_COOLDOWN_BARS;
+  const allowEntryAtSignalTime = input.allowEntryAtSignalTime;
   const warnings = [...(input.warnings ?? [])];
   const notes = [
     'Entries use next-bar open after a daily close signal.',
@@ -232,6 +244,11 @@ export function runBacktestVariants(
       stopCooldownBars === 1 ? '' : 's'
     } before re-entering this setup.`,
   ];
+  if (allowEntryAtSignalTime) {
+    notes.push(
+      'Desk Soft/Strong gate: Playbook signal only enters when Desk would allow Soft/Strong (in/near entry zone). Exits stay Playbook structure levels.'
+    );
+  }
   if (gates.marketRegime) {
     notes.push('Market regime gate: SPY/QQQ above 50-day MA with rising 20-day MA.');
   }
@@ -386,6 +403,7 @@ export function runBacktestVariants(
       gates,
     });
     if (!pass) continue;
+    if (allowEntryAtSignalTime && !allowEntryAtSignalTime(bar.time)) continue;
 
     const levels = levelsForSetup(setup, history);
     const next = candles[i + 1];

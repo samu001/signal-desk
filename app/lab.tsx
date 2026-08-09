@@ -26,7 +26,7 @@ const LAB_TOOLS = [
   {
     href: '/portfolio-backtest' as const,
     title: 'Portfolio backtest',
-    body: 'Multi-symbol run with a max open-position cap. Playbook rules or Desk Soft/Strong entries, plus optional All-8 accuracy extras. Best for capacity realism.',
+    body: 'Multi-symbol run with a max open-position cap. Playbook, Playbook+Desk gate, or full Desk Soft/Strong — plus optional All-8 accuracy extras. Best for capacity realism.',
     tone: 'ink' as const,
   },
   {

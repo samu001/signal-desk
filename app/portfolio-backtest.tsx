@@ -21,7 +21,10 @@ import {
   netLongR,
   slippageBpsLabel,
 } from '@/lib/backtestCosts';
-import { runDeskBacktest } from '@/lib/deskBacktest';
+import {
+  collectDeskAllowSignalTimes,
+  runDeskBacktest,
+} from '@/lib/deskBacktest';
 import {
   analyzeBuyingPower,
   buyingPowerNeedsWarning,
@@ -150,12 +153,13 @@ type PortfolioSummary = {
 };
 
 /**
- * How entries are generated. 'playbook' = combined Playbook rules (default).
- * 'desk' = Desk Soft/Strong stance replay (like the live Dashboard: Playbook
- * match + Desk confirmation + price in/near the entry zone; Desk levels for
- * exits; company/news neutralized in history).
+ * How entries are generated.
+ * - playbook: combined Playbook rules (default)
+ * - playbook_desk: Playbook rules + Desk Soft/Strong gate (Dashboard-like
+ *   confirmation; exits stay Playbook structure levels so parameter lab works)
+ * - desk: full Desk Soft/Strong stance replay with Desk levels for exits
  */
-type EntryEngine = 'playbook' | 'desk';
+type EntryEngine = 'playbook' | 'playbook_desk' | 'desk';
 
 type PerSymbolMode = 'all' | 'capped';
 
@@ -417,7 +421,7 @@ export default function PortfolioBacktestScreen() {
   const [gates, setGates] = useState<PlaybookGateFlags>({ ...DEFAULT_PORTFOLIO_GATES });
   const [stopCooldownBars, setStopCooldownBars] = useState(0);
   const [gatesOpen, setGatesOpen] = useState(false);
-  /** Entry engine: Playbook rules (default) or Desk Soft/Strong replay. */
+  /** Entry engine: Playbook, Playbook+Desk gate, or full Desk Soft/Strong replay. */
   const [entryEngine, setEntryEngine] = useState<EntryEngine>('playbook');
 
   useEffect(() => {
@@ -712,6 +716,8 @@ export default function PortfolioBacktestScreen() {
       const usableTrades: PickerTrade[] = [];
       const candlesBySymbol = new Map<string, Candle[]>();
       const earningsBySymbol = new Map<string, EarningsFetchResult>();
+      /** Desk Soft/Strong allow sets for Playbook+Desk gate (and its param sweep). */
+      const deskAllowBySymbol = new Map<string, Set<number>>();
       // Must base (de-dupe) + ADV-tiered costs + optional All-8 extras from toggles.
       const portfolioProfile = {
         ...PROFILE_MUST,
@@ -878,6 +884,7 @@ export default function PortfolioBacktestScreen() {
         const sectorCandles = etf ? sectorBars.get(etf) : undefined;
         const symbolCosts = costsForSymbol(symbol, bars.candles);
         const symbolTrades: PickerTrade[] = [];
+        let deskAllowSignalTimes: Set<number> | undefined;
         if (entryEngine === 'desk') {
           setProgress(`Desk replay ${symbol} (${rows.length + 1}/${symbols.length})…`);
           const desk = runDeskBacktest({
@@ -912,6 +919,22 @@ export default function PortfolioBacktestScreen() {
             });
           }
         } else {
+          if (entryEngine === 'playbook_desk') {
+            setProgress(`Desk gate ${symbol} (${rows.length + 1}/${symbols.length})…`);
+            deskAllowSignalTimes = collectDeskAllowSignalTimes({
+              symbol,
+              candles: bars.candles,
+              spyCandles: spy.candles,
+              qqqCandles: qqq.candles,
+              sectorCandles,
+              earningsDates: gates.earningsBlackout ? earnings?.dates : undefined,
+              earningsCalendarStatus: gates.earningsBlackout ? earnings?.status : undefined,
+              gates,
+              sourceLabel: bars.source,
+              setups: runSetups,
+              evalBars: bars.candles.length,
+            });
+          }
           const combined = runCombinedPlaybookBacktest({
             symbol,
             setups: runSetups,
@@ -923,6 +946,9 @@ export default function PortfolioBacktestScreen() {
             earningsCalendarStatus: earnings?.status,
             sourceLabel: bars.source,
             profile: { ...portfolioProfile, costs: symbolCosts },
+            allowEntryAtSignalTime: deskAllowSignalTimes
+              ? (t) => deskAllowSignalTimes!.has(t)
+              : undefined,
           });
           for (const t of combined.trades) {
             symbolTrades.push({
@@ -951,6 +977,10 @@ export default function PortfolioBacktestScreen() {
           rowNotes.push(
             'Desk replay: Soft/Strong stance + in/near entry zone; Desk levels for exits; company/news neutralized.'
           );
+        } else if (entryEngine === 'playbook_desk') {
+          rowNotes.push(
+            `Playbook + Desk gate: ${deskAllowSignalTimes?.size ?? 0} Soft/Strong signal days; Playbook structure exits.`
+          );
         }
         if (earnings?.status === 'ok') {
           rowNotes.push(`Earnings calendar: ${earnings.dates.length} dates in window.`);
@@ -976,6 +1006,9 @@ export default function PortfolioBacktestScreen() {
           earningsStatus: earnings?.status,
           notes: rowNotes,
         });
+        if (deskAllowSignalTimes && isUsableForTotals(coverage)) {
+          deskAllowBySymbol.set(symbol, deskAllowSignalTimes);
+        }
       }
 
       const usableSymbolCount = rows.filter((r) => isUsableForTotals(r.coverage)).length;
@@ -994,8 +1027,9 @@ export default function PortfolioBacktestScreen() {
       setActiveParamId(null);
 
       // Exit-parameter sweep over the same basket, under the same cap.
-      // Playbook engine only — exit tunings are Playbook structure levels,
-      // so sweeping them against Desk-level trades would be apples-to-oranges.
+      // Playbook engines only (plain + Desk-gated) — exit tunings are Playbook
+      // structure levels, so sweeping them against Desk-level trades would be
+      // apples-to-oranges.
       let paramSweep: ParameterSweepResult | null = null;
       const sweepTickers = (entryEngine === 'desk' ? [] : rows)
         .filter((r) => isUsableForTotals(r.coverage))
@@ -1009,6 +1043,7 @@ export default function PortfolioBacktestScreen() {
             earningsCalendarStatus: gates.earningsBlackout ? earn?.status : undefined,
             costs: costsForSymbol(r.symbol, candlesBySymbol.get(r.symbol)),
             sectorCandles: etf ? sectorBars.get(etf) : undefined,
+            deskAllowSignalTimes: deskAllowBySymbol.get(r.symbol),
           };
         })
         .filter((t) => t.candles);
@@ -1196,8 +1231,10 @@ export default function PortfolioBacktestScreen() {
               <Text style={styles.setupPickerTitle}>Entry engine</Text>
               <Text style={styles.setupPickerSub}>
                 {entryEngine === 'desk'
-                  ? 'Desk Soft/Strong replay — entries need Desk confirmation (like the live Dashboard); Desk levels for exits; company/news neutralized in history. Slower.'
-                  : 'Combined Playbook rules — one best setup per day, structure-based exits.'}
+                  ? 'Full Desk Soft/Strong replay — Desk levels for exits; company/news neutralized. Parameter lab off. Slower.'
+                  : entryEngine === 'playbook_desk'
+                    ? 'Playbook rules + Desk Soft/Strong gate (like the live Dashboard). Exits stay Playbook structure levels — parameter lab works. Slower.'
+                    : 'Combined Playbook rules — one best setup per day, structure-based exits.'}
               </Text>
             </View>
           </View>
@@ -1210,7 +1247,18 @@ export default function PortfolioBacktestScreen() {
                   styles.chipTextSm,
                   entryEngine === 'playbook' && styles.chipTextOn,
                 ]}>
-                Playbook (default)
+                Playbook
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setEntryEngine('playbook_desk')}
+              style={[styles.chipSm, entryEngine === 'playbook_desk' && styles.chipOn]}>
+              <Text
+                style={[
+                  styles.chipTextSm,
+                  entryEngine === 'playbook_desk' && styles.chipTextOn,
+                ]}>
+                Playbook + Desk gate
               </Text>
             </Pressable>
             <Pressable
@@ -1394,7 +1442,13 @@ export default function PortfolioBacktestScreen() {
                 (summary.excludedSymbols
                   ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out.`
                   : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD).`) +
-                ` Engine: ${summary.entryEngine === 'desk' ? 'Desk Soft/Strong' : 'Playbook'}. Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
+                ` Engine: ${
+                  summary.entryEngine === 'desk'
+                    ? 'Desk Soft/Strong'
+                    : summary.entryEngine === 'playbook_desk'
+                      ? 'Playbook + Desk gate'
+                      : 'Playbook'
+                }. Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
               }
             />
             <View style={styles.stats}>

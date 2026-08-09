@@ -210,6 +210,12 @@ export function runCombinedPlaybookBacktest(input: {
    * and picker priorities are recomputed from the tuned planned R:R.
    */
   levelTuning?: LevelTuning;
+  /**
+   * Optional Desk Soft/Strong gate on the Playbook signal bar. When set,
+   * Playbook entries only fill if Desk would allow Soft/Strong that day.
+   * Exits stay Playbook structure levels (parameter lab still applies).
+   */
+  allowEntryAtSignalTime?: (signalBarTime: number) => boolean;
 }): CombinedPlaybookResult {
   const profile = input.profile;
   const costs = profile?.costs ?? input.costs ?? DEFAULT_BACKTEST_COSTS;
@@ -237,6 +243,7 @@ export function runCombinedPlaybookBacktest(input: {
       stopCooldownBars,
       gates,
       levelTuning: input.levelTuning,
+      allowEntryAtSignalTime: input.allowEntryAtSignalTime,
     })
   );
 
@@ -285,6 +292,11 @@ export function runCombinedPlaybookBacktest(input: {
         : 'Combined playbook: at most one entry per day (highest entry-time priority wins).',
       'Same-day setup pick uses planned R:R + rule pass rate (not realized R).',
       'At most one open position per ticker — no pyramiding while a prior trade is still open.',
+      ...(input.allowEntryAtSignalTime
+        ? [
+            'Desk Soft/Strong gate: Playbook entries only when Desk would allow Soft/Strong (in/near zone). Exits stay Playbook structure levels.',
+          ]
+        : []),
       describeCostModel(costs),
       `Ticker cooldown after stop-out: ${stopCooldownBars} trading day${
         stopCooldownBars === 1 ? '' : 's'

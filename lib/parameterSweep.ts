@@ -55,6 +55,12 @@ export type SweepTicker = {
   costs?: BacktestCostModel;
   /** Sector ETF history when the sector RS gate is on. */
   sectorCandles?: Candle[];
+  /**
+   * Optional Desk Soft/Strong allow set (signal-bar timestamps). When set,
+   * Playbook entries only fill on those bars — same gate as the portfolio
+   * "Playbook + Desk gate" engine.
+   */
+  deskAllowSignalTimes?: Set<number>;
 };
 
 /** A combined-playbook trade tagged with its symbol for the pooled cap. */
@@ -156,6 +162,9 @@ export function runParameterSweep(input: {
           gates: input.gates,
           stopCooldownBars: input.stopCooldownBars,
           sourceLabel: 'parameter-sweep',
+          allowEntryAtSignalTime: ticker.deskAllowSignalTimes
+            ? (t) => ticker.deskAllowSignalTimes!.has(t)
+            : undefined,
         },
         tunings
       );
