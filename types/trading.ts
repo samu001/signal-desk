@@ -1,3 +1,5 @@
+import type { LevelTuning } from '@/lib/levelTuning';
+
 export type RuleCheckId =
   | 'above_sma_50'
   | 'above_sma_20'
@@ -92,6 +94,40 @@ export type Trade = {
   exitPrice: number | null;
 };
 
+/** Optional Playbook accuracy gates appended on top of each setup's own checks. */
+export type PlaybookGateFlags = {
+  marketRegime: boolean;
+  earningsBlackout: boolean;
+  weeklyTrend: boolean;
+  sectorRs: boolean;
+  volatility: boolean;
+};
+
+/**
+ * How live Desk entries are generated — mirrors the Portfolio backtest engines.
+ * - playbook: Playbook setup rules alone decide Soft/Strong (no Desk score gate).
+ * - playbook_desk: Playbook rules + Desk score/zone gate (production default).
+ * - desk: same gate as playbook_desk, but primary levels use the Desk blend.
+ */
+export type LiveEntryEngine = 'playbook' | 'playbook_desk' | 'desk';
+
+/**
+ * Live dashboard behavior — the same knobs the Portfolio backtest exposes,
+ * persisted in Settings and consumed by the live Desk signal pipeline. Find a
+ * combination you like in the Lab and apply it here (or via the backtest's
+ * "Use these settings live" button).
+ */
+export type LiveBehaviorConfig = {
+  entryEngine: LiveEntryEngine;
+  gates: PlaybookGateFlags;
+  /** Trading days after a stop-out before re-entering that symbol (0 = off). */
+  stopCooldownBars: number;
+  /** Cap on concurrent open + planned trades before Desk holds new entries (0 = no cap). */
+  maxOpenPositions: number;
+  /** Exits-only stop/target overrides ({} = production ~2R · min(2.5×ATR, 8%)). */
+  exitTuning: LevelTuning;
+};
+
 export type AppSettings = {
   accountSize: number;
   riskPercent: number;
@@ -119,6 +155,8 @@ export type AppSettings = {
   yahooProxyToken: string;
   marketBias: string;
   displayName: string;
+  /** Live dashboard signal behavior (entry engine, gates, exits, caps). */
+  liveBehavior: LiveBehaviorConfig;
 };
 
 export type Quote = {

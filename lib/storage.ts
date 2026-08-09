@@ -7,6 +7,7 @@ import {
   playbookCatalog,
   retiredSetupIds,
 } from '@/constants/seed';
+import { normalizeLiveBehavior } from '@/lib/liveBehavior';
 import { AppSettings, AppState, Setup, Trade, WatchlistItem } from '@/types/trading';
 
 const STORAGE_KEY = 'personal_trading_guide_v1';
@@ -71,7 +72,12 @@ export async function loadAppState(): Promise<AppState> {
 
     const parsed = JSON.parse(raw) as Partial<AppState>;
     return {
-      settings: { ...defaultSettings, ...(parsed.settings ?? {}) },
+      settings: {
+        ...defaultSettings,
+        ...(parsed.settings ?? {}),
+        // Legacy states lack liveBehavior (or carry partial shapes) — repair.
+        liveBehavior: normalizeLiveBehavior(parsed.settings?.liveBehavior),
+      },
       setups: migrateSetups(parsed.setups),
       watchlist: parsed.watchlist ?? defaultWatchlist,
       trades: parsed.trades ?? [],

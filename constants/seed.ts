@@ -1,3 +1,4 @@
+import { DEFAULT_LIVE_BEHAVIOR, normalizeLiveBehavior } from '@/lib/liveBehavior';
 import { AppSettings, Candle, FundamentalSnapshot, NewsItem, Setup, WatchlistItem } from '@/types/trading';
 
 export const defaultSettings: AppSettings = {
@@ -13,6 +14,8 @@ export const defaultSettings: AppSettings = {
   yahooProxyToken: '',
   marketBias: 'Neutral — wait for clean setups only.',
   displayName: 'Trader',
+  // Fresh copy — normalize builds a new object so the shared default is never mutated.
+  liveBehavior: normalizeLiveBehavior(DEFAULT_LIVE_BEHAVIOR),
 };
 
 /**
