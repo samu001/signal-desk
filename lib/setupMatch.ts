@@ -1,3 +1,4 @@
+import { PlaybookGateFlags } from '@/lib/backtestProfile';
 import { SetupExpectancy } from '@/lib/expectancy';
 import { EarningsFetchStatus } from '@/lib/finnhub';
 import { evaluateSetupRules, MIN_SETUP_PASS_RATE, setupSignalPasses } from '@/lib/rules';
@@ -36,6 +37,8 @@ export function matchPlaybookSetups(input: {
   /** When true, also skip news catalyst checks (Desk historical mode). */
   historicalMode?: boolean;
   expectancy?: Record<string, SetupExpectancy>;
+  /** Override live gate stack (defaults to earnings blackout only). */
+  gates?: PlaybookGateFlags;
 }): SetupMatch[] {
   const symbol = input.symbol.toUpperCase().trim();
   const session = input.session ?? getUsEquitySession();
@@ -63,6 +66,7 @@ export function matchPlaybookSetups(input: {
       earningsDates: input.earningsDates,
       earningsCalendarStatus: input.earningsCalendarStatus,
       session,
+      gates: input.gates,
     });
     const usable = results.filter((r) => !skip.has(r.id));
     const { pass, passRate } = setupSignalPasses(setup, results, {

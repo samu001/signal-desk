@@ -6,10 +6,16 @@ import { palette, spacing } from '@/constants/theme';
 
 const LAB_TOOLS = [
   {
+    href: '/universe-scan' as const,
+    title: 'Universe scan',
+    body: 'Given a ticker list, show which symbols match enabled Playbook setups today. Rules only — no Desk Soft/Strong.',
+    tone: 'primary' as const,
+  },
+  {
     href: '/backtest' as const,
     title: 'Setup / Playbook backtest',
     body: 'Test one setup or the combined Playbook on a single symbol. Best for rule tuning.',
-    tone: 'primary' as const,
+    tone: 'secondary' as const,
   },
   {
     href: '/desk-backtest' as const,
@@ -38,7 +44,7 @@ export default function LabScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         <SectionTitle
           title="Lab"
-          subtitle="Four backtest tools — pick by question, not by habit. All live under Playbook."
+          subtitle="Five Lab tools — pick by question, not by habit. All live under Playbook."
         />
 
         {LAB_TOOLS.map((tool) => (

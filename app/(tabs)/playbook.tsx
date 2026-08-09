@@ -26,7 +26,7 @@ export default function PlaybookScreen() {
           <Pressable style={styles.labCta}>
             <Text style={styles.labCtaTitle}>Lab</Text>
             <Text style={styles.labCtaBody}>
-              Setup, Desk, and portfolio backtests in one place →
+              Universe scan, backtests, and parameter lab →
             </Text>
           </Pressable>
         </Link>
