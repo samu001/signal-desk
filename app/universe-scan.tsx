@@ -38,6 +38,7 @@ export default function UniverseScanScreen() {
   const [skipped, setSkipped] = useState<SkippedTicker[]>([]);
   const [ranAt, setRanAt] = useState<string | null>(null);
   const [showUnmatched, setShowUnmatched] = useState(false);
+  const [expandedQuietSymbol, setExpandedQuietSymbol] = useState<string | null>(null);
 
   const activePresetId = matchingUniversePresetId(symbolsText);
   const watchlistSymbols = useMemo(
@@ -84,6 +85,7 @@ export default function UniverseScanScreen() {
     setSkipped([]);
     setRanAt(null);
     setShowUnmatched(false);
+    setExpandedQuietSymbol(null);
 
     try {
       const keys = {
@@ -331,11 +333,36 @@ export default function UniverseScanScreen() {
                   </Text>
                 </Pressable>
                 {showUnmatched
-                  ? unmatchedRows.map((row) => (
-                      <Text key={row.symbol} style={styles.quietRow}>
-                        {row.symbol}
-                      </Text>
-                    ))
+                  ? unmatchedRows.map((row) => {
+                      const expanded = expandedQuietSymbol === row.symbol;
+                      const blockers = row.matches
+                        .flatMap((match) => match.failedCheckDetails)
+                        .filter((detail, index, details) => details.indexOf(detail) === index);
+                      return (
+                        <Pressable
+                          key={row.symbol}
+                          onPress={() => setExpandedQuietSymbol(expanded ? null : row.symbol)}
+                          style={styles.quietRow}>
+                          <Text style={styles.quietSymbol}>
+                            {row.symbol} · {expanded ? '▾' : '▸'}
+                          </Text>
+                          {expanded ? (
+                            blockers.length ? (
+                              blockers.slice(0, 4).map((detail) => (
+                                <Text key={detail} style={styles.quietReason}>
+                                  • {detail}
+                                </Text>
+                              ))
+                            ) : (
+                              <Text style={styles.quietReason}>
+                                No shared hard filter was identified; open the Desk detail for the
+                                per-setup checks.
+                              </Text>
+                            )
+                          ) : null}
+                        </Pressable>
+                      );
+                    })
                   : null}
               </View>
             ) : null}
@@ -453,7 +480,9 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   quietTitle: { fontSize: 14, fontWeight: '700', color: palette.ink },
-  quietRow: { fontSize: 12.5, color: palette.muted, lineHeight: 18 },
+  quietRow: { gap: 3, paddingVertical: 2 },
+  quietSymbol: { fontSize: 12.5, color: palette.ink, fontWeight: '600', lineHeight: 18 },
+  quietReason: { fontSize: 12, color: palette.muted, lineHeight: 17 },
   skippedCard: {
     backgroundColor: palette.white,
     borderRadius: 16,

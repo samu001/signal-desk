@@ -18,7 +18,13 @@ import {
   sma,
 } from '@/lib/indicators';
 import { rewardToRisk } from '@/lib/positionSize';
-import { matchPlaybookSetups, rankMatchedSetups, SetupMatch } from '@/lib/setupMatch';
+import {
+  commonPlaybookBlockers,
+  matchPlaybookSetups,
+  PlaybookBlocker,
+  rankMatchedSetups,
+  SetupMatch,
+} from '@/lib/setupMatch';
 import { levelsForSetup } from '@/lib/setupLevels';
 import { Candle, FundamentalSnapshot, NewsItem, Quote, Setup } from '@/types/trading';
 
@@ -91,6 +97,8 @@ export type Recommendation = {
   news: NewsItem[];
   fundamentals: FundamentalSnapshot | null;
   matchedSetups: SetupMatch[];
+  /** Shared hard gates that explain why no enabled Playbook setup passed. */
+  playbookBlockers: PlaybookBlocker[];
   /** Top matching Playbook setups (up to 5), each with its own levels. */
   setupOptions: SetupOption[];
   bestSetupName: string | null;
@@ -810,6 +818,7 @@ export function buildNoDataRecommendation(
     news: [],
     fundamentals: null,
     matchedSetups: [],
+    playbookBlockers: [],
     setupOptions: [],
     bestSetupName: null,
     earnings: null,
@@ -912,6 +921,8 @@ export function buildRecommendation(input: {
       : [];
   // Top Playbook matches per ticker (up to 5), ranked by edge then pass rate.
   const matchedSetups = rankMatchedSetups(allMatches).slice(0, MAX_SETUP_OPTIONS);
+  const playbookBlockers =
+    matchedSetups.length === 0 && allMatches.length ? commonPlaybookBlockers(allMatches) : [];
   const setupOptions = buildSetupOptions({
     matches: matchedSetups,
     setups,
@@ -1154,6 +1165,7 @@ export function buildRecommendation(input: {
     news: historical ? [] : (input.news ?? []).slice(0, 6),
     fundamentals: historical ? null : input.fundamentals ?? null,
     matchedSetups,
+    playbookBlockers,
     setupOptions,
     bestSetupName: best?.setupName ?? null,
     earnings,

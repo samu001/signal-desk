@@ -4,7 +4,7 @@ import { EarningsFetchStatus } from '@/lib/finnhub';
 import { evaluateSetupRules, MIN_SETUP_PASS_RATE, setupSignalPasses } from '@/lib/rules';
 import { getUsEquitySession, SessionInfo } from '@/lib/session';
 import { levelsForSetup } from '@/lib/setupLevels';
-import { Candle, NewsItem, Quote, Setup, WatchlistItem } from '@/types/trading';
+import { Candle, NewsItem, Quote, RuleCheckId, Setup, WatchlistItem } from '@/types/trading';
 
 export type SetupMatch = {
   setupId: string;
@@ -16,10 +16,52 @@ export type SetupMatch = {
   passedChecks: string[];
   /** Human-readable auto-check labels that failed (Desk detail). */
   failedChecks: string[];
+  /** Human-readable reasons for failed/unknown checks, including data-gate failures. */
+  failedCheckDetails: string[];
 };
 
 /** In Desk confirmation, skip session so after-hours research still can match setups. */
 const SKIP_FOR_DESK = new Set(['session_tradable']);
+const SHARED_HARD_GATES = new Set<RuleCheckId>([
+  'earnings_clear',
+  'market_regime_ok',
+  'no_negative_catalyst',
+]);
+
+export type PlaybookBlocker = {
+  label: string;
+  detail: string;
+  affectedSetups: number;
+};
+
+/** Shared failed gates that explain why every evaluated setup was blocked. */
+export function commonPlaybookBlockers(matches: SetupMatch[]): PlaybookBlocker[] {
+  if (!matches.length) return [];
+  const grouped = new Map<string, PlaybookBlocker>();
+  for (const match of matches) {
+    for (const detail of match.failedCheckDetails) {
+      const label = detail.split(': ', 1)[0];
+      const key = label.toLowerCase();
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.affectedSetups += 1;
+      } else {
+        grouped.set(key, {
+          label,
+          detail: detail.slice(label.length + 2),
+          affectedSetups: 1,
+        });
+      }
+    }
+  }
+  return [...grouped.values()]
+    .filter(
+      (blocker) =>
+        blocker.affectedSetups === matches.length ||
+        [...SHARED_HARD_GATES].some((id) => blocker.label === id.replace(/_/g, ' '))
+    )
+    .sort((a, b) => b.affectedSetups - a.affectedSetups || a.label.localeCompare(b.label));
+}
 
 export function matchPlaybookSetups(input: {
   symbol: string;
@@ -78,6 +120,10 @@ export function matchPlaybookSetups(input: {
       .filter((r) => r.verdict === 'fail' || r.verdict === 'unknown')
       .filter((r) => r.verdict === 'fail' || r.id === setup.entryChecks[0])
       .map((r) => r.label);
+    const failedCheckDetails = usable
+      .filter((r) => r.verdict === 'fail' || r.id === setup.entryChecks[0])
+      .filter((r) => r.verdict === 'fail' || r.verdict === 'unknown')
+      .map((r) => `${r.label}: ${r.detail}`);
     return {
       setupId: setup.id,
       setupName: setup.name,
@@ -86,6 +132,7 @@ export function matchPlaybookSetups(input: {
       expectancyScore: input.expectancy?.[setup.id]?.score ?? 0,
       passedChecks,
       failedChecks,
+      failedCheckDetails,
     };
   });
 }

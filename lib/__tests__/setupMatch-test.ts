@@ -1,5 +1,10 @@
 import { defaultSetups, demoCandles, demoQuotes, getDemoNews } from '@/constants/seed';
-import { matchPlaybookSetups, rankMatchedSetups } from '@/lib/setupMatch';
+import {
+  commonPlaybookBlockers,
+  matchPlaybookSetups,
+  rankMatchedSetups,
+  SetupMatch,
+} from '@/lib/setupMatch';
 
 describe('matchPlaybookSetups', () => {
   it('evaluates demo AAPL against default playbook setups', () => {
@@ -20,5 +25,44 @@ describe('matchPlaybookSetups', () => {
       expect(Array.isArray(m.passedChecks)).toBe(true);
       expect(Array.isArray(m.failedChecks)).toBe(true);
     }
+  });
+});
+
+describe('commonPlaybookBlockers', () => {
+  it('surfaces a shared earnings calendar failure', () => {
+    const matches: SetupMatch[] = [
+      {
+        setupId: 'one',
+        setupName: 'One',
+        pass: false,
+        passRate: 0.8,
+        expectancyScore: 0,
+        passedChecks: [],
+        failedChecks: ['Outside earnings blackout'],
+        failedCheckDetails: [
+          'Outside earnings blackout: Earnings calendar fetch failed — blackout fails closed for V',
+        ],
+      },
+      {
+        setupId: 'two',
+        setupName: 'Two',
+        pass: false,
+        passRate: 0.75,
+        expectancyScore: 0,
+        passedChecks: [],
+        failedChecks: ['Outside earnings blackout'],
+        failedCheckDetails: [
+          'Outside earnings blackout: Earnings calendar fetch failed — blackout fails closed for V',
+        ],
+      },
+    ];
+
+    expect(commonPlaybookBlockers(matches)).toEqual([
+      {
+        label: 'Outside earnings blackout',
+        detail: 'Earnings calendar fetch failed — blackout fails closed for V',
+        affectedSetups: 2,
+      },
+    ]);
   });
 });

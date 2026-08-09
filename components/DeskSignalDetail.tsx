@@ -114,7 +114,19 @@ export function DeskSignalDetail({
           </Text>
 
           {recommendation.setupOptions.length === 0 ? (
-            <Text style={styles.setupWarn}>No setups currently pass machine checks.</Text>
+            <View style={styles.blockerBox}>
+              <Text style={styles.setupWarn}>No setups currently pass machine checks.</Text>
+              {recommendation.playbookBlockers.length ? (
+                <>
+                  <Text style={styles.blockerTitle}>What blocked the Playbook</Text>
+                  {recommendation.playbookBlockers.slice(0, 2).map((blocker) => (
+                    <Text key={`${blocker.label}-${blocker.detail}`} style={styles.blockerText}>
+                      • {blocker.label}: {blocker.detail}
+                    </Text>
+                  ))}
+                </>
+              ) : null}
+            </View>
           ) : (
             recommendation.setupOptions.map((option) => (
               <View key={`${recommendation.symbol}-${option.setupId}`} style={styles.optionWrap}>
@@ -216,6 +228,14 @@ const styles = StyleSheet.create({
   },
   setup: { color: palette.moss, fontWeight: '600', fontSize: 13 },
   setupWarn: { color: palette.warn, fontWeight: '600' },
+  blockerBox: {
+    backgroundColor: palette.warnSoft,
+    borderRadius: 10,
+    padding: spacing.sm,
+    gap: 4,
+  },
+  blockerTitle: { color: palette.ink, fontSize: 12.5, fontWeight: '700', marginTop: 2 },
+  blockerText: { color: palette.muted, fontSize: 12, lineHeight: 17 },
   confidence: { color: palette.muted, fontSize: 13 },
   optionWrap: {
     gap: 8,

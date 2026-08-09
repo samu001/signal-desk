@@ -303,7 +303,19 @@ export default function DeskDetailScreen() {
                   subtitle="Matched setups, strongest first. Each has its own buy / stop / target."
                 />
                 {rec.setupOptions.length === 0 ? (
-                  <Text style={styles.setupWarn}>No setups currently pass machine checks.</Text>
+                  <View style={styles.blockerBox}>
+                    <Text style={styles.setupWarn}>No setups currently pass machine checks.</Text>
+                    {rec.playbookBlockers.length ? (
+                      <>
+                        <Text style={styles.blockerTitle}>What blocked the Playbook</Text>
+                        {rec.playbookBlockers.slice(0, 3).map((blocker) => (
+                          <Text key={`${blocker.label}-${blocker.detail}`} style={styles.blockerText}>
+                            • {blocker.label}: {blocker.detail}
+                          </Text>
+                        ))}
+                      </>
+                    ) : null}
+                  </View>
                 ) : (
                   rec.setupOptions.map((option) => (
                     <View key={option.setupId} style={styles.optionWrap}>
@@ -480,6 +492,14 @@ const styles = StyleSheet.create({
   levelsBannerTitle: { fontWeight: '700', color: palette.moss },
   levelsBannerBody: { fontFamily: 'SpaceMono', fontSize: 12, color: palette.ink },
   setupWarn: { color: palette.warn, fontWeight: '600', lineHeight: 19 },
+  blockerBox: {
+    backgroundColor: palette.warnSoft,
+    borderRadius: 12,
+    padding: spacing.sm,
+    gap: 4,
+  },
+  blockerTitle: { color: palette.ink, fontSize: 13, fontWeight: '700', marginTop: 2 },
+  blockerText: { color: palette.muted, fontSize: 12.5, lineHeight: 18 },
   meterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   meterFlex: { flexGrow: 1, flexBasis: '55%', minWidth: 180 },
   volCard: {
