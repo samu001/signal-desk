@@ -1,7 +1,10 @@
 import { defaultSetups } from '@/constants/seed';
+import { PlaybookGateFlags } from '@/lib/backtestProfile';
 import { CandleSource, isLiveCandleSource } from '@/lib/candles';
+import { EarningsFetchStatus } from '@/lib/finnhub';
 import { barsUpTo } from '@/lib/indicators';
 import { buildRecommendation, Stance } from '@/lib/recommend';
+import { plannedRewardToRisk, tradePriorityScore } from '@/lib/tradePriority';
 import { Candle, Quote, Setup } from '@/types/trading';
 
 export type DeskBacktestTrade = {
@@ -16,6 +19,15 @@ export type DeskBacktestTrade = {
   target: number;
   rMultiple: number;
   reason: 'stop' | 'target' | 'time';
+  /** Best confirming Playbook setup at entry (Desk requires a match for Soft/Strong). */
+  setupId: string | null;
+  setupName: string | null;
+  /** Pass rate of the confirming setup at entry (0–1). */
+  passRate: number | null;
+  /** Planned R:R from the actual fill vs Desk stop/target. */
+  plannedRR: number;
+  /** Entry-time priority (planned R:R + pass rate) — same scale as Playbook trades. */
+  priorityScore: number;
 };
 
 export type DeskBacktestStanceStats = {
@@ -99,7 +111,13 @@ export function runDeskBacktest(input: {
   candles: Candle[];
   spyCandles: Candle[];
   qqqCandles?: Candle[];
+  /** Sector ETF history for the sector RS gate (soft-unknown when absent). */
+  sectorCandles?: Candle[];
   earningsDates?: string[];
+  /** Distinguishes no-key / fetch-error / empty when dates are []. */
+  earningsCalendarStatus?: EarningsFetchStatus;
+  /** Override the Playbook accuracy gate stack (defaults to live gates). */
+  gates?: PlaybookGateFlags;
   sourceLabel: string;
   warnings?: string[];
   evalBars?: number;
@@ -157,6 +175,11 @@ export function runDeskBacktest(input: {
         stop: number;
         target: number;
         entryIndex: number;
+        setupId: string | null;
+        setupName: string | null;
+        passRate: number | null;
+        plannedRR: number;
+        priorityScore: number;
       }
     | null = null;
 
@@ -165,6 +188,9 @@ export function runDeskBacktest(input: {
     // Date-based truncation — index slicing could leak future SPY/QQQ bars.
     const spyHistory = barsUpTo(spyCandles, candles[i].time);
     const qqqHistory = barsUpTo(input.qqqCandles ?? [], candles[i].time);
+    const sectorHistory = input.sectorCandles?.length
+      ? barsUpTo(input.sectorCandles, candles[i].time)
+      : undefined;
     const candle = history[history.length - 1];
     const prev = history[history.length - 2];
 
@@ -200,6 +226,11 @@ export function runDeskBacktest(input: {
           target: open.target,
           rMultiple: risk > 0 ? (exit - open.entry) / risk : 0,
           reason,
+          setupId: open.setupId,
+          setupName: open.setupName,
+          passRate: open.passRate,
+          plannedRR: open.plannedRR,
+          priorityScore: open.priorityScore,
         });
         open = null;
       }
@@ -212,10 +243,13 @@ export function runDeskBacktest(input: {
       candles: history,
       spyCandles: spyHistory,
       qqqCandles: qqqHistory,
+      sectorCandles: sectorHistory,
       candleSource: isLiveCandleSource(sourceLabel) ? (sourceLabel as CandleSource) : 'yahoo',
       historicalMode: true,
       setups,
       earningsDates: input.earningsDates,
+      earningsCalendarStatus: input.earningsCalendarStatus,
+      gates: input.gates,
     });
     signals[rec.stance] += 1;
 
@@ -224,6 +258,9 @@ export function runDeskBacktest(input: {
     const next = candles[i + 1];
     const entryMid = (rec.levels.entryLow + rec.levels.entryHigh) / 2;
     const entry = next.open > 0 ? next.open : entryMid;
+    // Soft/Strong requires a Playbook match, so the top ranked setup exists here.
+    const best = rec.matchedSetups[0] ?? null;
+    const plannedRR = plannedRewardToRisk(entry, rec.levels.stop, rec.levels.target);
     open = {
       stance: rec.stance,
       technicalScore: rec.technicalScore,
@@ -233,6 +270,11 @@ export function runDeskBacktest(input: {
       stop: rec.levels.stop,
       target: rec.levels.target,
       entryIndex: i + 1,
+      setupId: best?.setupId ?? null,
+      setupName: best?.setupName ?? null,
+      passRate: best?.passRate ?? null,
+      plannedRR,
+      priorityScore: tradePriorityScore(plannedRR, best?.passRate ?? 0),
     };
   }
 
@@ -251,6 +293,11 @@ export function runDeskBacktest(input: {
       target: open.target,
       rMultiple: risk > 0 ? (last.close - open.entry) / risk : 0,
       reason: 'time',
+      setupId: open.setupId,
+      setupName: open.setupName,
+      passRate: open.passRate,
+      plannedRR: open.plannedRR,
+      priorityScore: open.priorityScore,
     });
   }
 

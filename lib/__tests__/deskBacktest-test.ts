@@ -31,4 +31,32 @@ describe('runDeskBacktest', () => {
     expect(result.trades).toHaveLength(0);
     expect(result.warnings.some((w) => /at least/i.test(w))).toBe(true);
   });
+
+  it('tags trades with entry-time priority metadata for the portfolio cap', () => {
+    const symbols = Object.keys(demoCandles).filter((s) => s !== 'SPY' && s !== 'QQQ');
+    const trades = symbols.flatMap(
+      (symbol) =>
+        runDeskBacktest({
+          symbol,
+          candles: demoCandles[symbol],
+          spyCandles: demoCandles.SPY,
+          sourceLabel: 'demo',
+          evalBars: 60,
+        }).trades
+    );
+
+    // Demo data currently produces at least one Desk entry; if this ever hits
+    // zero the assertions below stop testing anything — fail instead.
+    expect(trades.length).toBeGreaterThan(0);
+
+    for (const t of trades) {
+      // Soft/Strong requires a Playbook match, so every entry carries a setup.
+      expect(t.setupId).toBeTruthy();
+      expect(t.setupName).toBeTruthy();
+      expect(t.passRate).not.toBeNull();
+      expect(t.plannedRR).toBeGreaterThanOrEqual(0);
+      // Same scale as Playbook trades: plannedRR * 10 + passRate.
+      expect(t.priorityScore).toBeCloseTo(t.plannedRR * 10 + (t.passRate ?? 0), 10);
+    }
+  });
 });

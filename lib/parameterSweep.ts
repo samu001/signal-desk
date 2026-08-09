@@ -53,6 +53,8 @@ export type SweepTicker = {
   earningsCalendarStatus?: EarningsFetchStatus;
   /** Per-ticker costs (tiered slippage); falls back to input.costs. */
   costs?: BacktestCostModel;
+  /** Sector ETF history when the sector RS gate is on. */
+  sectorCandles?: Candle[];
 };
 
 /** A combined-playbook trade tagged with its symbol for the pooled cap. */
@@ -147,6 +149,7 @@ export function runParameterSweep(input: {
           candles: ticker.candles,
           spyCandles: input.spyCandles,
           qqqCandles: input.qqqCandles,
+          sectorCandles: ticker.sectorCandles,
           earningsDates: ticker.earningsDates,
           earningsCalendarStatus: ticker.earningsCalendarStatus,
           costs: ticker.costs ?? input.costs ?? DEFAULT_BACKTEST_COSTS,
