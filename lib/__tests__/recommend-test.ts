@@ -153,6 +153,8 @@ describe('buildRecommendation', () => {
     expect(rec.stance).toBe('avoid');
     expect(rec.newsScore).toBeLessThan(30);
     expect(rec.factors.find((f) => f.name === 'Catalyst screen')?.detail).toMatch(/Red flag:/i);
+    expect(rec.summary).toMatch(/hard filter: news/i);
+    expect(rec.summary).not.toMatch(/trend, liquidity, market RS/i);
   });
 
   it('does not force Avoid on a lone soft caution headline', () => {

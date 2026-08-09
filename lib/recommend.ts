@@ -743,6 +743,10 @@ function buildSummary(input: {
   tradeable: boolean;
   marketWeak: boolean;
   liquidityThin: boolean;
+  newsHardFail: boolean;
+  weakTrend: boolean;
+  stopRisk: boolean;
+  newsDetail?: string | null;
 }): string {
   if (input.liquidityThin) {
     return `${input.symbol} looks too thin on liquidity — Desk avoids it for tradeable signals.`;
@@ -767,7 +771,22 @@ function buildSummary(input: {
     }.`;
   }
   if (input.stance === 'avoid') {
-    return `${input.symbol} fails a hard filter right now (trend, liquidity, market RS, stop risk, or news). Stand aside.`;
+    const failed: string[] = [];
+    if (input.newsHardFail) {
+      failed.push(
+        input.newsDetail?.trim()
+          ? `news (${input.newsDetail.trim()})`
+          : 'news (negative catalyst)'
+      );
+    }
+    if (input.weakTrend) failed.push('weak trend (technical score under 35)');
+    if (input.stopRisk) failed.push('stop risk (price at/under stop)');
+    if (input.liquidityThin) failed.push('thin liquidity');
+    if (input.marketWeak) failed.push('weak market relative strength');
+    if (failed.length) {
+      return `${input.symbol} fails a hard filter: ${failed.join('; ')}. Stand aside.`;
+    }
+    return `${input.symbol} fails a hard filter right now. Stand aside.`;
   }
   return `${input.symbol} is not clean enough yet. Keep it on watch.`;
 }
@@ -1149,6 +1168,13 @@ export function buildRecommendation(input: {
       tradeable,
       marketWeak: market.weak,
       liquidityThin: liquidity.thin,
+      newsHardFail: news.hardFail,
+      weakTrend: technical.score < 35,
+      stopRisk: price > 0 && levels.stop > 0 && price <= levels.stop,
+      newsDetail:
+        news.factors.find((f) => f.verdict === 'fail')?.detail ??
+        news.factors.find((f) => /catalyst|news/i.test(f.name))?.detail ??
+        null,
     }),
     confidence,
     price,
