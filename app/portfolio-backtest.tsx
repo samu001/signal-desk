@@ -73,7 +73,7 @@ import {
   bestSetupByWinRate,
   SetupAttributionRow,
 } from '@/lib/setupAttribution';
-import { Candle } from '@/types/trading';
+import { Candle, LiveLevelAnchor } from '@/types/trading';
 
 const DEFAULT_STOP_COOLDOWN = PROFILE_ALL8.stopCooldownBars;
 /** Same roster as scripts/run-deep-backtest.ts — picked on demonstrated combined R. */
@@ -153,54 +153,56 @@ type PortfolioSummary = {
   /** Gate flags used for this run (for display). */
   gates: PlaybookGateFlags;
   stopCooldownBars: number;
-  /** Entry engine: combined Playbook rules, or Desk Soft/Strong confirmation. */
-  entryEngine: EntryEngine;
+  /** Entry: Desk Soft/Strong confirmation required on top of Playbook rules. */
+  deskConfirmation: boolean;
+  /** Exit: which structure anchored stop/target in this run. */
+  levelAnchor: LiveLevelAnchor;
   warnings: string[];
 };
 
 /**
- * How entries are generated.
- * - playbook: combined Playbook rules (default)
- * - playbook_desk: Playbook rules + Desk Soft/Strong gate (Dashboard-like
- *   confirmation; exits stay Playbook structure levels so parameter lab works)
- * - desk: full Desk Soft/Strong stance replay with Desk levels for exits
+ * Which simulation path replays a toggle combination.
+ * - playbook: combined Playbook rules, structure exits (confirmation off, setup anchor)
+ * - playbook_desk: Playbook rules + Desk Soft/Strong allow, structure exits
+ *   (confirmation on, setup anchor — parameter lab works)
+ * - desk: full Desk Soft/Strong stance replay with Desk-blend levels for exits
+ *   (Desk-blend anchor — the replay always includes Desk confirmation)
  */
-type EntryEngine = 'playbook' | 'playbook_desk' | 'desk';
+function engineKindFor(
+  deskConfirmation: boolean,
+  levelAnchor: LiveLevelAnchor
+): 'playbook' | 'playbook_desk' | 'desk' {
+  if (levelAnchor === 'desk_blend') return 'desk';
+  return deskConfirmation ? 'playbook_desk' : 'playbook';
+}
 
-const ENTRY_ENGINE_BLURBS: Record<
-  EntryEngine,
-  { entry: string; exitLevels: string; extras: string }
-> = {
-  playbook: {
-    entry: 'Playbook setup rules only (one best setup per day).',
-    exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
-    extras: 'Parameter lab on.',
-  },
-  playbook_desk: {
-    entry: 'Playbook setup rules + Desk Soft/Strong allow (in/near buy zone).',
-    exitLevels: 'Playbook structure (~2R · min(2.5×ATR, 8%)).',
-    extras: 'Parameter lab on.',
-  },
-  desk: {
-    entry: 'Full Desk Soft/Strong replay (Playbook match + scores + in/near zone).',
-    exitLevels: 'Desk card levels (~2R).',
-    extras: 'Parameter lab off. Company/news neutralized.',
-  },
-};
-
-function EntryEngineBlurb({ engine }: { engine: EntryEngine }) {
-  const b = ENTRY_ENGINE_BLURBS[engine];
+function EngineBlurb({
+  deskConfirmation,
+  levelAnchor,
+}: {
+  deskConfirmation: boolean;
+  levelAnchor: LiveLevelAnchor;
+}) {
+  const blend = levelAnchor === 'desk_blend';
   return (
     <View style={styles.engineBlurb}>
       <Text style={styles.setupPickerSub}>
         <Text style={styles.engineBlurbKey}>Entry: </Text>
-        {b.entry}
+        {deskConfirmation
+          ? 'Playbook setup rules + Desk Soft/Strong confirmation (in/near buy zone).'
+          : 'Playbook setup rules only (one best setup per day).'}
       </Text>
       <Text style={styles.setupPickerSub}>
         <Text style={styles.engineBlurbKey}>Exit levels: </Text>
-        {b.exitLevels}
+        {blend
+          ? 'Desk blend (Desk card levels, ~2R).'
+          : 'Setup structure (~2R · min(2.5×ATR, 8%)).'}
       </Text>
-      <Text style={styles.setupPickerSub}>{b.extras}</Text>
+      <Text style={styles.setupPickerSub}>
+        {blend
+          ? 'Full Desk replay — parameter lab off; company/news neutralized.'
+          : 'Parameter lab on.'}
+      </Text>
     </View>
   );
 }
@@ -466,8 +468,13 @@ export default function PortfolioBacktestScreen() {
   const [gates, setGates] = useState<PlaybookGateFlags>({ ...DEFAULT_PORTFOLIO_GATES });
   const [stopCooldownBars, setStopCooldownBars] = useState(0);
   const [gatesOpen, setGatesOpen] = useState(false);
-  /** Entry engine: Playbook, Playbook+Desk gate, or full Desk Soft/Strong replay. */
-  const [entryEngine, setEntryEngine] = useState<EntryEngine>('playbook');
+  /** Entry toggle: require Desk Soft/Strong confirmation on top of Playbook rules. */
+  const [deskConfirm, setDeskConfirm] = useState(false);
+  /** Exit toggle: setup-structure levels, or the Desk blend (full Desk replay). */
+  const [levelAnchor, setLevelAnchor] = useState<LiveLevelAnchor>('setup');
+  // The historical Desk-blend replay always includes Desk confirmation.
+  const effectiveDeskConfirm = levelAnchor === 'desk_blend' ? true : deskConfirm;
+  const engineKind = engineKindFor(effectiveDeskConfirm, levelAnchor);
 
   useEffect(() => {
     if (selectedSetupIds != null || !setups.length) return;
@@ -687,7 +694,8 @@ export default function PortfolioBacktestScreen() {
     const exitTuning: LevelTuning =
       variant && !variant.isProduction && variant.tuning ? { ...variant.tuning } : {};
     return normalizeLiveBehavior({
-      entryEngine: summary.entryEngine,
+      deskConfirmation: summary.deskConfirmation,
+      levelAnchor: summary.levelAnchor,
       gates: { ...summary.gates },
       stopCooldownBars: summary.stopCooldownBars,
       maxOpenPositions: summary.maxOpen,
@@ -976,7 +984,7 @@ export default function PortfolioBacktestScreen() {
         const symbolCosts = costsForSymbol(symbol, bars.candles);
         const symbolTrades: PickerTrade[] = [];
         let deskAllowSignalTimes: Set<number> | undefined;
-        if (entryEngine === 'desk') {
+        if (engineKind === 'desk') {
           setProgress(`Desk replay ${symbol} (${rows.length + 1}/${symbols.length})…`);
           const desk = runDeskBacktest({
             symbol,
@@ -991,6 +999,7 @@ export default function PortfolioBacktestScreen() {
             // Score the whole fetched window after warmup (Desk Lab uses ~30).
             evalBars: bars.candles.length,
             setups: runSetups,
+            levelAnchor: 'desk_blend',
           });
           for (const t of desk.trades) {
             // Same friction semantics as the Playbook engine: stop/target hits
@@ -1010,7 +1019,7 @@ export default function PortfolioBacktestScreen() {
             });
           }
         } else {
-          if (entryEngine === 'playbook_desk') {
+          if (engineKind === 'playbook_desk') {
             setProgress(`Desk gate ${symbol} (${rows.length + 1}/${symbols.length})…`);
             deskAllowSignalTimes = collectDeskAllowSignalTimes({
               symbol,
@@ -1064,11 +1073,11 @@ export default function PortfolioBacktestScreen() {
           );
         }
         rowNotes.push(`Slippage tier: ${slippageBpsLabel(symbol, bars.candles)} (ADV).`);
-        if (entryEngine === 'desk') {
+        if (engineKind === 'desk') {
           rowNotes.push(
-            'Desk replay: Soft/Strong stance + in/near entry zone; Desk levels for exits; company/news neutralized.'
+            'Desk replay: Soft/Strong stance + in/near entry zone; Desk-blend levels for exits; company/news neutralized.'
           );
-        } else if (entryEngine === 'playbook_desk') {
+        } else if (engineKind === 'playbook_desk') {
           rowNotes.push(
             `Playbook + Desk gate: ${deskAllowSignalTimes?.size ?? 0} Soft/Strong signal days; Playbook structure exits.`
           );
@@ -1118,11 +1127,11 @@ export default function PortfolioBacktestScreen() {
       setActiveParamId(null);
 
       // Exit-parameter sweep over the same basket, under the same cap.
-      // Playbook engines only (plain + Desk-gated) — exit tunings are Playbook
-      // structure levels, so sweeping them against Desk-level trades would be
+      // Setup-structure anchor only — exit tunings are Playbook structure
+      // levels, so sweeping them against Desk-blend trades would be
       // apples-to-oranges.
       let paramSweep: ParameterSweepResult | null = null;
-      const sweepTickers = (entryEngine === 'desk' ? [] : rows)
+      const sweepTickers = (engineKind === 'desk' ? [] : rows)
         .filter((r) => isUsableForTotals(r.coverage))
         .map((r) => {
           const earn = earningsBySymbol.get(r.symbol);
@@ -1173,7 +1182,8 @@ export default function PortfolioBacktestScreen() {
         extrasLabel,
         gates: { ...gates },
         stopCooldownBars,
-        entryEngine,
+        deskConfirmation: effectiveDeskConfirm,
+        levelAnchor,
         warnings,
       });
     } finally {
@@ -1320,42 +1330,66 @@ export default function PortfolioBacktestScreen() {
         <View style={styles.setupPicker}>
           <View style={styles.setupPickerHead}>
             <View style={styles.setupPickerTitleCol}>
-              <Text style={styles.setupPickerTitle}>Entry engine</Text>
-              <EntryEngineBlurb engine={entryEngine} />
+              <Text style={styles.setupPickerTitle}>Entry & exit</Text>
+              <EngineBlurb
+                deskConfirmation={effectiveDeskConfirm}
+                levelAnchor={levelAnchor}
+              />
             </View>
           </View>
+          <Text style={styles.engineToggleLabel}>Entry — Desk confirmation</Text>
           <View style={styles.engineChipRow}>
             <Pressable
-              onPress={() => setEntryEngine('playbook')}
-              style={[styles.chipSm, entryEngine === 'playbook' && styles.chipOn]}>
+              onPress={() => setDeskConfirm(false)}
+              disabled={levelAnchor === 'desk_blend'}
+              style={[
+                styles.chipSm,
+                !effectiveDeskConfirm && styles.chipOn,
+                levelAnchor === 'desk_blend' && styles.chipDisabled,
+              ]}>
               <Text
-                style={[
-                  styles.chipTextSm,
-                  entryEngine === 'playbook' && styles.chipTextOn,
-                ]}>
-                Playbook
+                style={[styles.chipTextSm, !effectiveDeskConfirm && styles.chipTextOn]}>
+                Off — Playbook rules only
               </Text>
             </Pressable>
             <Pressable
-              onPress={() => setEntryEngine('playbook_desk')}
-              style={[styles.chipSm, entryEngine === 'playbook_desk' && styles.chipOn]}>
+              onPress={() => setDeskConfirm(true)}
+              disabled={levelAnchor === 'desk_blend'}
+              style={[styles.chipSm, effectiveDeskConfirm && styles.chipOn]}>
               <Text
-                style={[
-                  styles.chipTextSm,
-                  entryEngine === 'playbook_desk' && styles.chipTextOn,
-                ]}>
-                Playbook + Desk gate
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setEntryEngine('desk')}
-              style={[styles.chipSm, entryEngine === 'desk' && styles.chipOn]}>
-              <Text
-                style={[styles.chipTextSm, entryEngine === 'desk' && styles.chipTextOn]}>
-                Desk Soft/Strong
+                style={[styles.chipTextSm, effectiveDeskConfirm && styles.chipTextOn]}>
+                On — + Desk Soft/Strong
               </Text>
             </Pressable>
           </View>
+          <Text style={styles.engineToggleLabel}>Exit — level anchor</Text>
+          <View style={styles.engineChipRow}>
+            <Pressable
+              onPress={() => setLevelAnchor('setup')}
+              style={[styles.chipSm, levelAnchor === 'setup' && styles.chipOn]}>
+              <Text
+                style={[styles.chipTextSm, levelAnchor === 'setup' && styles.chipTextOn]}>
+                Setup structure
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setLevelAnchor('desk_blend')}
+              style={[styles.chipSm, levelAnchor === 'desk_blend' && styles.chipOn]}>
+              <Text
+                style={[
+                  styles.chipTextSm,
+                  levelAnchor === 'desk_blend' && styles.chipTextOn,
+                ]}>
+                Desk blend
+              </Text>
+            </Pressable>
+          </View>
+          {levelAnchor === 'desk_blend' ? (
+            <Text style={styles.engineToggleNote}>
+              Desk-blend exits replay the full Desk stance historically, which always includes
+              Desk confirmation — the entry toggle is locked On for this run.
+            </Text>
+          ) : null}
         </View>
 
         <View style={styles.setupPicker}>
@@ -1528,12 +1562,10 @@ export default function PortfolioBacktestScreen() {
                 (summary.excludedSymbols
                   ? `Totals use ${summary.usableSymbols} full-coverage tickers only — ${summary.excludedSymbols} no-data/short/skipped/suspect/unadjusted left out.`
                   : `Totals use all ${summary.usableSymbols} tickers (full live adjusted EOD).`) +
-                ` Engine: ${
-                  summary.entryEngine === 'desk'
-                    ? 'Desk Soft/Strong'
-                    : summary.entryEngine === 'playbook_desk'
-                      ? 'Playbook + Desk gate'
-                      : 'Playbook'
+                ` Entry: ${
+                  summary.deskConfirmation ? 'Playbook + Desk confirm' : 'Playbook rules only'
+                }. Exits: ${
+                  summary.levelAnchor === 'desk_blend' ? 'Desk blend' : 'setup structure'
                 }. Setups: ${summary.setupsUsed.join(', ') || 'none'}. Extras: ${summary.extrasLabel}.`
               }
             />
@@ -1850,11 +1882,11 @@ export default function PortfolioBacktestScreen() {
               );
             })()}
 
-            {!summary.paramSweep && summary.entryEngine === 'desk' ? (
+            {!summary.paramSweep && summary.levelAnchor === 'desk_blend' ? (
               <Text style={styles.filterMeta}>
-                Parameter lab (exit sweep) is Playbook-only — Desk entries exit on Desk levels, so
-                Playbook stop/target tunings would not apply. Switch the entry engine back to
-                Playbook to compare exits.
+                Parameter lab (exit sweep) needs setup-structure exits — Desk-blend trades exit on
+                Desk levels, so structure stop/target tunings would not apply. Switch the exit
+                anchor back to Setup structure to compare exits.
               </Text>
             ) : null}
 
@@ -2467,6 +2499,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingBottom: 12,
   },
+  engineToggleLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    paddingHorizontal: 14,
+    paddingBottom: 6,
+  },
+  engineToggleNote: {
+    color: palette.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+  },
+  chipDisabled: { opacity: 0.5 },
   engineBlurb: { gap: 2, marginTop: 2 },
   engineBlurbKey: { fontWeight: '700', color: palette.ink },
   gateLabelCol: { flex: 1, gap: 2 },

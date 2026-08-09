@@ -43,13 +43,14 @@ describe('normalizeLiveBehavior', () => {
 
   it('repairs partial persisted shapes and clamps invalid numbers', () => {
     const cfg = normalizeLiveBehavior({
-      entryEngine: 'playbook',
+      deskConfirmation: false,
       gates: { marketRegime: true } as never,
       stopCooldownBars: -2,
       maxOpenPositions: 3.6,
       exitTuning: { targetR: 1.5, atrCapMult: 0, pctCap: -1 },
     });
-    expect(cfg.entryEngine).toBe('playbook');
+    expect(cfg.deskConfirmation).toBe(false);
+    expect(cfg.levelAnchor).toBe('setup');
     expect(cfg.gates.marketRegime).toBe(true);
     // Missing gate keys fall back to live defaults.
     expect(cfg.gates.earningsBlackout).toBe(DEFAULT_LIVE_GATES.earningsBlackout);
@@ -59,29 +60,46 @@ describe('normalizeLiveBehavior', () => {
     expect(isDefaultLiveBehavior(cfg)).toBe(false);
   });
 
-  it('rejects unknown entry engines', () => {
-    const cfg = normalizeLiveBehavior({ entryEngine: 'yolo' as never });
-    expect(cfg.entryEngine).toBe('playbook_desk');
+  it('migrates legacy entry-engine presets onto the toggles', () => {
+    const playbook = normalizeLiveBehavior({ entryEngine: 'playbook' });
+    expect(playbook.deskConfirmation).toBe(false);
+    expect(playbook.levelAnchor).toBe('setup');
+
+    const desk = normalizeLiveBehavior({ entryEngine: 'desk' });
+    expect(desk.deskConfirmation).toBe(true);
+    expect(desk.levelAnchor).toBe('desk_blend');
+
+    const gated = normalizeLiveBehavior({ entryEngine: 'playbook_desk' });
+    expect(gated).toEqual(DEFAULT_LIVE_BEHAVIOR);
+  });
+
+  it('rejects unknown level anchors', () => {
+    const cfg = normalizeLiveBehavior({ levelAnchor: 'yolo' as never });
+    expect(cfg.levelAnchor).toBe('setup');
   });
 });
 
 describe('describeLiveBehavior', () => {
   it('summarizes the default config', () => {
     const text = describeLiveBehavior(DEFAULT_LIVE_BEHAVIOR);
-    expect(text).toMatch(/Playbook \+ Desk gate/);
+    expect(text).toMatch(/Playbook \+ Desk confirm/);
     expect(text).toMatch(/earnings blackout/);
+    expect(text).toMatch(/setup levels/);
     expect(text).toMatch(/production exits/);
   });
 
-  it('mentions cooldown, cap, and tuning when active', () => {
+  it('mentions the toggles, cooldown, cap, and tuning when active', () => {
     const text = describeLiveBehavior(
       normalizeLiveBehavior({
-        entryEngine: 'playbook',
+        deskConfirmation: false,
+        levelAnchor: 'desk_blend',
         stopCooldownBars: 3,
         maxOpenPositions: 2,
         exitTuning: { targetR: 1.5, atrCapMult: 2, pctCap: 0.08 },
       })
     );
+    expect(text).toMatch(/Playbook rules only/);
+    expect(text).toMatch(/Desk blend levels/);
     expect(text).toMatch(/3-day stop cooldown/);
     expect(text).toMatch(/max 2 open/);
     expect(text).toMatch(/target 1.5R/);
@@ -217,12 +235,12 @@ describe('buildRecommendation with live behavior knobs', () => {
     expect(rec.factors.some((f) => f.name === 'Stop cooldown' && f.verdict === 'fail')).toBe(true);
   });
 
-  it('Playbook engine issues Soft/Strong from rules alone when a setup matches', () => {
+  it('Desk confirmation off issues Soft/Strong from rules alone when a setup matches', () => {
     const gated = buildRecommendation({ ...fixture });
-    const rec = buildRecommendation({ ...fixture, entryEngine: 'playbook' });
+    const rec = buildRecommendation({ ...fixture, deskConfirmation: false });
     if (rec.matchedSetups.length) {
       expect(['soft_buy', 'strong_buy']).toContain(rec.stance);
-      expect(rec.factors.some((f) => f.name === 'Entry engine')).toBe(true);
+      expect(rec.factors.some((f) => f.name === 'Desk confirmation')).toBe(true);
     } else {
       expect(rec.stance).toBe(gated.stance);
     }

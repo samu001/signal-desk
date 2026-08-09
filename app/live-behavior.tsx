@@ -19,10 +19,10 @@ import { LevelTuning } from '@/lib/levelTuning';
 import {
   DEFAULT_LIVE_BEHAVIOR,
   describeLiveBehavior,
-  LIVE_ENTRY_ENGINE_LABELS,
+  LIVE_LEVEL_ANCHOR_LABELS,
   normalizeLiveBehavior,
 } from '@/lib/liveBehavior';
-import { LiveEntryEngine, PlaybookGateFlags } from '@/types/trading';
+import { LiveLevelAnchor, PlaybookGateFlags } from '@/types/trading';
 
 function notify(title: string, message?: string) {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -32,12 +32,11 @@ function notify(title: string, message?: string) {
   Alert.alert(title, message);
 }
 
-const ENGINE_BLURBS: Record<LiveEntryEngine, string> = {
-  playbook:
-    'Playbook setup rules alone decide Soft/Strong. Desk scores and zone are shown for context but do not gate. Red-flag news, thin liquidity, cooldown, and stop risk still block.',
-  playbook_desk:
-    'Playbook rules + Desk score/zone confirmation — the production default. Soft/Strong needs a Playbook match, healthy Desk scores, and price in/near the zone.',
-  desk: 'Same gate as Playbook + Desk, but buy/stop/target anchor to the Desk blend (Desk card levels) instead of the top setup structure.',
+const ANCHOR_BLURBS: Record<LiveLevelAnchor, string> = {
+  setup:
+    'Buy zone / stop / target come from the top setup’s own invalidation structure (flush low, inside-day low, pullback low…) — the production default.',
+  desk_blend:
+    'Buy zone / stop / target anchor to the Desk blend: the setup structure merged with Desk’s generic chart read (Desk card levels).',
 };
 
 const GATE_ROWS: { key: keyof PlaybookGateFlags; label: string; hint: string }[] = [
@@ -68,7 +67,8 @@ const STOP_PCT_CAP = 0.08;
 export default function LiveBehaviorScreen() {
   const { liveBehavior, updateLiveBehavior } = useTrading();
 
-  const [engine, setEngine] = useState<LiveEntryEngine>(liveBehavior.entryEngine);
+  const [deskConfirm, setDeskConfirm] = useState<boolean>(liveBehavior.deskConfirmation);
+  const [anchor, setAnchor] = useState<LiveLevelAnchor>(liveBehavior.levelAnchor);
   const [gates, setGates] = useState<PlaybookGateFlags>({ ...liveBehavior.gates });
   const [cooldown, setCooldown] = useState(String(liveBehavior.stopCooldownBars));
   const [maxOpen, setMaxOpen] = useState(String(liveBehavior.maxOpenPositions));
@@ -78,7 +78,8 @@ export default function LiveBehaviorScreen() {
   );
 
   useEffect(() => {
-    setEngine(liveBehavior.entryEngine);
+    setDeskConfirm(liveBehavior.deskConfirmation);
+    setAnchor(liveBehavior.levelAnchor);
     setGates({ ...liveBehavior.gates });
     setCooldown(String(liveBehavior.stopCooldownBars));
     setMaxOpen(String(liveBehavior.maxOpenPositions));
@@ -96,7 +97,8 @@ export default function LiveBehaviorScreen() {
       ...(stopAtr != null ? { atrCapMult: stopAtr, pctCap: STOP_PCT_CAP } : {}),
     };
     return normalizeLiveBehavior({
-      entryEngine: engine,
+      deskConfirmation: deskConfirm,
+      levelAnchor: anchor,
       gates,
       stopCooldownBars: Number(cooldown) || 0,
       maxOpenPositions: Number(maxOpen) || 0,
@@ -114,14 +116,15 @@ export default function LiveBehaviorScreen() {
   };
 
   const resetDefaults = () => {
-    setEngine(DEFAULT_LIVE_BEHAVIOR.entryEngine);
+    setDeskConfirm(DEFAULT_LIVE_BEHAVIOR.deskConfirmation);
+    setAnchor(DEFAULT_LIVE_BEHAVIOR.levelAnchor);
     setGates({ ...DEFAULT_LIVE_GATES });
     setCooldown('0');
     setMaxOpen('0');
     setTargetR(null);
     setStopAtr(null);
     updateLiveBehavior(normalizeLiveBehavior(DEFAULT_LIVE_BEHAVIOR));
-    notify('Reset to defaults', 'Production behavior restored (Playbook + Desk gate, earnings blackout, production exits).');
+    notify('Reset to defaults', 'Production behavior restored (Desk confirmation on, setup levels, earnings blackout, production exits).');
   };
 
   return (
@@ -138,22 +141,34 @@ export default function LiveBehaviorScreen() {
           <Text style={styles.summaryText}>{describeLiveBehavior(liveBehavior)}</Text>
         </View>
 
-        <Text style={styles.groupTitle}>Entry engine</Text>
-        <View style={styles.chipRow}>
-          {(Object.keys(LIVE_ENTRY_ENGINE_LABELS) as LiveEntryEngine[]).map((id) => (
-            <Pressable
-              key={id}
-              onPress={() => setEngine(id)}
-              style={[styles.chip, engine === id && styles.chipOn]}>
-              <Text style={[styles.chipText, engine === id && styles.chipTextOn]}>
-                {LIVE_ENTRY_ENGINE_LABELS[id]}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <Text style={styles.hint}>{ENGINE_BLURBS[engine]}</Text>
+        <Text style={styles.groupTitle}>Entry — when to get in</Text>
+        <Text style={styles.hint}>
+          A Playbook setup match is always required for Soft/Strong. Everything below tightens or
+          loosens what gets through.
+        </Text>
+        <Pressable
+          style={styles.checkRow}
+          onPress={() => setDeskConfirm((v) => !v)}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: deskConfirm }}>
+          <FontAwesome
+            name={deskConfirm ? 'check-square' : 'square-o'}
+            size={18}
+            color={deskConfirm ? palette.moss : palette.muted}
+          />
+          <View style={styles.checkCol}>
+            <Text style={[styles.checkName, !deskConfirm && styles.checkNameOff]}>
+              Desk confirmation
+            </Text>
+            <Text style={styles.checkHint}>
+              {deskConfirm
+                ? 'Soft/Strong also needs healthy Desk scores and price in/near the buy zone (production default).'
+                : 'Off — Playbook rules alone decide Soft/Strong. Red-flag news, thin liquidity, cooldown, and stop risk still block.'}
+            </Text>
+          </View>
+        </Pressable>
 
-        <Text style={styles.groupTitle}>Accuracy gates</Text>
+        <Text style={styles.subLabel}>Accuracy gates</Text>
         <View style={styles.presetRow}>
           <Pressable
             onPress={() => {
@@ -214,7 +229,23 @@ export default function LiveBehaviorScreen() {
           the cap is reached.
         </Text>
 
-        <Text style={styles.groupTitle}>Exit tuning (exits only)</Text>
+        <Text style={styles.groupTitle}>Exit — where the levels come from</Text>
+        <Text style={styles.subLabel}>Level anchor</Text>
+        <View style={styles.chipRow}>
+          {(Object.keys(LIVE_LEVEL_ANCHOR_LABELS) as LiveLevelAnchor[]).map((id) => (
+            <Pressable
+              key={id}
+              onPress={() => setAnchor(id)}
+              style={[styles.chip, anchor === id && styles.chipOn]}>
+              <Text style={[styles.chipText, anchor === id && styles.chipTextOn]}>
+                {LIVE_LEVEL_ANCHOR_LABELS[id]}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <Text style={styles.hint}>{ANCHOR_BLURBS[anchor]}</Text>
+
+        <Text style={styles.subLabel}>Tuning overrides</Text>
         <Text style={styles.hint}>
           Production = structure target (~2R) with stop capped at min(2.5×ATR, 8%). Overrides mirror
           the Lab exit grid and only tighten stops / rewrite targets — entries are unchanged.

@@ -1,31 +1,32 @@
 /**
- * Live dashboard behavior — the same knobs the Portfolio backtest exposes
- * (entry engine, accuracy gates, stop cooldown, max open positions, exit
- * tuning), persisted in Settings and consumed by the live Desk pipeline.
+ * Live dashboard behavior — one engine with independent entry and exit
+ * toggles, mirroring the Portfolio backtest knobs, persisted in Settings and
+ * consumed by the live Desk pipeline.
  *
- * Defaults reproduce production behavior exactly: Playbook + Desk gate,
- * earnings blackout only, no cooldown, no position cap, production exits.
+ * Defaults reproduce production behavior exactly: Desk confirmation on,
+ * setup-structure levels, earnings blackout only, no cooldown, no position
+ * cap, production exits.
  */
 import { DEFAULT_LIVE_GATES, describeActiveExtras } from '@/lib/backtestProfile';
 import { describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
 import {
   Candle,
   LiveBehaviorConfig,
-  LiveEntryEngine,
+  LiveLevelAnchor,
   Trade,
 } from '@/types/trading';
 
-export const LIVE_ENTRY_ENGINE_LABELS: Record<LiveEntryEngine, string> = {
-  playbook: 'Playbook',
-  playbook_desk: 'Playbook + Desk gate',
-  desk: 'Desk Soft/Strong',
+export const LIVE_LEVEL_ANCHOR_LABELS: Record<LiveLevelAnchor, string> = {
+  setup: 'Setup structure',
+  desk_blend: 'Desk blend',
 };
 
 export const DEFAULT_LIVE_BEHAVIOR: LiveBehaviorConfig = {
-  entryEngine: 'playbook_desk',
+  deskConfirmation: true,
   gates: { ...DEFAULT_LIVE_GATES },
   stopCooldownBars: 0,
   maxOpenPositions: 0,
+  levelAnchor: 'setup',
   exitTuning: {},
 };
 
@@ -39,19 +40,34 @@ function normalizeTuning(raw: LevelTuning | undefined): LevelTuning {
   return tuning;
 }
 
+/** Persisted shape before the entry-engine → toggles split (storage migration). */
+type LegacyLiveBehavior = Partial<LiveBehaviorConfig> & {
+  entryEngine?: 'playbook' | 'playbook_desk' | 'desk';
+};
+
 /** Fill defaults / repair a possibly-partial persisted config (storage migration). */
 export function normalizeLiveBehavior(
-  raw: Partial<LiveBehaviorConfig> | null | undefined
+  raw: LegacyLiveBehavior | null | undefined
 ): LiveBehaviorConfig {
   const gates = { ...DEFAULT_LIVE_GATES, ...(raw?.gates ?? {}) };
-  const engine: LiveEntryEngine =
-    raw?.entryEngine === 'playbook' || raw?.entryEngine === 'desk'
-      ? raw.entryEngine
-      : 'playbook_desk';
+  // Legacy engine presets map onto the two toggles:
+  // playbook → confirmation off; desk → Desk-blend levels; playbook_desk → defaults.
+  const legacy = raw?.entryEngine;
+  const deskConfirmation =
+    typeof raw?.deskConfirmation === 'boolean'
+      ? raw.deskConfirmation
+      : legacy !== 'playbook';
+  const levelAnchor: LiveLevelAnchor =
+    raw?.levelAnchor === 'desk_blend' || raw?.levelAnchor === 'setup'
+      ? raw.levelAnchor
+      : legacy === 'desk'
+        ? 'desk_blend'
+        : 'setup';
   const cooldown = Number(raw?.stopCooldownBars);
   const maxOpen = Number(raw?.maxOpenPositions);
   return {
-    entryEngine: engine,
+    deskConfirmation,
+    levelAnchor,
     gates: {
       marketRegime: Boolean(gates.marketRegime),
       earningsBlackout: Boolean(gates.earningsBlackout),
@@ -69,7 +85,8 @@ export function normalizeLiveBehavior(
 
 export function isDefaultLiveBehavior(cfg: LiveBehaviorConfig): boolean {
   return (
-    cfg.entryEngine === DEFAULT_LIVE_BEHAVIOR.entryEngine &&
+    cfg.deskConfirmation === DEFAULT_LIVE_BEHAVIOR.deskConfirmation &&
+    cfg.levelAnchor === DEFAULT_LIVE_BEHAVIOR.levelAnchor &&
     cfg.stopCooldownBars === 0 &&
     cfg.maxOpenPositions === 0 &&
     isProductionTuning(cfg.exitTuning) &&
@@ -81,11 +98,12 @@ export function isDefaultLiveBehavior(cfg: LiveBehaviorConfig): boolean {
   );
 }
 
-/** One-line summary for Dashboard / Settings, e.g. "Playbook + Desk gate · earnings blackout · production exits". */
+/** One-line summary for Dashboard / Settings, e.g. "Playbook + Desk confirm · earnings blackout · setup levels · production exits". */
 export function describeLiveBehavior(cfg: LiveBehaviorConfig): string {
-  const bits = [LIVE_ENTRY_ENGINE_LABELS[cfg.entryEngine]];
+  const bits = [cfg.deskConfirmation ? 'Playbook + Desk confirm' : 'Playbook rules only'];
   const extras = describeActiveExtras(cfg.gates, cfg.stopCooldownBars);
   bits.push(extras.length ? extras.join(' · ') : 'no accuracy gates');
+  bits.push(cfg.levelAnchor === 'desk_blend' ? 'Desk blend levels' : 'setup levels');
   bits.push(
     isProductionTuning(cfg.exitTuning) ? 'production exits' : describeTuning(cfg.exitTuning)
   );

@@ -140,7 +140,8 @@ function buildFromBundle(
       earningsDates,
       earningsCalendarStatus,
       gates: behavior?.gates,
-      entryEngine: behavior?.entryEngine,
+      deskConfirmation: behavior?.deskConfirmation,
+      levelAnchor: behavior?.levelAnchor,
       exitTuning: behavior?.exitTuning,
       stopCooldown: cooldown,
     });

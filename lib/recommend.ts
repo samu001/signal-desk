@@ -1,10 +1,6 @@
 import { DEFAULT_LIVE_GATES, PlaybookGateFlags } from '@/lib/backtestProfile';
 import { CandleSource } from '@/lib/candles';
-import {
-  applyLiveExitTuning,
-  LIVE_ENTRY_ENGINE_LABELS,
-  StopCooldownStatus,
-} from '@/lib/liveBehavior';
+import { applyLiveExitTuning, StopCooldownStatus } from '@/lib/liveBehavior';
 import { describeTuning, isProductionTuning, LevelTuning } from '@/lib/levelTuning';
 import {
   deskNewsHardFail,
@@ -36,7 +32,7 @@ import { levelsForSetup } from '@/lib/setupLevels';
 import {
   Candle,
   FundamentalSnapshot,
-  LiveEntryEngine,
+  LiveLevelAnchor,
   NewsItem,
   Quote,
   Setup,
@@ -725,10 +721,10 @@ function pickStance(input: {
   liquidityOk: boolean;
   marketWeak: boolean;
   marketOk: boolean;
-  engine: LiveEntryEngine;
+  deskConfirmation: boolean;
   cooldownBlocked: boolean;
 }): Stance {
-  const deskGated = input.engine !== 'playbook';
+  const deskGated = input.deskConfirmation;
   if (input.newsHardFail || input.price <= input.stop) return 'avoid';
   if (deskGated && input.technical < 35) return 'avoid';
   if (input.liquidityThin) return 'avoid';
@@ -737,9 +733,10 @@ function pickStance(input: {
   if (input.earningsBlocked) return 'wait';
   // Desk is a confirmation layer: no buy stance without a Playbook match.
   if (!input.playbookMatched) return 'wait';
-  // Playbook engine: rules alone decide — Desk scores/zone shown but not gating.
-  // (Red-flag news, thin liquidity, cooldown, and stop risk still block above.)
-  if (input.engine === 'playbook') {
+  // Desk confirmation off: Playbook rules alone decide — Desk scores/zone shown
+  // but not gating. (Red-flag news, thin liquidity, cooldown, and stop risk
+  // still block above.)
+  if (!deskGated) {
     return input.inEntry ? 'strong_buy' : 'soft_buy';
   }
   if (!input.liquidityOk || !input.marketOk) return 'wait';
@@ -912,8 +909,10 @@ export function buildRecommendation(input: {
    * (not point-in-time), so stance is driven mainly by technicals + Playbook match.
    */
   historicalMode?: boolean;
-  /** Live entry engine (mirrors the Portfolio backtest engines). Default = production Desk gate. */
-  entryEngine?: LiveEntryEngine;
+  /** Entry: require Desk score/zone confirmation on top of Playbook rules (default true = production). */
+  deskConfirmation?: boolean;
+  /** Exit: which structure anchors buy/stop/target (default 'setup' = production). */
+  levelAnchor?: LiveLevelAnchor;
   /** Exits-only stop/target overrides from Live behavior settings. */
   exitTuning?: LevelTuning;
   /** Post-stop cooldown for this symbol — forces Wait while active. */
@@ -987,7 +986,8 @@ export function buildRecommendation(input: {
   const matchedSetups = rankMatchedSetups(allMatches).slice(0, MAX_SETUP_OPTIONS);
   const playbookBlockers =
     matchedSetups.length === 0 && allMatches.length ? commonPlaybookBlockers(allMatches) : [];
-  const engine: LiveEntryEngine = input.entryEngine ?? 'playbook_desk';
+  const deskConfirmation = input.deskConfirmation ?? true;
+  const levelAnchor: LiveLevelAnchor = input.levelAnchor ?? 'setup';
   const exitTuning = input.exitTuning;
   const atr14 = atr(candles, 14);
   const setupOptions = buildSetupOptions({
@@ -1002,9 +1002,9 @@ export function buildRecommendation(input: {
   const merged = mergeLevelsWithSetup(deskLevels, bestSetup, candles);
   const mergedTuned = applyLiveExitTuning(merged.levels, atr14, exitTuning);
   // Primary levels: prefer #1 option's own levels; fall back to Desk blend.
-  // Desk engine anchors to the Desk blend instead (Desk card levels).
+  // Desk-blend anchor uses the blend directly (Desk card levels).
   const levels =
-    engine === 'desk' ? mergedTuned : setupOptions[0]?.levels ?? mergedTuned;
+    levelAnchor === 'desk_blend' ? mergedTuned : setupOptions[0]?.levels ?? mergedTuned;
 
   const technical = scoreTechnical({
     price,
@@ -1087,7 +1087,7 @@ export function buildRecommendation(input: {
     liquidityOk: liquidity.ok,
     marketWeak: market.weak,
     marketOk: market.ok,
-    engine,
+    deskConfirmation,
     cooldownBlocked: Boolean(cooldown),
   });
 
@@ -1156,15 +1156,22 @@ export function buildRecommendation(input: {
       detail: `${describeTuning(exitTuning)} (from Live behavior settings)`,
     });
   }
-  if (engine !== 'playbook_desk') {
+  if (!deskConfirmation) {
     factors.push({
-      name: 'Entry engine',
+      name: 'Desk confirmation',
       pillar: 'technical',
       verdict: 'pass',
       detail:
-        engine === 'playbook'
-          ? `${LIVE_ENTRY_ENGINE_LABELS.playbook} — Playbook rules alone decide Soft/Strong; Desk scores shown for context.`
-          : `${LIVE_ENTRY_ENGINE_LABELS.desk} — levels anchored to the Desk blend.`,
+        'Off — Playbook rules alone decide Soft/Strong; Desk scores shown for context (Live behavior).',
+    });
+  }
+  if (levelAnchor === 'desk_blend') {
+    factors.push({
+      name: 'Level anchor',
+      pillar: 'technical',
+      verdict: 'pass',
+      detail:
+        'Desk blend — buy/stop/target from the Desk chart read merged with the top setup (Live behavior).',
     });
   }
   if (merged.source === 'playbook' && best) {
@@ -1243,9 +1250,9 @@ export function buildRecommendation(input: {
   if (cooldown) {
     warnings.push(`${symbol}: post-stop cooldown active — ${cooldown.detail}.`);
   }
-  if (engine === 'playbook' && tradeable) {
+  if (!deskConfirmation && tradeable) {
     warnings.push(
-      'Playbook engine: Desk scores/zone shown for context but do not gate this signal.'
+      'Desk confirmation off: Desk scores/zone shown for context but do not gate this signal.'
     );
   }
 
@@ -1300,9 +1307,13 @@ export function buildRecommendation(input: {
       : 'Not interesting',
     tradeable,
     // Primary levels prefer #1 setup option; fall back to Desk/playbook blend.
-    // Desk engine always reports the blend it anchors to.
+    // Desk-blend anchor always reports the blend it anchors to.
     levelsSource:
-      engine === 'desk' ? merged.source : setupOptions[0] ? 'playbook' : merged.source,
+      levelAnchor === 'desk_blend'
+        ? merged.source
+        : setupOptions[0]
+          ? 'playbook'
+          : merged.source,
     relativeStrength20d: market.rs,
     dollarVolume20d: liquidity.dollarVolume,
     candleSource,

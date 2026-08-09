@@ -104,26 +104,32 @@ export type PlaybookGateFlags = {
 };
 
 /**
- * How live Desk entries are generated — mirrors the Portfolio backtest engines.
- * - playbook: Playbook setup rules alone decide Soft/Strong (no Desk score gate).
- * - playbook_desk: Playbook rules + Desk score/zone gate (production default).
- * - desk: same gate as playbook_desk, but primary levels use the Desk blend.
+ * Which structure anchors the buy zone / stop / target.
+ * - setup: the top matched setup's own invalidation structure (production default).
+ * - desk_blend: the Desk chart read merged with the top setup (Desk card levels).
  */
-export type LiveEntryEngine = 'playbook' | 'playbook_desk' | 'desk';
+export type LiveLevelAnchor = 'setup' | 'desk_blend';
 
 /**
- * Live dashboard behavior — the same knobs the Portfolio backtest exposes,
- * persisted in Settings and consumed by the live Desk signal pipeline. Find a
- * combination you like in the Lab and apply it here (or via the backtest's
- * "Use these settings live" button).
+ * Live dashboard behavior — one engine with independent entry and exit
+ * toggles, mirroring the Portfolio backtest knobs. Persisted in Settings and
+ * consumed by the live Desk signal pipeline. Find a combination you like in
+ * the Lab and apply it here (or via the backtest's "Use these settings live"
+ * button).
  */
 export type LiveBehaviorConfig = {
-  entryEngine: LiveEntryEngine;
+  /**
+   * Entry: require Desk score/zone confirmation on top of Playbook rules
+   * (production default true). Off = Playbook rules alone decide Soft/Strong.
+   */
+  deskConfirmation: boolean;
   gates: PlaybookGateFlags;
   /** Trading days after a stop-out before re-entering that symbol (0 = off). */
   stopCooldownBars: number;
   /** Cap on concurrent open + planned trades before Desk holds new entries (0 = no cap). */
   maxOpenPositions: number;
+  /** Exit: which structure anchors buy zone / stop / target. */
+  levelAnchor: LiveLevelAnchor;
   /** Exits-only stop/target overrides ({} = production ~2R · min(2.5×ATR, 8%)). */
   exitTuning: LevelTuning;
 };
