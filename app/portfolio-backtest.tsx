@@ -14,6 +14,12 @@ import {
 
 import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
+import {
+  UNIVERSE_FULL,
+  UNIVERSE_PRESET_GROUPS,
+  matchingUniversePresetId,
+  symbolsToField,
+} from '@/constants/universes';
 import { useTrading } from '@/context/TradingContext';
 import { PROFILE_MUST, PROFILE_ALL8, PlaybookGateFlags, DEFAULT_PORTFOLIO_GATES, describeActiveExtras, isAll8Extras, isDefaultPortfolioExtras } from '@/lib/backtestProfile';
 import {
@@ -77,7 +83,7 @@ import { Candle, LiveLevelAnchor } from '@/types/trading';
 
 const DEFAULT_STOP_COOLDOWN = PROFILE_ALL8.stopCooldownBars;
 /** Same roster as scripts/run-deep-backtest.ts — picked on demonstrated combined R. */
-const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
+const DEFAULT_SYMBOLS = symbolsToField(UNIVERSE_FULL);
 
 function normalizeSymbolList(text: string): string {
   return [
@@ -1194,6 +1200,7 @@ export default function PortfolioBacktestScreen() {
 
   const usingDefaultBasket =
     normalizeSymbolList(symbolsText) === DEFAULT_SYMBOLS_KEY;
+  const activeUniversePresetId = matchingUniversePresetId(symbolsText);
 
   return (
     <Screen>
@@ -1211,6 +1218,29 @@ export default function PortfolioBacktestScreen() {
           onChangeText={setSymbolsText}
           multiline
         />
+        {UNIVERSE_PRESET_GROUPS.map((group) => (
+          <View key={group.id} style={styles.presetGroup}>
+            <Text style={styles.presetGroupLabel}>{group.label}</Text>
+            <View style={styles.presetRow}>
+              {group.presets.map((preset) => {
+                const active = activeUniversePresetId === preset.id;
+                return (
+                  <Pressable
+                    key={preset.id}
+                    onPress={() => setSymbolsText(symbolsToField(preset.symbols))}
+                    style={[styles.presetChip, active && styles.presetChipActive]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`${preset.label} universe, ${preset.symbols.length} symbols`}>
+                    <Text style={[styles.presetChipText, active && styles.presetChipTextActive]}>
+                      {preset.label} · {preset.symbols.length}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        ))}
         {usingDefaultBasket ? (
           <Text style={styles.riskNote}>
             Default basket is performance-picked on the same history it scores (deep-script
@@ -2321,6 +2351,42 @@ const styles = StyleSheet.create({
     color: palette.muted,
     fontSize: 12,
     marginBottom: spacing.md,
+  },
+  presetGroup: {
+    gap: 6,
+    marginBottom: spacing.sm,
+  },
+  presetGroupLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  presetChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.white,
+  },
+  presetChipActive: {
+    backgroundColor: palette.mossSoft,
+    borderColor: palette.moss,
+  },
+  presetChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: palette.muted,
+  },
+  presetChipTextActive: {
+    color: palette.moss,
   },
   chipRow: {
     flexDirection: 'row',

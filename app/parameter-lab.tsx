@@ -4,6 +4,7 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-nat
 
 import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/components/ui';
 import { palette, spacing } from '@/constants/theme';
+import { UNIVERSE_FULL, symbolsToField } from '@/constants/universes';
 import { useTrading } from '@/context/TradingContext';
 import { PROFILE_MUST } from '@/lib/backtestProfile';
 import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
@@ -14,7 +15,7 @@ import {
   runParameterLab,
 } from '@/lib/parameterLab';
 
-const DEFAULT_SYMBOLS = 'AAPL, AMZN, JPM, XOM, FANG, CFG, WSM, DDOG, CROX, DUOL, FIX, IOT, PATH, RKLB';
+const DEFAULT_SYMBOLS = symbolsToField(UNIVERSE_FULL);
 
 type SkippedTicker = { symbol: string; reason: string };
 

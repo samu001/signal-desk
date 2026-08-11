@@ -10,7 +10,13 @@ import {
 } from 'react-native';
 
 import { Button, EmptyState, Field, Pill, Screen, SectionTitle } from '@/components/ui';
-import { CURATED_UNIVERSES, matchingUniversePresetId, normalizeSymbolList, symbolsToField } from '@/constants/universes';
+import {
+  CURATED_UNIVERSES,
+  UNIVERSE_PRESET_GROUPS,
+  matchingUniversePresetId,
+  normalizeSymbolList,
+  symbolsToField,
+} from '@/constants/universes';
 import { palette, spacing } from '@/constants/theme';
 import { useTrading } from '@/context/TradingContext';
 import { fetchDailyCandlesResolved, isLiveCandleSource } from '@/lib/candles';
@@ -204,37 +210,45 @@ export default function UniverseScanScreen() {
           multiline
         />
 
-        <View style={styles.presetRow}>
-          {CURATED_UNIVERSES.map((preset) => {
-            const active = activePresetId === preset.id;
-            return (
-              <Pressable
-                key={preset.id}
-                onPress={() => applyPreset(preset.symbols)}
-                style={[styles.presetChip, active && styles.presetChipActive]}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={`${preset.label} universe, ${preset.symbols.length} symbols`}>
-                <Text style={[styles.presetChipText, active && styles.presetChipTextActive]}>
-                  {preset.label} · {preset.symbols.length}
-                </Text>
-              </Pressable>
-            );
-          })}
-          {watchlistSymbols.length > 0 ? (
-            <Pressable
-              onPress={() => applyPreset(watchlistSymbols)}
-              style={[styles.presetChip, watchlistActive && styles.presetChipActive]}
-              accessibilityRole="button"
-              accessibilityState={{ selected: watchlistActive }}
-              accessibilityLabel={`Watchlist universe, ${watchlistSymbols.length} symbols`}>
-              <Text
-                style={[styles.presetChipText, watchlistActive && styles.presetChipTextActive]}>
-                Watch · {watchlistSymbols.length}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
+        {UNIVERSE_PRESET_GROUPS.map((group) => (
+          <View key={group.id} style={styles.presetGroup}>
+            <Text style={styles.presetGroupLabel}>{group.label}</Text>
+            <View style={styles.presetRow}>
+              {group.presets.map((preset) => {
+                const active = activePresetId === preset.id;
+                return (
+                  <Pressable
+                    key={preset.id}
+                    onPress={() => applyPreset(preset.symbols)}
+                    style={[styles.presetChip, active && styles.presetChipActive]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`${preset.label} universe, ${preset.symbols.length} symbols`}>
+                    <Text style={[styles.presetChipText, active && styles.presetChipTextActive]}>
+                      {preset.label} · {preset.symbols.length}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+              {group.id === 'size' && watchlistSymbols.length > 0 ? (
+                <Pressable
+                  onPress={() => applyPreset(watchlistSymbols)}
+                  style={[styles.presetChip, watchlistActive && styles.presetChipActive]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: watchlistActive }}
+                  accessibilityLabel={`Watchlist universe, ${watchlistSymbols.length} symbols`}>
+                  <Text
+                    style={[
+                      styles.presetChipText,
+                      watchlistActive && styles.presetChipTextActive,
+                    ]}>
+                    Watch · {watchlistSymbols.length}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        ))}
         <Pressable
           onPress={() => setEarningsBlackout((v) => !v)}
           style={styles.toggleRow}
@@ -406,11 +420,21 @@ const styles = StyleSheet.create({
   },
   noteTitle: { fontWeight: '700', color: palette.ink, fontSize: 13 },
   noteItem: { color: palette.muted, fontSize: 12.5, lineHeight: 18 },
+  presetGroup: {
+    gap: 6,
+    marginTop: -2,
+  },
+  presetGroupLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
   presetRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
-    marginTop: -2,
   },
   presetChip: {
     paddingHorizontal: 10,
